@@ -1,0 +1,35 @@
+# Production profile for aegis-runtime.
+#
+# Activate with: spring.profiles.active=prod
+#
+# 此文件为"防回退护栏": 所有关键凭据占位符均不带默认值。
+# 生产环境漏注入任一环境变量时, Spring 占位符解析失败 -> 启动 fail-fast,
+# 杜绝静默回退到弱默认凭据(如 aegis123 / aegis12345)。
+#
+# 本地开发请勿激活 prod profile(使用默认 application.yml 的 dev 占位值即可)。
+spring:
+  datasource:
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT}/${DB_NAME}?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&useSSL=${DB_USE_SSL:true}&allowPublicKeyRetrieval=false&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=false
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-init-sql: "SET NAMES utf8mb4"
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASSWORD}
+
+aegis:
+  jwt:
+    secret: ${JWT_SECRET}
+  minio:
+    endpoint: ${MINIO_ENDPOINT}
+    access-key: ${MINIO_ACCESS_KEY}
+    secret-key: ${MINIO_SECRET_KEY}
+  upon:
+    redis:
+      host: ${UPON_REDIS_HOST:${REDIS_HOST}}
+      port: ${UPON_REDIS_PORT:${REDIS_PORT}}
+      password: ${UPON_REDIS_PASSWORD:${REDIS_PASSWORD}}

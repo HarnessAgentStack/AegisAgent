@@ -1,0 +1,131 @@
+# ============================================
+# Aegis Platform - Root .gitignore
+# ============================================
+
+# ---- 所有以 . 开头的文件和目录 ----
+.*
+!.gitignore
+!.github/
+!.env.development
+!.env.production
+!.env.example
+!.dockerignore
+
+# ---- Java / Maven 构建产物 ----
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# ---- 日志文件 ----
+logs/
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Node.js / 前端 ----
+node_modules/
+dist/
+dist-ssr
+*.local
+
+# ---- IDE / 编辑器 ----
+*.iml
+*.iws
+*.ipr
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ---- 操作系统 ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ---- AgentScope / AI 工具 ----
+.agentscope/
+
+# ---- WorkBuddy ----
+.workbuddy/
+
+# ---- Trae / IDE 插件缓存 ----
+.trae/
+
+# ---- 临时文件 / 备份 ----
+*.tmp
+*.bak
+*.temp
+*.orig
+*~
+
+# ---- 测试产物 ----
+infra/test/temp/
+infra/test/artifacts/
+
+# ---- 沙箱运行时产物 ----
+sandbox-workspace/
+sandbox-snapshots/
+
+# ---- 环境变量本地覆盖 ----
+.env.local
+.env.*.local
+# 本地机密配置覆盖（含真实凭据，禁止入库）
+*.secrets.yml
+
+# ---- TypeScript 编译缓存 ----
+*.tsbuildinfo
+.eslintcache
+# vite.config.ts 的编译副产物（tsconfig composite 生成，非源码）
+vite.config.js
+vite.config.d.ts
+
+# ---- 前端备份编译产物（非标准 dist/，必须显式忽略）----
+dist-build/
+dist-build/**
+
+# ---- docs 备份目录（AI Agent 过程残留，非源码）----
+docs/bak*/
+
+# ---- infra 运行日志 & 备份 & 测试临时产物 ----
+infra/logs/
+infra/backups/
+infra/data/bak*/
+infra/test/artifacts/
+
+# ---- tests 过程产物 & 截图 & 非工程文件 ----
+tests/screenshots/
+tests/dogfood-output/
+tests/*.py
+tests/*.xlsx
+tests/*.csv
+tests/*test_report*.json
+
+# ---- classpath / 临时请求文件 ----
+cp.txt
+cp.cmd
+cp.bat
+test-chat.json
+
+# ---- 根目录 AI 工具提示词 ----
+AI_PROMPT.md
+-w
+
+# ---- Infra: 历史手动迁移脚本（已纳入 init/sql/ 后可删）----
+infra/migrations/
+
+# ---- infra/test 过程产物（e2e 测试脚本源码在 infra/test/e2e/，这些是执行残留）----
+infra/test/test-results-*.csv
+infra/test/test-body.json
+infra/test/test-e2e-module*.ps1
+infra/test/test-fix-verify.ps1
+infra/test/e2e-test-final.ps1

@@ -1,0 +1,99 @@
+{
+  "skill_code": "skill_creator",
+  "version": "1.0.0",
+  "triggers": [
+    {
+      "intent": "CREATE",
+      "description": "创建新技能",
+      "patterns": [
+        "创建.*技能",
+        "新建.*技能",
+        "生成.*技能",
+        "添加.*技能",
+        "create.*skill",
+        "新建skill",
+        "创建skill"
+      ]
+    },
+    {
+      "intent": "MODIFY",
+      "description": "修改已有技能",
+      "patterns": [
+        "修改.*技能",
+        "编辑.*技能",
+        "更新.*技能",
+        "调整.*技能",
+        "modify.*skill",
+        "edit.*skill",
+        "update.*skill"
+      ]
+    },
+    {
+      "intent": "DEBUG",
+      "description": "调试技能",
+      "patterns": [
+        "调试.*技能",
+        "测试.*技能",
+        "试运行.*技能",
+        "验证.*技能",
+        "debug.*skill",
+        "test.*skill"
+      ]
+    },
+    {
+      "intent": "PACKAGE",
+      "description": "打包交付技能",
+      "patterns": [
+        "打包.*技能",
+        "交付.*技能",
+        "导出.*技能",
+        "下载.*技能包",
+        "package.*skill",
+        "export.*skill",
+        "打包skill"
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "intent": "CREATE",
+      "user_input": "创建一个技能，用来分析销售数据并生成周报",
+      "expected_action": "进入技能创建流程"
+    },
+    {
+      "intent": "CREATE",
+      "user_input": "我想要新建一个数据清洗的技能",
+      "expected_action": "进入技能创建流程"
+    },
+    {
+      "intent": "MODIFY",
+      "user_input": "修改我的技能 sales_report，增加区域维度分析",
+      "expected_action": "加载技能并进入编辑流程"
+    },
+    {
+      "intent": "MODIFY",
+      "user_input": "编辑 skill data_analyzer，添加异常处理逻辑",
+      "expected_action": "加载技能并进入编辑流程"
+    },
+    {
+      "intent": "DEBUG",
+      "user_input": "调试一下刚才创建的技能",
+      "expected_action": "进入调试流程"
+    },
+    {
+      "intent": "DEBUG",
+      "user_input": "测试 skill order_processor 是否正常工作",
+      "expected_action": "进入调试流程"
+    },
+    {
+      "intent": "PACKAGE",
+      "user_input": "把这个技能打包交付",
+      "expected_action": "进入打包流程"
+    },
+    {
+      "intent": "PACKAGE",
+      "user_input": "导出 skill report_generator 的压缩包",
+      "expected_action": "进入打包流程"
+    }
+  ]
+}

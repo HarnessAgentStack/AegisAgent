@@ -1,0 +1,283 @@
+package com.aegis.runtime.service.conversation;
+
+import com.aegis.core.domain.agent.AgentConfig;
+import com.aegis.core.domain.agent.AgentDef;
+import com.aegis.core.domain.agent.AgentBinding;
+import com.aegis.core.dto.security.PolicyDecision;
+import com.aegis.core.enums.agent.GovernanceTier;
+import com.aegis.core.enums.common.SecurityLevel;
+import com.aegis.runtime.integration.pool.AgentRuntimeTemplate;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.HarnessAgent;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.io.Serializable;
+import java.time.LocalDateTime;
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+import com.aegis.core.enums.sandbox.IsolationStrategy;
+import com.aegis.core.dto.chat.SessionResourcesRef;
+import com.aegis.core.dto.chat.SkillRef;
+import io.agentscope.core.message.ContentBlock;
+
+/**
+ * Aegis 任务执行上下文。
+ *
+ * <p>贯穿中间件链路与任务执行全流程，承载请求、智能体配置、会话信息与运行时状态。
+ * 中间件通过修改本上下文实现租户注入、配额预扣、内容过滤等能力。
+ *
+ * <p>重命名说明：原 {@code TaskContext} 与 AgentScope {@code RuntimeContext} 命名易混淆，
+ * 已迁移至 {@code domain/context/} 包，重命名为 {@code AegisTaskContext}。
+ *
+ * @author wang.zhen
+ */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class AegisTaskContext implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    /** 任务ID（UUID） */
+    private String taskId;
+
+    /** 会话ID */
+    private String sessionId;
+
+    /** 智能体ID */
+    private Long agentId;
+
+    /** 智能体版本 */
+    private String agentVersion;
+
+    /** 租户ID */
+    private Long tenantId;
+
+    /** 用户ID */
+    private Long userId;
+
+    /** 用户显示名（realName 优先，回退 username），用于可观测追踪展示 */
+    private String userName;
+
+    /** 用户输入消息 */
+    private String userMessage;
+
+    /** 智能体定义 */
+    private AgentDef agentDef;
+
+    /** 智能体配置 */
+    private AgentConfig agentConfig;
+
+    /** 资源绑定列表 */
+    private List<AgentBinding> bindings;
+
+    /** 客户端IP */
+    private String clientIp;
+
+    /** User-Agent */
+    private String userAgent;
+
+    /** 链路追踪ID */
+    private String traceId;
+
+    /** API 调用方 Bearer Token（透传用） */
+    private String bearerToken;
+
+    /** API 调用方 Bearer Token 是否需要透传 */
+    private boolean bearerTokenPassThrough;
+
+    /** 任务开始时间 */
+    private LocalDateTime startTime;
+
+    /** 输入 Token 数（执行中累加） */
+    private int tokenInput;
+
+    /** 输出 Token 数（执行中累加） */
+    private int tokenOutput;
+
+    /** 模型名称 */
+    private String modelName;
+
+    /** 运行时模板（Layer 1 池化对象） */
+    private AgentRuntimeTemplate template;
+
+    /** 沙箱实例ID（由 SandboxLifecycleMiddleware 注入） */
+    private String sandboxInstanceId;
+
+    /** P5-5：沙箱隔离策略，由 ChatRequest 透传 */
+    private IsolationStrategy isolationStrategy;
+
+    /** P0：是否需要沙箱环境（仅标记，实际分配由 AgentScope 内部 Coordinator 完成） */
+    private boolean sandboxRequired;
+
+    /** 是否被中间件拦截 */
+    private boolean blocked;
+
+    /** 拦截原因 */
+    private String blockReason;
+
+    /**
+     * P0 @SKILL：本次请求显式引用的技能列表（来自 {@link ChatRequest#getSkills()}）。
+     * 装配期写入 {@code RuntimeContext} 的 {@code aegis.requestedSkills} 属性，供
+     * {@code RuntimeContextSkillRepository} 强制包含。
+     */
+    private List<SkillRef> requestedSkills;
+
+    /**
+     * P1 会话级资源引用（来自 {@link ChatRequest#getResources()}）。
+     * 允许用户在对话中临时选择知识库和MCP服务，仅本次会话生效。
+     */
+    private SessionResourcesRef sessionResources;
+
+    /**
+     * P0 @SKILL：被驳回（不可见/不存在/无权限）的技能 code 列表，
+     * 用于向用户发出 {@code skill.rejected} 事件反馈。
+     */
+    private List<String> rejectedSkillCodes;
+
+    /** NATIVE_PASS 图片多模态内容块（由 AgentAssemblyService 构造，供 TaskExecutionService 注入 UserMessage） */
+    private transient List<ContentBlock> multimodalBlocks;
+
+    /** 已构建的 HarnessAgent 实例（由 AgentAssemblyService 统一装配，消除 prepareContext 与 runLlmStream 的割裂） */
+    private transient HarnessAgent agent;
+
+    /** AgentScope RuntimeContext（由 AgentAssemblyService 统一构建，供 streamEvents 直接使用） */
+    private transient RuntimeContext runtimeContext;
+
+    /**
+     * 流式输出累积缓冲（由 AegisMemoryMiddleware 在 onAgent 创建并通过 doOnNext 累积 TextBlockDeltaEvent）。
+     * 供 AegisMaskMiddleware 在 doFinally 只读消费做输出安全审计，消除两中间件各自维护 StringBuilder
+     * 对同一份 delta 的重复累积。
+     */
+    private transient StringBuilder assistantReplyBuffer;
+
+    // ==================== 安全运行时治理（v4.0 新增） ====================
+
+    /** 治理档位（从 AgentDef.governanceTier 透传） */
+    private GovernanceTier governanceTier;
+
+    /** 智能体安全等级（用于 level-matrix 评估） */
+    private SecurityLevel agentLevel;
+
+    /** 累计阻断次数（用于升级决策） */
+    private int blockCount;
+
+    /** 工具安全等级元数据（toolCode → SecurityLevel，由 AegisToolBridge 注入） */
+    private Map<String, SecurityLevel> toolSecurityLevels;
+
+    /** 策略决策记录（toolCode → PolicyDecision，供审计使用） */
+    private Map<String, PolicyDecision> policyDecisions;
+
+    /** 待审计的策略决策队列（toolCode → PolicyDecision），供审计中间件实时消费 */
+    private transient ConcurrentLinkedQueue<Map.Entry<String, PolicyDecision>> pendingAuditDecisions;
+
+    /**
+     * 获取治理档位，安全获取（兼容 null）。
+     */
+    public GovernanceTier getGovernanceTier() {
+        return governanceTier != null ? governanceTier : GovernanceTier.STANDARD;
+    }
+
+    /**
+     * 获取智能体安全等级，安全获取。
+     */
+    public SecurityLevel getAgentLevel() {
+        return agentLevel != null ? agentLevel : SecurityLevel.L1;
+    }
+
+    /**
+     * 获取工具安全等级。
+     */
+    public SecurityLevel getToolSecurityLevel(String toolCode) {
+        if (toolSecurityLevels == null || toolCode == null) return null;
+        return toolSecurityLevels.get(toolCode);
+    }
+
+    /**
+     * 记录策略决策。
+     *
+     * <p>同时入待审计队列：审计中间件在事件流的 doOnNext 中调用
+     * {@link #drainPendingAuditDecisions()} 实时消费，确保每次策略决策
+     * （含同一工具被多次决策的升级场景）均有独立审计记录。
+     */
+    public void recordPolicyDecision(String toolCode, PolicyDecision decision) {
+        if (policyDecisions == null) {
+            policyDecisions = new HashMap<>();
+        }
+        policyDecisions.put(toolCode, decision);
+        if (pendingAuditDecisions == null) {
+            pendingAuditDecisions = new ConcurrentLinkedQueue<>();
+        }
+        pendingAuditDecisions.add(new AbstractMap.SimpleEntry<>(toolCode, decision));
+    }
+
+    /**
+     * 取出并清空待审计的策略决策。
+     *
+     * @return 待审计决策列表（toolCode → PolicyDecision），无待审计项时返回空列表
+     */
+    public List<Map.Entry<String, PolicyDecision>> drainPendingAuditDecisions() {
+        if (pendingAuditDecisions == null || pendingAuditDecisions.isEmpty()) {
+            return List.of();
+        }
+        List<Map.Entry<String, PolicyDecision>> drained = new ArrayList<>(pendingAuditDecisions);
+        pendingAuditDecisions.clear();
+        return drained;
+    }
+
+    /**
+     * 获取指定工具的策略决策。
+     */
+    public PolicyDecision getPolicyDecision(String toolCode) {
+        if (policyDecisions == null || toolCode == null) return null;
+        return policyDecisions.get(toolCode);
+    }
+
+    /** 已审批通过的工具集合（防止重复审批） */
+    private Map<String, PolicyDecision> approvedTools;
+
+    /**
+     * 设置待审批状态（触发 HITL）。
+     */
+    public void setPendingApproval(String toolName, PolicyDecision decision) {
+        setBlocked(true);
+        setBlockReason("工具调用需审批: " + toolName + " - " + (decision != null ? decision.getReason() : ""));
+        recordPolicyDecision(toolName, decision);
+    }
+
+    /**
+     * 标记工具已审批通过（防止重复审批同一工具）。
+     */
+    public void markToolApproved(String toolName, PolicyDecision decision) {
+        if (approvedTools == null) {
+            approvedTools = new HashMap<>();
+        }
+        approvedTools.put(toolName, decision);
+        // 清除阻塞状态，允许后续工具调用继续执行
+        setBlocked(false);
+        setBlockReason(null);
+    }
+
+    /**
+     * 检查工具是否已审批通过。
+     */
+    public boolean isToolApproved(String toolName) {
+        return approvedTools != null && approvedTools.containsKey(toolName);
+    }
+
+    /**
+     * 获取已审批工具的决策。
+     */
+    public PolicyDecision getApprovedDecision(String toolName) {
+        return approvedTools != null ? approvedTools.get(toolName) : null;
+    }
+}

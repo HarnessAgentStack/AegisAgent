@@ -1,0 +1,31 @@
+# aegis-admin 配置模板（示例，勿直接用于生产）。
+#
+# 复制为 application-local.yml（已被 .gitignore 忽略）或通过环境变量注入。
+# 生产环境激活 prod profile (spring.profiles.active=prod)，由 application-prod.yml
+# 强校验所有凭据必填（漏注入即 fail-fast）。
+#
+# 环境变量契约：
+#   DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD   MySQL 连接
+#   DB_USE_SSL                                            JDBC useSSL（本地 false / 生产 true）
+#   REDIS_HOST / REDIS_PORT / REDIS_PASSWORD              Spring Data Redis
+#   JWT_SECRET                                            HS256 签名密钥（UTF-8 字节 ≥ 32）
+#   MINIO_ENDPOINT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY  对象存储
+#   HARBOR_PASSWORD                                       镜像仓库密码（可选）
+spring:
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:aegis}?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&useSSL=${DB_USE_SSL:false}&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: ${DB_USER:aegis}
+    password: ${DB_PASSWORD:aegis123}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+aegis:
+  jwt:
+    secret: ${JWT_SECRET:dev-jwt-secret-placeholder-must-be-32chars-long!}
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:aegis}
+    secret-key: ${MINIO_SECRET_KEY:aegis12345}

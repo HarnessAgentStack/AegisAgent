@@ -1,0 +1,6 @@
+com.aegis.core.autoconfigure.CoreAutoConfiguration
+com.aegis.core.autoconfigure.CoreMybatisAutoConfiguration
+com.aegis.core.autoconfigure.MinioAutoConfiguration
+com.aegis.core.autoconfigure.MilvusAutoConfiguration
+com.aegis.core.autoconfigure.LocalObjectStorage
+com.aegis.core.autoconfigure.CoreJacksonAutoConfiguration

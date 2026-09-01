@@ -1,0 +1,254 @@
+# =============================================================================
+# Aegis Platform - Infrastructure Compose
+# -----------------------------------------------------------------------------
+# 使用方式:
+#   docker compose up                          # 默认: 核心基础设施 (mysql/redis/nacos/minio/etcd/milvus)
+#   docker compose --profile observability up   # + Prometheus + Grafana + OTel Collector
+#   docker compose --profile ocr up             # + PaddleOCR (首次启动需下载模型)
+#   docker compose up mysql redis               # 也可以单独指定服务
+#
+# 全栈启动（基础设施 + 应用，二选一）:
+#   方式A: docker compose -f docker-compose.yml -f docker-compose.app.yml up --build
+#   方式B: 先 docker compose up（基础设施），再 docker compose -f docker-compose.app.yml up --build
+#
+# 数据卷持久化: docker volume ls | docker volume rm <name>
+# ⚠️ 注意: 如需重建 MySQL, 必须先删 volume: docker volume rm infra_aegis-mysql-data
+#          lower-case-table-names 初始化后无法修改
+# =============================================================================
+
+services:
+  # ============================================================================
+  # 核心基础设施 (默认启动)
+  # ============================================================================
+
+  mysql:
+    image: mysql:8.0
+    container_name: aegis-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: aegis
+      MYSQL_USER: ${DB_USER:-aegis}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-aegis123}
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - aegis-mysql-data:/var/lib/mysql
+      # ddl 仅首次启动(空数据目录)时自动执行; 已有数据会跳过
+      - ./ddl:/docker-entrypoint-initdb.d:ro
+    # 全部用 command 传参 (Windows 挂载 cnf 会因权限 0777 被 MySQL 拒绝)
+    command:
+      - --lower-case-table-names=1
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+      - --max-connections=500
+      - --innodb-buffer-pool-size=256M
+      - --skip-host-cache
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${DB_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: aegis-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "6379:6379"
+    volumes:
+      - aegis-redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nacos:
+    image: nacos/nacos-server:v3.2.2
+    container_name: aegis-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      SPRING_DATASOURCE_PLATFORM: ""
+      NACOS_AUTH_ENABLE: "false"
+      NACOS_AUTH_ADMIN_ENABLE: "false"
+      NACOS_AUTH_CONSOLE_ENABLE: "false"
+      NACOS_AUTH_TOKEN: "YWVnaXMtbmFjb3MtYXV0aC10b2tlbi0yMDI2LWJ5LXdhbmctemhlbg=="
+      NACOS_AUTH_IDENTITY_KEY: "serverIdentity"
+      NACOS_AUTH_IDENTITY_VALUE: "aegis-nacos-security"
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+      JVM_XMN: 128m
+      TZ: Asia/Shanghai
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+      - "9849:9849"
+      - "8083:8080"   # Nacos 3.x 控制台 (容器 8080 -> 主机 8083, 避免与 Gateway 8080 冲突)
+    volumes:
+      - aegis-nacos-data:/home/nacos/data
+      - aegis-nacos-logs:/home/nacos/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  minio:
+    image: minio/minio:latest
+    container_name: aegis-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-aegis}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-aegis12345}
+      TZ: Asia/Shanghai
+    ports:
+      - "9000:9000"   # S3 API (业务调用 + Milvus 内部存储)
+      - "9001:9001"   # Console UI
+    volumes:
+      - aegis-minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    container_name: aegis-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+      TZ: Asia/Shanghai
+    volumes:
+      - aegis-etcd-data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+
+  milvus:
+    image: milvusdb/milvus:v2.5.0
+    container_name: aegis-milvus
+    restart: unless-stopped
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-aegis}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-aegis12345}
+      MINIO_BUCKET_NAME: milvus-internal
+      TZ: Asia/Shanghai
+    ports:
+      - "19530:19530" # gRPC API (业务调用)
+      - "9091:9091"   # Health/Metrics
+    volumes:
+      - aegis-milvus-data:/var/lib/milvus
+    command: ["milvus", "run", "standalone"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9091/healthz"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+
+  # ============================================================================
+  # Profile: ocr — PaddleOCR 图片文字识别 (首次启动下载模型, CPU-only)
+  # ============================================================================
+  paddleocr:
+    profiles: ["ocr"]
+    build:
+      context: ./paddleocr
+      dockerfile: Dockerfile
+    image: aegis-paddleocr:latest
+    container_name: aegis-paddleocr
+    restart: unless-stopped
+    ports:
+      - "8098:8000"   # OCR HTTP API
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - aegis-paddleocr-models:/root/.paddleocr
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s  # 首次启动需下载 OCR v5 模型
+
+  # ============================================================================
+  # Profile: observability — 可观测性三驾马车 (Prometheus + Grafana + OTel)
+  # ============================================================================
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.53.0
+    container_name: aegis-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    # Linux 下 host.docker.internal 需 host-gateway 映射才能抓取宿主端口
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./init/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - aegis-prometheus-data:/prometheus
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.1.0
+    container_name: aegis-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"   # 默认 admin/admin123
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin123}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_INSTALL_PLUGINS: "grafana-clock-panel"
+    volumes:
+      - aegis-grafana-data:/var/lib/grafana
+
+  otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    container_name: aegis-otel-collector
+    restart: unless-stopped
+    ports:
+      - "4317:4317"   # gRPC OTLP (推荐链路追踪)
+      - "4318:4318"   # HTTP OTLP (备用)
+    volumes:
+      - ./init/docker/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+
+# =============================================================================
+# 数据卷
+# =============================================================================
+volumes:
+  aegis-mysql-data:
+  aegis-redis-data:
+  aegis-nacos-data:
+  aegis-nacos-logs:
+  aegis-minio-data:
+  aegis-etcd-data:
+  aegis-milvus-data:
+  aegis-prometheus-data:
+  aegis-grafana-data:
+  aegis-paddleocr-models:

@@ -1,0 +1,158 @@
+server:
+  port: 8081
+  shutdown: graceful
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+logging:
+  level:
+    root: INFO
+    com.aegis: DEBUG
+    io.agentscope: DEBUG
+    org.apache.ibatis: WARN
+    reactor.netty: WARN
+  file:
+    name: logs/runtime.log
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+
+spring:
+  application:
+    name: aegis-runtime
+  config:
+    import:
+      # - optional:nacos:aegis-runtime.yaml  # Temporary disable
+  codec:
+    max-in-memory-size: 50MB
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:aegis}?useUnicode=true&characterEncoding=UTF-8&useSSL=${DB_USE_SSL:false}&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true&connectionCollation=utf8mb4_unicode_ci
+    username: ${DB_USER:aegis}
+    password: ${DB_PASSWORD:aegis123}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  cloud:
+    nacos:
+      discovery:
+        enabled: true
+        server-addr: 127.0.0.1:8848
+        namespace: public
+      config:
+        enabled: false
+        server-addr: 127.0.0.1:8848
+        namespace: public
+        file-extension: yaml
+        import-check:
+          enabled: false
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+sse:
+  timeout: 300000
+
+# 沙箱配置
+aegis:
+  # JWT 签名密钥（HS256，UTF-8 字节 ≥ 32）；dev 占位密钥，生产必须通过 Nacos/环境变量覆盖
+  jwt:
+    secret: ${JWT_SECRET:dev-jwt-secret-placeholder-must-be-32chars-long!}
+  # MinIO 对象存储（会话附件存储）
+  minio:
+    enabled: true
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:aegis}
+    secret-key: ${MINIO_SECRET_KEY:aegis12345}
+    bucket: aegis-attachments
+  runtime:
+    agent-pool:
+      max-size: 100
+      idle-evict-minutes: 15
+      clean-interval-minutes: 1
+    sandbox:
+      enabled: true
+      backend: k8s  # docker | k8s | process（K8s 沙箱池，生产/开发环境统一使用）
+      image: python:3.11-slim
+      cpu: 1.0
+      memoryMb: 512
+      # T1 沙箱惰性分配：构建期不分配 Pod，推迟到首次沙箱工具调用经 SandboxReadinessGate 分配
+      lazy-allocation:
+        enabled: true
+      # T1 空闲释放阈值：末次沙箱工具调用后 N 分钟无使用，主动 saveSnapshot+releaseSlot 回池
+      idle-release-minutes: 5
+      docker:
+        # Windows Docker Desktop 默认命名管道；Linux/Mac 使用 unix:///var/run/docker.sock
+        host: ${SANDBOX_DOCKER_HOST:npipe://./pipe/docker_engine}
+        # 卷挂载：host_path:container_path（Windows 路径使用正斜杠）
+        volumes:
+          - ${SANDBOX_USER_FILES_DIR:/workspace/user_files}
+      # K8s 沙箱后端配置（backend=k8s 时激活）
+      k8s:
+        # kubeconfig 文件路径，留空则按优先级查找：
+        # 1) 此处显式路径  2) ~/.kube/config  3) fabric8 自动发现（集群内 Pod 模式）
+        kubeconfig: ""
+        # 默认 namespace 前缀（与 admin 池配置一致：aegis-sbx-t{tenantId}-{type}）
+        namespace-prefix: aegis-sbx-t
+        # Pod 创建后等待 Running 的超时时间（秒）
+        ready-timeout-sec: 60
+        # exec 命令默认超时时间（秒）
+        exec-timeout-sec: 120
+  # AgentScope 2.0 深度集成配置
+  upon:
+    enabled: true
+    redis:
+      host: ${UPON_REDIS_HOST:${REDIS_HOST:127.0.0.1}}
+      port: ${UPON_REDIS_PORT:${REDIS_PORT:6379}}
+      password: ${UPON_REDIS_PASSWORD:${REDIS_PASSWORD:}}
+    # P0-02：workspace-path 已废弃，工作区通过 RedisStore 分布式存储
+    # AgentScope 的 RemoteFilesystemSpec 自动从 RedisStore 读取 workspace
+    max-iters: 5
+    # 沙箱分布式能力配置（AgentScope 2.0 DistributedStore 装配）
+    sandbox:
+      # 工作空间快照（RemoteSnapshotSpec，依赖 MinIO）
+      snapshot:
+        enabled: true
+        storage-type: minio
+      # 沙箱执行互斥（RedisSandboxExecutionGuard，依赖 Redis）
+      # 注意：Windows 本地开发环境建议禁用，避免 Redis 锁导致的卡死问题
+      execution-guard:
+        enabled: true
+        lock-timeout-sec: 30
+    sys-prompt: >
+      你是一个集成了 AgentScope 2.0 框架的智能助手。请遵循以下回答策略：
+
+      ## 回答策略
+      - 简洁高效：当工具返回的信息已足够回答用户问题时，直接给出答案，不要继续调用其他工具。
+      - 结构化呈现：工具返回结构化数据时，以友好易读的格式呈现给用户。
+      - 错误处理：工具返回错误时，不要向用户展示原始技术错误信息，应礼貌说明限制并给出替代建议。
+      - 语言匹配：使用与用户查询相同的语言回答。
+      - 禁止暴露内部属性名或技术细节给用户。
+      - 知识库引用：当知识库检索结果可用时，优先引用其中的内容回答，并在回答中自然地提及来源。
+  # P0: 模型配置已迁移至数据库（model_def + model_provider），不再使用 Nacos/本地配置
+  milvus:
+    enabled: true
+    host: localhost
+    port: 19530
+  # P2: PaddleOCR 图片文字识别服务（扫描件/截图 OCR 兜底）
+  # 容器: docker compose up paddleocr → http://localhost:8098
+  # 禁用设为 false，此时图片直接走 vision LLM 路径
+  ocr:
+    paddle:
+      enabled: true
+      endpoint: http://localhost:8098
+      connect-timeout-ms: 3000
+      read-timeout-ms: 30000
+      max-image-bytes: 10485760      # 10MB
+      min-text-length-threshold: 3    # OCR 识别结果 ≥ 3 字符视为有效
+

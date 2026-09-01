@@ -1,0 +1,38 @@
+﻿server:
+  port: 8080
+  shutdown: graceful
+  http2:
+    enabled: true
+
+spring:
+  application:
+    name: aegis-gateway
+  codec:
+    max-in-memory-size: 16MB
+  config:
+    import:
+      - optional:nacos:aegis-gateway.yaml
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        namespace: public
+      config:
+        server-addr: 127.0.0.1:8848
+        namespace: public
+        file-extension: yaml
+    gateway:
+      server:
+        webflux:
+          # 路由使用编程式配置（RouteConfig.java）
+          # 多副本会话粘性由 SessionIdFilter 实现
+
+aegis:
+  # JWT 签名密钥（HS256，UTF-8 字节 ≥ 32）；dev 占位密钥，生产必须通过 Nacos/环境变量覆盖
+  jwt:
+    secret: ${JWT_SECRET:dev-jwt-secret-placeholder-must-be-32chars-long!}
+  gateway:
+    whitelist:
+      - /api/admin/auth/**
+      - /actuator/**
+      - /api/runtime/task/download/**

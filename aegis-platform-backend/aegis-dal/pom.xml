@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.aegis</groupId>
+        <artifactId>aegis-platform-backend</artifactId>
+        <version>0.1.0-alpha.1</version>
+    </parent>
+    <artifactId>aegis-dal</artifactId>
+    <packaging>jar</packaging>
+    <name>aegis-dal</name>
+    <description>Aegis DAL: shared data access layer (MyBatis-Plus mappers)</description>
+
+    <dependencies>
+        <!-- core-infra 传递获取 domain + spi + 基础设施（实体/枚举/SPI/PageResult 等） -->
+        <dependency>
+            <groupId>com.aegis</groupId>
+            <artifactId>aegis-core-infra</artifactId>
+        </dependency>
+        <!-- MyBatis-Plus BaseMapper 依赖 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
+            <version>${mybatis-plus.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>${mybatis-plus.version}</version>
+        </dependency>
+        <!-- Milvus 向量库 SDK（供 MilvusVectorStoreAdapter） -->
+        <dependency>
+            <groupId>io.milvus</groupId>
+            <artifactId>milvus-sdk-java</artifactId>
+        </dependency>
+        <!-- Gson（MilvusVectorStoreAdapter 使用 JsonObject） -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <!-- Fastjson2（ArkEmbeddingClient 使用） -->
+        <dependency>
+            <groupId>com.alibaba.fastjson2</groupId>
+            <artifactId>fastjson2</artifactId>
+        </dependency>
+    </dependencies>
+</project>

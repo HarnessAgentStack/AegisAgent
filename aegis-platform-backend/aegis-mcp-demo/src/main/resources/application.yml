@@ -1,0 +1,49 @@
+server:
+  port: 8084
+  shutdown: graceful
+
+spring:
+  application:
+    name: aegis-mcp-demo
+  config:
+    import:
+      - optional:nacos:aegis-mcp-demo.yaml
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+# Aegis MCP Demo 自定义配置
+aegis:
+  mcp:
+    demo:
+      auto-register: true
+      admin-base-url: ${AEGIS_ADMIN_URL:http://127.0.0.1:8082}
+      admin-user-id: ${AEGIS_ADMIN_USER_ID:1}
+      # 可选：服务端共享密钥，admin 若启用 X-Server-Key 校验则需配置
+      server-key: ${AEGIS_MCP_SERVER_KEY:}
+      # 注册重试窗口须覆盖 admin 冷启动时间（实测 ~22s）：15 次 × 5s = 75s
+      # （原 3 次 × 5s = 10s 窗口在 admin 尚未就绪时即放弃，注册失败）
+      max-retries: 15
+      retry-interval-ms: 5000
+      mcp-code: aegis-mcp-demo
+      mcp-name: Aegis 工业数据服务
+      icon: /icons/mcp-industrial.png
+      provider: aegis
+      description: 工业系统数据服务，提供生产数据查询、设备状态监控、告警日志分析等工厂核心系统工具，供智能体调用
+      version: 1.0.0
+      # 端点为 Spring AI MCP SSE 协议路径
+      endpoint: ${AEGIS_MCP_DEMO_ENDPOINT:http://127.0.0.1:8084/sse}
+      protocol: SSE
+      auth-type: NONE
+      auth-config: '{}'
+      security-level: L1
+      status: ACTIVE
+
+logging:
+  level:
+    com.aegis.mcp.demo: INFO
+    org.springframework.ai.mcp: DEBUG

@@ -1,0 +1,18 @@
+# Local profile for aegis-runtime.
+#
+# 用途：纯 Docker 本地部署（无 K8s 集群）时激活，将沙箱后端切换为 docker。
+# 激活：spring.profiles.active=local
+#
+# 与 prod 的区别：本地不强制 fail-fast，保留 dev 占位默认值，便于快速体验。
+# 沙箱 backend=docker 时，需挂载宿主 docker.sock（见 docker-compose.app.yml）。
+aegis:
+  runtime:
+    sandbox:
+      # 纯 Docker 模式：沙箱实例直接在宿主 Docker 上创建，无需 K8s
+      backend: docker
+      docker:
+        host: ${SANDBOX_DOCKER_HOST:unix:///var/run/docker.sock}
+      # 惰性分配仍启用（纯聊天零沙箱占用）
+      lazy-allocation:
+        enabled: true
+      idle-release-minutes: 5

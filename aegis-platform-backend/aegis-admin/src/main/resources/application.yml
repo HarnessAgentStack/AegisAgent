@@ -1,0 +1,159 @@
+server:
+  port: 8082
+  shutdown: graceful
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: false
+      force: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+
+spring:
+  application:
+    name: aegis-admin
+  codec:
+    max-in-memory-size: 50MB
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:aegis}?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&useSSL=${DB_USE_SSL:false}&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: ${DB_USER:aegis}
+    password: ${DB_PASSWORD:aegis123}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-init-sql: "SET NAMES utf8mb4"
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+        namespace: public
+      config:
+        server-addr: 127.0.0.1:8848
+        namespace: public
+        file-extension: yaml
+        import-check:
+          enabled: false
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+review:
+  sla-hours: 48
+
+audit:
+  retention-days: 90
+
+resource:
+  max-upload-size: 50MB
+
+health:
+  show-details: always
+
+logging:
+  level:
+    com.aegis.admin.domain.service.resource.McpManageService: DEBUG
+    com.aegis.admin: INFO
+
+# P0: 模型配置已迁移至数据库（model_def + model_provider），不再使用本地配置
+# 高可用/灾备（组件探活 + 数据库备份），可通过 Nacos aegis-admin.yaml 覆盖
+aegis:
+  # JWT 签名密钥（HS256，UTF-8 字节 ≥ 32）；dev 仅用占位密钥，生产必须通过 Nacos/环境变量覆盖
+  jwt:
+    secret: ${JWT_SECRET:dev-jwt-secret-placeholder-must-be-32chars-long!}
+    access-token-expire: 7200
+    refresh-token-expire: 604800
+  # 认证角色-权限映射（可经 Nacos 热更新，替代硬编码；后续可迁移至 role_permission 表）
+  auth:
+    admin-roles:
+      - SUPER_ADMIN
+      - ENTERPRISE_ADMIN
+      - SECURITY_ADMIN
+      - RESOURCE_ADMIN
+      - AGENT_REVIEWER
+      - AGENT_CREATOR
+    admin-permissions:
+      - agent:view
+      - agent:create
+      - agent:edit
+      - agent:delete
+      - agent:publish
+      - resource:view
+      - resource:manage
+      - model:view
+      - monitor:view
+      - audit:view
+      - security:view
+      - review:view
+      - tenant:manage
+      - system:model:view
+    employee-permissions:
+      - agent:view
+      - agent:create
+      - agent:edit
+      - agent:delete
+      - agent:publish
+      - resource:view
+      - resource:manage
+      - model:view
+  # Runtime 服务直连地址（admin 通知 runtime 内部接口，如模板缓存失效），生产通过 Nacos 覆盖
+  runtime:
+    base-url: http://localhost:8081
+  ha:
+    health:
+      runtime-url: http://localhost:8081/actuator/health
+      admin-url: http://localhost:8082/actuator/health
+      gateway-url: http://localhost:8080/actuator/health
+      nacos-url: http://localhost:8848/nacos/v1/ns/operator/metrics
+    backup:
+      dir: ${BACKUP_DIR:/data/backups/aegis}
+      mysql-host: ${DB_HOST:127.0.0.1}
+      mysql-port: ${DB_PORT:3306}
+      mysql-user: ${DB_USER:aegis}
+      mysql-password: ${DB_PASSWORD:aegis123}
+      mysql-database: ${DB_NAME:aegis}
+      mysqldump-path: mysqldump
+  minio:
+    enabled: true
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:aegis}
+    secret-key: ${MINIO_SECRET_KEY:aegis12345}
+    bucket: aegis-resources
+  embedding:
+    model: doubao-embedding-vision-250615
+    batch-size: 16
+    timeout-seconds: 30
+  milvus:
+    enabled: true
+    host: localhost
+    port: 19530
+  # 沙箱能力动态管理（管理平面）
+  # K8s 集群信息从本地 kubeconfig 读取（Docker Desktop K8s 默认 ~/.kube/config）
+  admin:
+    sandbox:
+      k8s:
+        enabled: true
+        kubeconfig: ""
+      reconcile:
+        interval-ms: 120000
+        pod-wait-timeout-ms: 120000
+        pod-wait-interval-ms: 3000
+        abnormal-repair-retries: 3
+        # 回收模式：true=硬回收（销毁旧Pod+从镜像重建），false=软回收（仅清理工作区目录）
+        hard-recycle: true
+      registry:
+        type: DOCKER_HUB
+        harbor:
+          host: harbor.aegis.internal
+          username: admin
+          password: ${HARBOR_PASSWORD:}
+
