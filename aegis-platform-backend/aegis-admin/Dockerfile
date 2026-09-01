@@ -27,11 +27,11 @@ COPY aegis-admin/ aegis-admin/
 # 构建 admin 及其依赖模块
 RUN mvn clean package -pl aegis-admin -am -DskipTests -q
 
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:21-jre
 WORKDIR /app
 ENV JAVA_OPTS="-Xms256m -Xmx768m -XX:+UseZGC -XX:+ZGenerational -XX:+ExitOnOutOfMemoryError" \
     TZ=Asia/Shanghai
-RUN apk add --no-cache tzdata && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 COPY --from=builder /app/aegis-admin/target/aegis-admin-*.jar app.jar
 EXPOSE 8082
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

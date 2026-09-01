@@ -60,26 +60,28 @@ import com.aegis.runtime.service.policy.AegisSecurityPolicyEngine;
 import com.aegis.runtime.service.agent.ResourceQueryService;
 
 /**
- * AgentScope Agent 实例池管理器。
+ * HarnessAgent 实例池管理器。
  *
- * <p>实例池以 poolKey 为粒度复用 HarnessAgent 实例（Phase 1.1 对齐 IsolationScope）：
- * SYSTEM/APPLICATION→{@code agentId}（同类型智能体多用户共享），UNIVERSAL→{@code userId}
- * （每用户一个独立实例）。共享粒度与 AgentScope IsolationScope（GLOBAL/AGENT/USER）一致。
+ * <p>核心职责：按 poolKey 复用 Agent 实例、LRU+TTL 回收、绑定指纹懒刷新、中间件链注册。
  *
- * <h3>Phase 1.3 懒刷新</h3>
- * <p>池命中时通过 {@code bindingFingerprint} 比对当前请求携带的 agent_binding 版本：
+ * <h3>poolKey 映射规则</h3>
  * <ul>
- *   <li>指纹一致 → 直接复用已有 HarnessAgent，跳过 Toolkit/Workspace 重建（冷启动 500-2000ms → &lt;50ms）</li>
- *   <li>指纹不一致 → 走 {@link #refreshToolkit}（Toolkit.removeTool + re-register）+ 重物化 Workspace</li>
+ *   <li>SYSTEM / APPLICATION → {@code agentId}：同一智能体多用户共享</li>
+ *   <li>UNIVERSAL → {@code userId}：每用户一个独立实例</li>
  * </ul>
  *
- * <h3>其他机制</h3>
+ * <h3>绑定指纹懒刷新</h3>
+ * <p>池命中时通过 bindingFingerprint 比对当前绑定版本：
  * <ul>
- *   <li>LRU 回收：实例池满时驱逐最久未使用的实例</li>
- *   <li>TTL 回收：空闲超过阈值（默认 30 分钟）的实例自动驱逐</li>
- *   <li>优雅关闭：驱逐前调用 {@code agent.close()}，触发 AgentState 落盘</li>
- *   <li>读写锁分离：ConcurrentHashMap + ReentrantReadWriteLock</li>
- *   <li>沙箱追踪：AgentEntry 追踪沙箱上下文，驱逐时自动回收沙箱</li>
+ *   <li>指纹一致 → 直接复用，跳过工具/工作区重建</li>
+ *   <li>指纹不一致 → 懒刷新工具链 + 重物化工作区</li>
+ * </ul>
+ *
+ * <h3>回收机制</h3>
+ * <ul>
+ *   <li>LRU：实例池满时驱逐最久未使用的实例</li>
+ *   <li>TTL：空闲超过阈值（默认 30 分钟）自动驱逐</li>
+ *   <li>驱逐前调用 {@code agent.close()} 落盘状态并释放沙箱</li>
  * </ul>
  *
  * @author wang.zhen
@@ -91,45 +93,29 @@ public class AegisAgentInstanceManager {
     private final DistributedStore distributedStore;
     private final WorkspaceMaterializer workspaceMaterializer;
     private final AegisToolBridge toolBridge;
-    /**
-     * Aegis 中间件链装配器。buildAgent 时通过 {@link AegisMiddlewareChain#build()}
-     * 生成 {@code List<MiddlewareBase>}，统一注入
-     * {@code HarnessAgent.Builder.middlewares()}，由 AgentScope 内核驱动。
-     */
+    /** 中间件链装配器，构建 Agent 时调用 build() 生成中间件列表注入 Builder */
     private final AegisMiddlewareChain middlewareChain;
     private final ISandboxBackend sandboxBackend;
     private final SandboxSnapshotSpec snapshotSpec;
     private final AegisSandboxCoordinator sandboxCoordinator;
-    /** T1：沙箱就绪门控（closeAgent 释放后清理 sessionBindings，避免 stale handle） */
+    /** 沙箱就绪门控，实例关闭时清理会话绑定，避免命中已释放的沙箱句柄 */
     private final SandboxReadinessGate sandboxReadinessGate;
-    /** T1：空闲释放追踪器（cleaner 周期扫描，N 分钟无使用主动回池） */
+    /** 空闲释放追踪器，后台周期扫描，长时间未使用的沙箱主动回池 */
     private final IdleReleaseTracker idleReleaseTracker;
-    /**
-     * Aegis 技能仓库，复用 AgentScope 原生 {@code RuntimeContextSkillRepository} SPI。
-     * 注册到 {@code HarnessAgent.Builder} 后，{@code HarnessSkillMiddleware} 自动将可见技能注入系统提示词。
-     */
+    /** 技能仓库，注册到 Builder 后技能中间件自动将可见技能注入系统提示词 */
     private final AegisSkillRepository skillRepository;
-    /**
-     * MinIO 快照客户端，用于 AegisSandboxClient 在反序列化时重新绑定 RemoteSnapshotClient。
-     */
+    /** MinIO 快照客户端，沙箱反序列化时重新绑定远程快照 */
     private final MinioSnapshotClient minioSnapshotClient;
-    /**
-     * 沙箱资源装载器。configureFilesystem 注入 AegisSandboxFilesystemSpec，
-     * 沙箱分配成功后异步将 KB/SKILL/MCP 清单物化到 Pod 工作区（不阻塞 Agent 构建）。
-     */
+    /** 沙箱资源装载器，沙箱分配成功后异步物化知识库/技能/MCP 清单到工作区（不阻塞构建） */
     private final SandboxResourceLoader sandboxResourceLoader;
-    /**
-     * HITL 规则加载器。buildAgent 阶段调用 {@link AegisHitlRuleLoader#loadHitlRules}
-     * 将 DB HitlNode 配置转化为 AS PermissionRule（ASK 行为），与静态 SSRF 规则合并注入
-     * PermissionContextState。运行时由 AS PermissionEngine 自动发出 RequireUserConfirmEvent。
-     */
+    /** HITL 规则加载器，将数据库审批配置转为权限规则注入权限上下文，运行时由框架权限引擎自动触发审批 */
     private final AegisHitlRuleLoader hitlRuleLoader;
 
-    /** 统一安全策略引擎（动态构建权限上下文） */
+    /** 安全策略引擎，根据资源安全等级生成工具访问决策 */
     @Autowired
     private AegisSecurityPolicyEngine securityPolicyEngine;
 
-    /** 资源查询服务（加载 AgentDef 获取 governanceTier） */
+    /** 资源查询服务，加载智能体定义获取治理档位 */
     @Autowired
     private ResourceQueryService resourceQueryService;
 
@@ -151,14 +137,14 @@ public class AegisAgentInstanceManager {
     @Value("${aegis.runtime.sandbox.enabled:false}")
     private boolean sandboxEnabled;
 
-    /** T1 沙箱惰性分配总开关：true 时 UNIVERSAL/APPLICATION 构建期不分配 Pod，推迟到首次沙箱工具调用 */
+    /** 沙箱惰性分配开关：开启后构建期不分配 Pod，推迟到首次沙箱工具调用时再分配 */
     @Value("${aegis.runtime.sandbox.lazy-allocation.enabled:true}")
     private boolean lazyAllocationEnabled;
 
-    /** 实例池：ConcurrentHashMap 保证读操作无锁，结构变更使用写锁互斥 */
+    /** 实例池，读操作无锁并发，结构变更用写锁互斥 */
     private final ConcurrentHashMap<String, AgentEntry> pool = new ConcurrentHashMap<>();
 
-    /** 读写锁：读锁用于 getStats，写锁用于构建/驱逐/清理 */
+    /** 读写锁：读锁保护查询/复用路径，写锁保护构建/驱逐/清理路径 */
     private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
 
     /** 后台清理线程 */

@@ -28,11 +28,11 @@ COPY aegis-mcp-demo/ aegis-mcp-demo/
 # 构建 mcp-demo 及其依赖模块
 RUN mvn clean package -pl aegis-mcp-demo -am -DskipTests -q
 
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:21-jre
 WORKDIR /app
 ENV JAVA_OPTS="-Xms256m -Xmx512m -XX:+UseZGC -XX:+ZGenerational -XX:+ExitOnOutOfMemoryError" \
     TZ=Asia/Shanghai
-RUN apk add --no-cache tzdata && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 COPY --from=builder /app/aegis-mcp-demo/target/aegis-mcp-demo-*.jar app.jar
 EXPOSE 8084
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

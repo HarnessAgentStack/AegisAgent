@@ -27,11 +27,11 @@ COPY aegis-runtime/ aegis-runtime/
 # 构建 runtime 及其依赖模块
 RUN mvn clean package -pl aegis-runtime -am -DskipTests -q
 
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:21-jre
 WORKDIR /app
 ENV JAVA_OPTS="-Xms512m -Xmx1024m -XX:+UseZGC -XX:+ZGenerational -XX:+ExitOnOutOfMemoryError" \
     TZ=Asia/Shanghai
-RUN apk add --no-cache tzdata && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 COPY --from=builder /app/aegis-runtime/target/aegis-runtime-*.jar app.jar
 EXPOSE 8081
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

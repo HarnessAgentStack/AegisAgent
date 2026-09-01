@@ -225,7 +225,7 @@ public class TaskExecutionService {
         String userMessage = ctx.getUserMessage();
 
         // 1. 优先检查并注入待审批的 HITL ConfirmResult
-        List<Msg> resumeMsgs = hitlFlowService.buildResumeMessages(ctx.getSessionId());
+        List<Msg> resumeMsgs = hitlFlowService.buildResuxmeMessages(ctx.getSessionId());
         if (!resumeMsgs.isEmpty()) {
             msgs.addAll(resumeMsgs);
             // 双审批修复：把已审批工具名标记到新 TaskContext.approvedTools，
@@ -314,7 +314,7 @@ public class TaskExecutionService {
                             // 更新 sink 心跳，防止定时清理器误判为僵尸（使用 registerId）
                             interruptSignalManager.touchHeartbeat(ctx.getSessionId(), registration.registerId());
                         })
-                        // BUG-4 FIX: 过滤掉内部统计事件 task.status（原 token_usage 已改名）
+                        // 过滤掉内部统计事件 task.status
                         .filter(event -> !"task.status".equals(event.getEvent()))
                         .doFinally(signalType -> {
                             try {

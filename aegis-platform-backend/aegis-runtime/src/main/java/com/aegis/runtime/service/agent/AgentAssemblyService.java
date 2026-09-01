@@ -47,14 +47,21 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 智能体统一装配服务。
+ * 智能体统一装配服务 —— 整个任务执行链路的装配入口。
  *
- * <p>一次性完成：模板加载 -> HarnessAgent 构建 -> 会话创建 -> 版本快照 -> 用户消息持久化。
- * 输出完整的 {@link AegisTaskContext}（含 agent 和 runtimeContext），供 {@link TaskExecutionService} 直接使用。
+ * <p>一次性完成以下流程，输出完整的 {@link AegisTaskContext}，供
+ * {@link TaskExecutionService} 直接使用，无需额外准备：
+ * <ol>
+ *   <li>从实例池加载智能体模板（含定义、配置、绑定）</li>
+ *   <li>创建或复用会话</li>
+ *   <li>从版本快照恢复运行配置（首轮锁定后全程不变）</li>
+ *   <li>持久化用户消息并更新会话状态</li>
+ *   <li>获取或构建 HarnessAgent（触发中间件注册）</li>
+ *   <li>构建 RuntimeContext（注入会话级资源、技能、绑定额）</li>
+ * </ol>
  *
- * <h3>P0 改造：附件解析能力协商</h3>
- * <p>原 {@code buildMessageWithAttachments} 使用硬编码 4000 字符截断，
- * 现改为通过 {@link ModelCapabilityResolver} 协商模型能力 + {@link ContentAdapter} 智能裁剪。
+ * <p>附件处理通过 {@link ModelCapabilityResolver} 协商模型能力，
+ * 使用 {@link ContentAdapter} 智能裁剪，替代原来对所有文件一刀切的硬截断。
  *
  * @author wang.zhen
  */
@@ -74,11 +81,15 @@ public class AgentAssemblyService {
     private final UserBaseMapper userMapper;
 
     /**
-     * 装配执行上下文（同步，在 boundedElastic 线程执行）。
+     * 装配执行上下文 —— 整个装配流程的核心入口。
+     *
+     * <p>在整体链路中的角色：位于"请求校验"之后、"任务执行"之前，
+     * 负责把一次对话请求所需的所有运行要素组装到位，使 TaskExecutionService
+     * 拿到结果即可直接调度执行，无需再做任何准备工作。
      *
      * @param request 对话请求（已通过 ChatRequestValidator 校验）
      * @param taskId  任务ID
-     * @return 完整的执行上下文（含 HarnessAgent）；装配失败时 ctx.blocked=true
+     * @return 完整的执行上下文（含 HarnessAgent 和 RuntimeContext）；装配失败时 ctx.blocked=true
      */
     public AegisTaskContext assemble(ChatRequest request, String taskId) {
         Long tenantId = request.getTenantId();

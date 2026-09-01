@@ -27,11 +27,11 @@ COPY aegis-gateway/ aegis-gateway/
 # 构建 gateway 及其依赖模块
 RUN mvn clean package -pl aegis-gateway -am -DskipTests -q
 
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:21-jre
 WORKDIR /app
 ENV JAVA_OPTS="-Xms256m -Xmx512m -XX:+UseZGC -XX:+ZGenerational -XX:+ExitOnOutOfMemoryError" \
     TZ=Asia/Shanghai
-RUN apk add --no-cache tzdata && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 COPY --from=builder /app/aegis-gateway/target/aegis-gateway-*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
