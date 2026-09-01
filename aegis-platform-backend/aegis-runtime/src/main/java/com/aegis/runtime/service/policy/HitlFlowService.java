@@ -19,19 +19,13 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * HITL 流程服务：管理 HITL 审批的全链路状态。
+ * HITL（Human-in-the-Loop）审批流程的 Redis 状态管理服务。
  *
- * <p>使用 Redis 存储 HITL 请求与审批结果，实现跨请求的状态传递：
+ * <p>在工具调用被挂起等待人工审批、以及审批通过后恢复执行的过程中，
+ * 通过 Redis 保存中间状态，实现跨请求的状态传递。使用两个 Key：
  * <ul>
- *   <li>{@link #saveHitlRequest} - 保存 HITL 请求（含 pending toolCalls 和 replyId）</li>
- *   <li>{@link #getPendingConfirmResults} - 获取审批通过后的 ConfirmResult 列表</li>
- *   <li>{@link #clearHitlState} - 清理 HITL 状态</li>
- * </ul>
- *
- * <p>Key 结构：
- * <ul>
- *   <li>{@code aegis:hitl:req:{sessionId}} - HITL 请求数据（JSON）</li>
- *   <li>{@code aegis:hitl:approved:{sessionId}} - 审批结果标记</li>
+ *   <li>{@code aegis:hitl:req:{sessionId}} — 待审批请求数据（replyId + 工具调用列表，JSON）</li>
+ *   <li>{@code aegis:hitl:approved:{sessionId}} — 审批通过标记，恢复执行时据此读取结果</li>
  * </ul>
  */
 @Slf4j
@@ -47,7 +41,7 @@ public class HitlFlowService {
     private final StringRedisTemplate redisTemplate;
 
     /**
-     * 保存 HITL 请求数据（在收到 hitl.request 事件时调用）。
+     * 收到 hitl.request 事件时，保存待审批数据（replyId + 工具调用列表）到 Redis。
      */
     public void saveHitlRequest(String sessionId, String replyId, List<Map<String, Object>> toolCalls) {
         JSONObject req = new JSONObject();
@@ -62,7 +56,8 @@ public class HitlFlowService {
     }
 
     /**
-     * 标记 HITL 为已审批通过，并构造 ConfirmResult 列表。
+     * 用户审批通过后，读取待审批请求并构造 ConfirmResult 列表，
+     * 同时在 Redis 写入审批通过标记。
      */
     public List<ConfirmResult> markApproved(String sessionId) {
         String reqKey = REQUEST_KEY_PREFIX + sessionId;
@@ -107,7 +102,7 @@ public class HitlFlowService {
     }
 
     /**
-     * 构造包含 ConfirmResult 元数据的 Msg 列表（用于 HITL 恢复场景）。
+     * 构造包含 ConfirmResult 的恢复消息，供 AgentScope 恢复被中断的工具调用。
      */
     public List<Msg> buildResumeMessages(String sessionId) {
         List<ConfirmResult> confirmResults = loadConfirmResults(sessionId);
@@ -178,10 +173,8 @@ public class HitlFlowService {
     /**
      * 获取已审批通过的工具名列表。
      *
-     * <p>供 {@code TaskExecutionService} 在 HITL 恢复(resume)路径标记
-     * {@code AegisTaskContext.approvedTools}，使第二轮 {@code onActing} 中间件
-     * 通过 {@code isToolApproved} 直接放行，避免对通配符 HITL 规则重复触发 ASK
-     * （AS ConfirmResult 规则学习只覆盖明确 toolName 的 ASK 规则，不覆盖通配符规则）。
+     * <p>HITL 恢复时标记已审批工具，使第二轮执行中遇到相同工具直接放行，
+     * 避免对通配符审批规则重复触发人工确认。
      *
      * @param sessionId 会话ID
      * @return 已审批工具名列表（无则返回空列表）
@@ -212,7 +205,8 @@ public class HitlFlowService {
     }
 
     /**
-     * 清理 HITL 相关状态。
+     * 清理已消费的审批状态（请求 + 审批标记）。
+     * 在 HITL 恢复流程正常完成后调用。
      */
     public void clearHitlState(String sessionId) {
         redisTemplate.delete(REQUEST_KEY_PREFIX + sessionId);
@@ -221,17 +215,16 @@ public class HitlFlowService {
     }
 
     /**
-     * 检查是否已审批通过。
+     * 是否已审批通过（Redis 中存在审批标记）。
      */
     public boolean isApproved(String sessionId) {
         return Boolean.TRUE.equals(redisTemplate.hasKey(APPROVED_KEY_PREFIX + sessionId));
     }
 
     /**
-     * 检查是否存在未审批的 HITL 请求（请求已保存但尚未审批）。
-     *
-     * <p>用于审批接口的容错场景：当会话状态因竞态变为 ENDED 时，
-     * 只要 Redis 中仍存在待审批请求，允许用户恢复审批。
+     * 是否存在待审批请求（已保存但尚未审批）。
+     * 用于审批接口容错：会话状态因竞态变为 ENDED 时，
+     * 只要 Redis 中仍有待审批请求，允许用户继续审批。
      */
     public boolean hasPendingRequest(String sessionId) {
         String reqKey = REQUEST_KEY_PREFIX + sessionId;

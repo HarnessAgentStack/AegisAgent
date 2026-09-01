@@ -190,7 +190,7 @@ public class AegisAgentInstanceManager {
         });
         cleaner.scheduleAtFixedRate(this::cleanExpired,
                 cleanIntervalMinutes, cleanIntervalMinutes, TimeUnit.MINUTES);
-        // T1：复用 cleaner 周期，扫描空闲超阈值沙箱主动回池（§4.5.3）
+        // 复用清理线程周期，扫描空闲超阈值沙箱主动回池
         cleaner.scheduleAtFixedRate(() -> {
             try {
                 if (idleReleaseTracker != null) {
@@ -210,9 +210,16 @@ public class AegisAgentInstanceManager {
     }
 
     /**
-     * 获取或构建 Agent 实例。
+     * 获取或构建 Agent 实例（核心入口）。
      *
-     * <p>读路径(复用)无锁并发，写路径(构建)加写锁。
+     * <p>设计要点：读路径（复用已有实例）无锁并发，写路径（新建实例）加写锁。
+     *
+     * <p>指纹比对 3 种结果：
+     * <ul>
+     *   <li>指纹一致 → 直接复用已有实例</li>
+     *   <li>指纹不一致 → 懒刷新工具链后复用</li>
+     *   <li>池中不存在 → 新建实例</li>
+     * </ul>
      *
      * @param sessionId 会话ID
      * @param tenantId  租户ID
@@ -234,25 +241,25 @@ public class AegisAgentInstanceManager {
                                        IsolationStrategy isolationStrategy,
                                        List<Long> sessionMcpServiceIds,
                                        com.aegis.runtime.service.agent.AssemblyResourceContext resources) {
-        // ★ Phase 1.1: pool key 对齐 IsolationScope（SYSTEM/APPLICATION→agentId, UNIVERSAL→userId）
+        // 1. 计算 poolKey（SYSTEM/APPLICATION→agentId 共享，UNIVERSAL→userId 独立）
         String poolKey = computePoolKey(agentType, agentId, userId, tenantId);
 
-        // ★ Phase 1.2: 计算当前绑定指纹，用于池命中后的懒刷新判定
+        // 2. 计算当前绑定指纹，用于池命中后判定是否需要懒刷新
         String currentBindingFp = BindingFingerprinter.fingerprint(bindings);
 
-        // 读路径持有读锁，防止 evict/cleanExpired 在 get 与 return 之间关闭 Agent
+        // 读路径持有读锁，防止驱逐/清理在 get 与 return 之间关闭 Agent
         rwLock.readLock().lock();
         try {
             AgentEntry entry = pool.get(poolKey);
             if (entry != null) {
                 entry.lastUsedAt = System.currentTimeMillis();
-                // ★ Phase 1.3: fingerprint 比对 — 一致则直接复用，跳过 Toolkit/Workspace 重建
+                // 指纹一致 → 直接复用，跳过工具/工作区重建
                 if (currentBindingFp.equals(entry.bindingFingerprint)) {
                     log.debug("复用 Agent 实例(读锁): poolKey={}, agentType={}, agentId={}, fp一致, poolSize={}",
                             poolKey, agentType, agentId, pool.size());
                     return entry.agent;
                 }
-                // ★ Phase 1.4: 指纹不一致 → 懒刷新 Toolkit（remove + register）+ 重物化 Workspace
+                // 指纹不一致 → 懒刷新工具链（移除旧工具 + 重新加载）+ 重物化工作区
                 log.info("fingerprint mismatch, refresh toolkit: poolKey={}, agentId={}, oldFp={}, newFp={}",
                         poolKey, agentId, entry.bindingFingerprint, currentBindingFp);
                 refreshToolkit(entry, agentId, preloadedTools, tenantId, userId, sessionMcpServiceIds, agentType, resources);
@@ -264,26 +271,26 @@ public class AegisAgentInstanceManager {
             rwLock.readLock().unlock();
         }
 
-        // 写路径加写锁 —— 构建/驱逐
-        // 写锁内仅收集待关闭 entry，写锁释放后再执行 closeAgent（I/O 移出锁）
+        // 写路径加写锁 —— 新建/驱逐
+        // 写锁内仅收集待关闭实例，锁释放后再执行 closeAgent（I/O 移出锁外不阻塞）
         List<AgentEntry> toCloseAfterLock = new ArrayList<>();
         rwLock.writeLock().lock();
         try {
-            // Double-check after acquiring write lock
+            // 双检：获取写锁后可能其他线程已构建完成
             AgentEntry entry = pool.get(poolKey);
             if (entry != null) {
                 entry.lastUsedAt = System.currentTimeMillis();
                 if (currentBindingFp.equals(entry.bindingFingerprint)) {
                     return entry.agent;
                 }
-                // 指纹不一致（双检窗口期 admin 修改了 binding）
+                // 指纹不一致（双检窗口期管理员修改了绑定）
                 refreshToolkit(entry, agentId, preloadedTools, tenantId, userId, sessionMcpServiceIds, agentType, resources);
                 materializeWorkspace(agentType, agentId, userId, bindings);
                 entry.bindingFingerprint = currentBindingFp;
                 return entry.agent;
             }
 
-            // 实例池满时驱逐最旧实例（仅从池中移除，关闭延后到锁外）
+            // 池满时驱逐最旧实例（仅从池中移除，关闭延后到锁外）
             while (pool.size() >= maxSize) {
                 AgentEntry evicted = evictOldest();
                 if (evicted != null) {
@@ -300,7 +307,7 @@ public class AegisAgentInstanceManager {
             return newEntry.agent;
         } finally {
             rwLock.writeLock().unlock();
-            // 写锁释放后同步关闭被驱逐的 Agent 实例（避免 I/O 阻塞写锁）
+            // 写锁释放后关闭被驱逐的实例（I/O 移出锁外避免阻塞）
             for (AgentEntry e : toCloseAfterLock) {
                 closeAgent(e);
             }
@@ -308,19 +315,18 @@ public class AegisAgentInstanceManager {
     }
 
     /**
-     * 计算实例池 key（对齐 IsolationScope，决定共享粒度）。
+     * 计算实例池 key（决定共享粒度）。
      *
      * <ul>
-     *   <li>SYSTEM → agentId（全局唯一，所有用户共享同一 HarnessAgent）</li>
+     *   <li>SYSTEM → agentId（全局唯一，所有用户共享同一实例）</li>
      *   <li>APPLICATION → agentId（智能体唯一，所有用户共享）</li>
-     *   <li>UNIVERSAL → userId（每用户一个，通用智能体平台单例）</li>
+     *   <li>UNIVERSAL → userId（每用户一个独立实例）</li>
      * </ul>
      *
-     * <p>与 AgentScope IsolationScope 一致：SYSTEM→GLOBAL, APPLICATION→AGENT, UNIVERSAL→USER。
+     * <p>key 前缀带 tenantId，保证不同租户不会撞 key 共享实例（含权限上下文/工具链）。
      */
     private String computePoolKey(String agentType, long agentId, long userId, long tenantId) {
-        // P2-10：poolKey 加 tenantId 前缀，把"同池实例必同租户"从隐式不变量变为结构保证（防御纵深）。
-        // 原仅 agentType+(agentId|userId)，跨租户同 agentId 会撞 poolKey 共享 AgentEntry（含 permissionContext/toolkit）。
+        // 加租户前缀，从结构上保证同池实例必同租户，防止跨租户撞 key
         String tenantPart = "T" + tenantId + ":";
         return switch (agentType) {
             case "SYSTEM" -> tenantPart + "SYS:" + agentId;
@@ -330,19 +336,13 @@ public class AegisAgentInstanceManager {
         };
     }
 
-    // 绑定指纹计算已抽至 BindingFingerprinter.fingerprint，与 WorkspaceMaterializer 共享同一实现
+    // 绑定指纹计算已抽至 BindingFingerprinter，与工作区物化器共享同一实现
 
     /**
-     * ★ Phase 1.4: 懒刷新 Toolkit。
+     * 懒刷新工具链。
      *
-     * <p>当 pool 命中但 bindingFingerprint 不一致（admin 侧修改了 agent_binding）时，
-     * 通过 {@link HarnessAgent#getToolkit()} 拿到已装配的 Toolkit，
-     * 先 {@link Toolkit#removeTool} 逐个移除旧工具，再通过 toolBridge 重新 resolveTools + resolveMcpTools*，
-     * 避免 {@code new HarnessAgent.Builder()} 重建整个 Agent 带来的 500-2000ms 冷启动开销。
-     *
-     * <p>前提：AgentScope 2.0.2 {@link Toolkit} 默认 {@code allowToolDeletion=true}，
-     * {@code removeTool} 不抛异常；且单池入口（同一 IsolationScope 内同一 poolKey 只有一个 entry），
-     * 多线程并发修改 Toolkit 的概率可以忽略。
+     * <p>当池命中但绑定指纹不一致（管理员修改了绑定配置）时，不走重建整个 Agent 的开销，
+     * 而是直接操作已有 Toolkit：先逐个移除旧工具，再重新加载。
      */
     private void refreshToolkit(AgentEntry entry, long agentId, List<Tool> preloadedTools,
                                  long tenantId, long userId, List<Long> sessionMcpServiceIds,

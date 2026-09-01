@@ -96,7 +96,7 @@ public class AgentAssemblyService {
         Long userId = request.getUserId();
         Long agentId = request.getAgentId();
 
-        // 在 boundedElastic 线程上显式设置租户上下文（供 MyBatis-Plus 多租户插件读取）
+        // 在工作线程上显式设置租户上下文（供 MyBatis-Plus 多租户插件读取）
         if (tenantId != null) {
             TenantContextHolder.set(TenantContext.builder().tenantId(tenantId).build());
         }
@@ -114,35 +114,42 @@ public class AgentAssemblyService {
                 .sessionResources(request.getResources());
 
         try {
-            // Step 1: 加载模板 (Layer 1) + 生命周期校验
+            // Step 1: 从实例池加载智能体模板并校验生命周期状态
+            //   调用 agentPoolManager.getTemplate → 校验发布状态/草稿自用权限
+            //   产出：AgentRuntimeTemplate（含定义、配置、绑定）
             AgentRuntimeTemplate template = resolveAgentTemplate(agentId, tenantId, userId, builder);
             if (template == null) {
                 return builder.build();
             }
 
-            // Step 2: 创建/获取会话
+            // Step 2: 创建或复用会话
+            //   无 sessionId 时先冻结同智能体的旧活动会话，再调用 sessionManageService.getOrCreateSession
+            //   产出：Session（含 sessionId，后续步骤复用）
             if (request.getSessionId() == null || request.getSessionId().isEmpty()) {
                 sessionManageService.freezeActiveSession(userId, agentId);
             }
             Session session = sessionManageService.getOrCreateSession(agentId, request.getSessionId(), tenantId, userId);
             builder.sessionId(session.getSessionId());
 
-            // Step 3: 恢复配置（快照优先）
+            // Step 3: 从版本快照恢复运行配置（快照优先于模板当前配置）
+            //   调用 restoreConfigFromSnapshot → 保证进行中会话配置不随后续编辑漂移
+            //   产出：AgentConfig（system prompt、模型档位、温度等）
             AgentConfig cfg = restoreConfigFromSnapshot(session, template.getAgentConfig(),
                     agentId, tenantId, builder);
 
-            // Step 4: 锁定版本快照（P2-7 修复：仅首轮锁定，已有快照则跳过）
-            // 原实现每轮重锁 → 用当前 template 版本覆盖快照，但运行配置取旧快照 →
-            // agentVersion 标签与实际运行配置漂移；bindings 始终取当前 template（快照中的 bindings 是死数据）。
-            // 改为首轮锁定：新会话固化配置全程不变，智能体编辑后进行中会话沿用旧配置至会话结束。
+            // Step 4: 首轮锁定版本快照（已有快照则跳过）
+            //   仅新会话首次调用时执行 lockVersionSnapshot，固化配置+绑定+版本号
+            //   产出：会话绑定版本快照，使后续轮次配置全程不变
             if (session.getVersionSnapshot() == null) {
                 sessionManageService.lockVersionSnapshot(session.getSessionId(), agentId,
                         template.getVersion(), cfg, template.getBindings(),
                         template.getAgentDef() != null ? template.getAgentDef().getGovernanceTier() : null);
             }
 
-            // Step 5: 持久化用户消息（含附件） + 更新状态 -> THINKING
-            // HITL 恢复场景：无新用户消息时跳过持久化，直接将状态设为 STARTED（已由审批接口设置）
+            // Step 5: 处理附件并持久化用户消息，更新会话状态为 THINKING
+            //   先调用 buildMessageWithAttachments 处理附件（裁剪/多模态），再持久化消息
+            //   人机协同恢复场景：无新用户消息时跳过持久化，保持 STARTED 状态
+            //   产出：effectiveMessage + 图片多模态内容块
             AdaptedContent adapted = buildMessageWithAttachments(
                     request.getMessage(), request.getAttachments(), tenantId, userId, cfg);
             String effectiveMessage = adapted.text();
@@ -150,7 +157,7 @@ public class AgentAssemblyService {
                 sessionManageService.persistUserMessage(session.getSessionId(), tenantId, userId, effectiveMessage);
                 sessionManageService.updateStatus(session.getSessionId(), SessionStatus.THINKING);
             } else {
-                // HITL 恢复：保持 STARTED 状态（由 hitl/approve 接口设置）
+                // 人机协同恢复：无新用户消息，保持审批接口设置的 STARTED 状态
                 log.info("HITL 恢复：跳过用户消息持久化，保持 STARTED 状态: sessionId={}", session.getSessionId());
             }
             builder.userMessage(effectiveMessage);
@@ -158,26 +165,28 @@ public class AgentAssemblyService {
                 builder.multimodalBlocks(adapted.imageBlocks());
             }
 
-            // Step 6: 构建/复用 HarnessAgent (Layer 2)
+            // Step 6: 一次性查询绑定资源，获取或构建 HarnessAgent
+            //   先调用 buildResourceContext 查询 enabled 绑定 + 批量加载 Skill 实体（供整条链路共享，避免重复查库）
+            //   再调用 acquireHarnessAgent 获取/构建 Agent → 触发中间件注册
+            //   产出：HarnessAgent + AssemblyResourceContext
             AgentDef def = template.getAgentDef();
             String agentType = def != null && def.getAgentType() != null
                     ? def.getAgentType().name() : "UNIVERSAL";
-            // T3/T4：装配期一次查询 enabled 绑定 + 批量加载绑定 Skill 实体，
-            // 供装配链（ToolBridge）与运行时中间件（RAG/SkillRepository/BindingSync）共享，
-            // 消除同次会话内 5+ 次 listEnabledBindings 重复 SELECT 与绑定 Skill 双重加载
             AssemblyResourceContext resources = buildResourceContext(agentId);
             HarnessAgent agent = acquireHarnessAgent(builder, session.getSessionId(), cfg, def,
                     builder.build().getIsolationStrategy(), agentType, resources);
             builder.agent(agent);
 
-            // Step 7: 构造 RuntimeContext（含会话级资源引用）
-            // A4：注入 agentType/agentId，供 AegisSkillRepository 按智能体类型分轨装载技能
-            // T3/T4：注入装配期资源上下文（enabled 绑定 + 绑定 Skill 实体），供运行时中间件读取
+            // Step 7: 构造 RuntimeContext（注入会话级资源、技能、绑定、智能体类型/ID）
+            //   调用 buildRuntimeContext → 装配期资源上下文与运行时中间件共享同一份数据
+            //   产出：RuntimeContext（含技能分轨、资源注入、装配上下文）
             RuntimeContext rc = buildRuntimeContext(session.getSessionId(), tenantId, userId,
                     request.getDeptId(), request.getSkills(), request.getResources(),
                     agentType, agentId, resources);
 
-            // Step 8: 构建 AegisTaskContext 并注入 RuntimeContext（供中间件链使用）
+            // Step 8: 组装最终 AegisTaskContext 并双向绑定 RuntimeContext
+            //   将 taskCtx 放入 RuntimeContext 供中间件链读取；同时回填 RuntimeContext 到 taskCtx
+            //   产出：AegisTaskContext（可直接交付 TaskExecutionService 执行）
             AegisTaskContext taskCtx = builder.build();
             rc.put(AegisTaskContext.class, taskCtx);
             taskCtx.setRuntimeContext(rc);
@@ -192,7 +201,10 @@ public class AgentAssemblyService {
     }
 
     /**
-     * 装配智能体模板并校验生命周期。
+     * 从实例池加载智能体模板并校验生命周期状态。
+     *
+     * <p>在整体链路中的角色：assemble 第 1 步，确保智能体存在且当前可被使用，
+     * 同时将模板信息填入 AegisTaskContext builder。
      */
     private AgentRuntimeTemplate resolveAgentTemplate(Long agentId, Long tenantId, Long userId,
                                                        AegisTaskContext.AegisTaskContextBuilder builder) {
@@ -218,12 +230,12 @@ public class AgentAssemblyService {
     }
 
     /**
-     * 校验智能体生命周期状态。
+     * 校验智能体生命周期状态，判断当前用户是否能使用该智能体。
      *
      * <p>规则：
      * <ul>
-     *   <li>PUBLISHED：所有人可用<restoreConfigFromSnapshot/li>
-     *   <li>DRAFT / REJECTED：仅作者本人可自用调试（旁路发布闭环），便于开发预览</li>
+     *   <li>PUBLISHED：所有人可用</li>
+     *   <li>DRAFT / REJECTED：仅作者本人可自用调试，便于开发预览</li>
      *   <li>其他状态（REVIEWING / ARCHIVED / null）：一律拒绝</li>
      * </ul>
      */
@@ -235,7 +247,7 @@ public class AgentAssemblyService {
         if (def.getLifeStatus() == AgentLifeStatus.PUBLISHED) {
             return null;
         }
-        // 草稿/驳回态：作者本人可自用调试（旁路发布闭环）
+        // 草稿/驳回态：仅作者本人可自用调试
         if ((def.getLifeStatus() == AgentLifeStatus.DRAFT
                 || def.getLifeStatus() == AgentLifeStatus.REJECTED)
                 && userId != null

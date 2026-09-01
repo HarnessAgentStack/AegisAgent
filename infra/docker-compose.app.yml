@@ -79,6 +79,9 @@ services:
       # Nacos 注册中心地址
       - SPRING_CLOUD_NACOS_DISCOVERY_SERVERADDR=nacos:8848
       - SPRING_CLOUD_NACOS_DISCOVERY_SERVER_ADDR=nacos:8848
+      # Milvus 向量库（application.yml 默认 localhost，容器内须指向 milvus）
+      - AEGIS_MILVUS_HOST=milvus
+      - AEGIS_MILVUS_PORT=19530
       # admin -> runtime 内部调用（模板缓存失效通知，默认 localhost 须覆盖）
       - AEGIS_RUNTIME_BASE_URL=http://aegis-runtime:8081
       - AEGIS_RUNTIME_BASEURL=http://aegis-runtime:8081
