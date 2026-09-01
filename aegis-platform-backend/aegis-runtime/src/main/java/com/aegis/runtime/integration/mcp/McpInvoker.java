@@ -17,9 +17,9 @@ import com.github.benmanes.caffeine.cache.RemovalCause;
 import io.agentscope.core.tool.mcp.McpClientBuilder;
 import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.modelcontextprotocol.spec.McpSchema;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
@@ -55,11 +55,27 @@ import java.util.*;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class McpInvoker {
 
     private final ResourceQueryService resourceQueryService;
-    private final RestTemplate restTemplate = new RestTemplate();
+
+    /**
+     * P1-6：带超时配置的 RestTemplate（connect 3s / read 10s），
+     * 替代裸 {@code new RestTemplate()}（默认无限等待）。
+     * 超时值可通过配置项 {@code aegis.runtime.mcp.http-connect-timeout-ms} /
+     * {@code aegis.runtime.mcp.http-read-timeout-ms} 覆盖。
+     */
+    private final RestTemplate restTemplate;
+
+    public McpInvoker(ResourceQueryService resourceQueryService,
+                      @org.springframework.beans.factory.annotation.Value("${aegis.runtime.mcp.http-connect-timeout-ms:3000}") int connectTimeoutMs,
+                      @org.springframework.beans.factory.annotation.Value("${aegis.runtime.mcp.http-read-timeout-ms:10000}") int readTimeoutMs) {
+        this.resourceQueryService = resourceQueryService;
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeoutMs);
+        factory.setReadTimeout(readTimeoutMs);
+        this.restTemplate = new RestTemplate(factory);
+    }
 
     /** MCP 客户端连接缓存：mcpServiceId → McpClientWrapper，驱逐时自动 close() */
     private final Cache<Long, McpClientWrapper> clientCache = Caffeine.newBuilder()
@@ -195,10 +211,24 @@ public class McpInvoker {
         }
 
         McpService service = resourceQueryService.findMcpServiceById(serviceId);
-        if (service == null) {
-            log.warn("listTools: MCP 服务不存在: serviceId={}", serviceId);
+        return listTools(service);
+    }
+
+    /**
+     * 列出 MCP Server 暴露的全部工具 schema（P2-2①：接受预加载 McpService，消除同行 3 读）。
+     *
+     * <p>与 {@link #listTools(String)} 功能等价，但跳过内部 findMcpServiceById 查询，
+     * 由调用方传入已加载的 McpService 实体。同时 cache miss 时传入预加载实体给
+     * {@link #createClient(Long, McpService)}，彻底消除同一 res_mcp_service 行的 3 次查询。
+     *
+     * @param service 预加载的 MCP 服务实体（null 时返回空列表）
+     * @return MCP 服务暴露的工具列表
+     */
+    public List<McpSchema.Tool> listTools(McpService service) {
+        if (service == null || service.getId() == null) {
             return Collections.emptyList();
         }
+        Long serviceId = service.getId();
         if (service.getStatus() != ProviderStatus.ACTIVE) {
             log.warn("listTools: MCP 服务未激活: serviceId={}, status={}", serviceId, service.getStatus());
             return Collections.emptyList();
@@ -215,9 +245,9 @@ public class McpInvoker {
         }
         log.warn("listTools: REST返回空列表, serviceId={}, 尝试 AgentScope", serviceId);
 
-        // 回退到 AgentScope MCP 客户端
+        // 回退到 AgentScope MCP 客户端（传入预加载 service 消除 createClient 重查）
         try {
-            McpClientWrapper client = getOrCreateClient(serviceId);
+            McpClientWrapper client = getOrCreateClient(serviceId, service);
             if (client != null) {
                 log.info("listTools: AgentScope客户端创建成功, serviceId={}", serviceId);
                 List<McpSchema.Tool> tools = client.listTools().block(CALL_TIMEOUT);
@@ -271,6 +301,16 @@ public class McpInvoker {
     }
 
     /**
+     * 从缓存获取或创建 MCP 客户端（P2-2①：接受预加载的 McpService，消除 cache miss 时的同行重查）。
+     */
+    private McpClientWrapper getOrCreateClient(Long serviceId, McpService preloadedService) {
+        if (preloadedService == null) {
+            return getOrCreateClient(serviceId);
+        }
+        return clientCache.get(serviceId, id -> createClient(id, preloadedService));
+    }
+
+    /**
      * 根据 McpService 配置创建 MCP 客户端。
      *
      * @param serviceId MCP 服务ID
@@ -278,6 +318,13 @@ public class McpInvoker {
      */
     private McpClientWrapper createClient(Long serviceId) {
         McpService service = resourceQueryService.findMcpServiceById(serviceId);
+        return createClient(serviceId, service);
+    }
+
+    /**
+     * 根据 McpService 配置创建 MCP 客户端（P2-2①：接受预加载实体，消除同行重查）。
+     */
+    private McpClientWrapper createClient(Long serviceId, McpService service) {
         if (service == null) {
             log.warn("MCP 服务不存在: serviceId={}", serviceId);
             return null;

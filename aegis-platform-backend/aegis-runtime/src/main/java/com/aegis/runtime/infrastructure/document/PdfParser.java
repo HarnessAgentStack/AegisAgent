@@ -1,5 +1,6 @@
 package com.aegis.runtime.infrastructure.document;
 
+import com.aegis.core.common.text.TokenEstimator;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -92,7 +93,7 @@ public class PdfParser implements FileParser {
                             .pageCount(pagesToProcess)
                             .tableCount(tableCount)
                             .charCount(text.length())
-                            .estimatedTokens(text.length() / 4)
+                            .estimatedTokens(TokenEstimator.estimateTokens(text))
                             .build())
                     .build();
         }

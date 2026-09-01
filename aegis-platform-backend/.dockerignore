@@ -1,5 +1,5 @@
-# target 目录需要包含（Dockerfile 直接 COPY 宿主机构建好的 JAR）
-# **/target
+# target 目录由容器内 Maven 构建产出，无需进入 build context
+**/target
 **/.git
 **/*.log
 .idea

@@ -33,6 +33,8 @@ docker compose -f docker-compose.yml -f docker-compose.app.yml ps
 
 或使用一键脚本：`./quickstart.sh`（Linux/Mac）、`.\quickstart.ps1`（Windows）。
 
+> 社区用户拉取最新代码后，直接 `.\quickstart.ps1 all` 即可：`--build` 在容器内自动用阿里云 Maven 镜像编译，无需本地装 JDK/Maven/Node。
+
 **访问验证**
 
 | 入口 | 地址 |
@@ -42,6 +44,38 @@ docker compose -f docker-compose.yml -f docker-compose.app.yml ps
 | Nacos 控制台 | http://localhost:8083 |
 
 **初始登录**：租户 `DEFAULT` ｜ 用户名 `admin` ｜ 密码 `aegis@123`
+
+---
+
+## 2.1 两种运行模式与无缝切换
+
+| 模式 | 脚本 | 定位 | 适用 |
+|------|------|------|------|
+| 全 Docker | `quickstart.ps1` | 容器内 Maven 构建 + 容器化运行 | 社区分发、演示、验收测试 |
+| 本机开发 | `aegis-service.ps1` | 基础设施 Docker + 应用本机进程 | 日常开发、IDE 断点、热重载 |
+
+两脚本共用同一套基础设施（`infra/docker-compose.yml`，容器名 `aegis-mysql` 等），`docker compose up` 对已存在容器幂等复用——**切换时基础设施不重建、不丢数据**，仅应用层切换。
+
+```powershell
+# 全 Docker → 本机开发（停应用容器，保留基础设施）
+.\quickstart.ps1 appdown
+.\aegis-service.ps1 start       # 复用基础设施，本机起 gateway/admin/runtime + vite
+
+# 本机开发 → 全 Docker（停本机进程，保留基础设施）
+.\aegis-service.ps1 appstop
+.\quickstart.ps1 app            # 复用基础设施，起应用容器
+```
+
+**命令速查**
+
+| 意图 | 命令 |
+|------|------|
+| 全 Docker 起全栈 | `.\quickstart.ps1 all` |
+| 全 Docker 停应用留 infra | `.\quickstart.ps1 appdown` |
+| 全 Docker 全停 | `.\quickstart.ps1 down` |
+| 本机起全栈 | `.\aegis-service.ps1 start` |
+| 本机停应用留 infra | `.\aegis-service.ps1 appstop` |
+| 本机全停 | `.\aegis-service.ps1 stop` |
 
 ---
 
@@ -141,6 +175,17 @@ docker compose up -d                          # 首启重新执行 DDL/DML
 
 ## 7. 源码本地开发
 
+推荐用 `aegis-service.ps1`（自动探测 JAVA_HOME/MVN，起基础设施 + 本机应用）：
+
+```powershell
+.\aegis-service.ps1 start     # 起 Docker 基础设施 + 本机 Java 进程 + vite
+.\aegis-service.ps1 status    # 查看全部状态
+.\aegis-service.ps1 restart   # 重新构建并重启（代码变更后）
+.\aegis-service.ps1 appstop   # 仅停应用，保留基础设施（切到全 Docker 用）
+```
+
+或手动分步：
+
 ```bash
 # 后端（顺序：gateway → admin → runtime）
 cd aegis-platform-backend
@@ -203,10 +248,18 @@ MINIO_SECRET_KEY=<强随机 ≥8 位>
 
 ```bash
 cd infra
-docker compose -f docker-compose.app.yml down       # 停应用
+docker compose -f docker-compose.app.yml down       # 停应用（保留基础设施）
 docker compose down                                  # 停基础设施（数据卷保留）
 
 docker compose down -v                               # ⚠️ 彻底清除（含全部数据）
+```
+
+或用脚本快捷命令（见 §2.1）：
+
+```powershell
+.\quickstart.ps1 appdown     # 仅停应用容器，保留基础设施（切到本机开发用）
+.\aegis-service.ps1 appstop  # 仅停本机进程，保留基础设施（切到全 Docker 用）
+.\quickstart.ps1 down        # 停全部（应用 + 基础设施）
 ```
 
 ---

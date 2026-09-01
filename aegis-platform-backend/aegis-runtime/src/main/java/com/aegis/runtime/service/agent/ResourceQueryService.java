@@ -69,6 +69,23 @@ public class ResourceQueryService {
     private final RuntimeKbDocumentMapper kbDocumentMapper;
 
     /**
+     * P2-4：GLOBAL 系统技能缓存（对标 HitlRuleLoader 模式）。
+     * <p>GLOBAL 技能（tenant_id=0，近乎静态）每轮全量重查浪费 DB 资源；
+     * 60s TTL 保证近实时热更新，{@link #forceReloadGlobalSkills()} 供 P2-8 事件驱动立即失效。
+     */
+    private volatile CachedGlobalSkills globalSkillsCache;
+    private static final long GLOBAL_SKILL_CACHE_TTL_MS = 60_000L;
+
+    private static class CachedGlobalSkills {
+        final List<Skill> skills;
+        final long expireAt;
+        CachedGlobalSkills(List<Skill> skills, long expireAt) {
+            this.skills = skills;
+            this.expireAt = expireAt;
+        }
+    }
+
+    /**
      * 按 ID 查询工具定义。
      *
      * @param toolId 工具ID
@@ -76,6 +93,19 @@ public class ResourceQueryService {
      */
     public Tool findToolById(Long toolId) {
         return toolMapper.selectById(toolId);
+    }
+
+    /**
+     * 按 ID 集合批量查询工具定义（P2-3：消除 TOOL 绑定 N+1 查询）。
+     *
+     * @param toolIds 工具ID集合（null/空返回空列表）
+     * @return 工具定义列表（不存在的 ID 自然排除）
+     */
+    public List<Tool> findToolsByIds(java.util.Collection<Long> toolIds) {
+        if (toolIds == null || toolIds.isEmpty()) {
+            return List.of();
+        }
+        return toolMapper.selectBatchIds(toolIds);
     }
 
     /**
@@ -135,20 +165,6 @@ public class ResourceQueryService {
     }
 
     /**
-     * 查询智能体启用的 TOOL 类型绑定。
-     *
-     * @param agentId 智能体ID
-     * @return 启用的 TOOL 类型绑定列表，无数据时返回空列表
-     */
-    public List<AgentBinding> listEnabledToolBindings(long agentId) {
-        return agentBindingMapper.selectList(
-                new LambdaQueryWrapper<AgentBinding>()
-                        .eq(AgentBinding::getAgentId, agentId)
-                        .eq(AgentBinding::getEnabled, true)
-                        .eq(AgentBinding::getResourceType, ResourceType.TOOL));
-    }
-
-    /**
      * 按 ID 查询知识库。
      *
      * <p>v4.1 新增：供 RAG 中间件查询知识库安全等级。
@@ -173,6 +189,19 @@ public class ResourceQueryService {
             return null;
         }
         return kbDocumentMapper.selectById(docId);
+    }
+
+    /**
+     * 按 ID 集合批量查询知识库文档（P2-2②：消除 RAG doc 名逐条查询）。
+     *
+     * @param docIds 文档ID集合（null/空返回空列表）
+     * @return 文档实体列表
+     */
+    public List<KbDocument> findKbDocumentsByIds(java.util.Collection<Long> docIds) {
+        if (docIds == null || docIds.isEmpty()) {
+            return List.of();
+        }
+        return kbDocumentMapper.selectBatchIds(docIds);
     }
 
     /**
@@ -228,32 +257,6 @@ public class ResourceQueryService {
     }
 
     /**
-     * 批量查询知识库详情。
-     *
-     * @param kbIds 知识库 ID 列表
-     * @return 知识库实体列表
-     */
-    public List<KnowledgeBase> batchGetKnowledgeBases(List<Long> kbIds) {
-        if (kbIds == null || kbIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return knowledgeBaseMapper.selectBatchIds(kbIds);
-    }
-
-    /**
-     * 批量查询 MCP 服务详情。
-     *
-     * @param mcpIds MCP 服务 ID 列表
-     * @return MCP 服务实体列表
-     */
-    public List<McpService> batchGetMcpServices(List<Long> mcpIds) {
-        if (mcpIds == null || mcpIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return mcpServiceMapper.selectBatchIds(mcpIds);
-    }
-
-    /**
      * 根据 ID 集合查询知识库。
      *
      * @param kbIds 知识库 ID 集合
@@ -293,22 +296,6 @@ public class ResourceQueryService {
         return all.stream()
                 .filter(mcp -> mcp.getLifeStatus() == AgentLifeStatus.PUBLISHED
                         && mcp.getStatus() == ProviderStatus.ACTIVE)
-                .collect(Collectors.toList());
-    }
-
-    /**
-     * 根据 ID 集合查询知识库（仅返回已发布的）。
-     *
-     * @param kbIds 知识库 ID 集合
-     * @return 已发布的知识库实体列表
-     */
-    public List<KnowledgeBase> findPublishedKnowledgeBasesByIds(Set<Long> kbIds) {
-        if (kbIds == null || kbIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<KnowledgeBase> all = knowledgeBaseMapper.selectBatchIds(kbIds);
-        return all.stream()
-                .filter(kb -> kb.getLifeStatus() == AgentLifeStatus.PUBLISHED)
                 .collect(Collectors.toList());
     }
 
@@ -444,10 +431,26 @@ public class ResourceQueryService {
      * @return GLOBAL 系统技能列表（无数据时返回空列表）
      */
     public List<Skill> listGlobalToolSkills() {
-        return skillMapper.selectGlobalSkillsForTenant(
+        // P2-4：60s TTL 缓存（对标 HitlRuleLoader 模式），消除 GLOBAL 技能每轮全量重查
+        CachedGlobalSkills cached = globalSkillsCache;
+        if (cached != null && System.currentTimeMillis() < cached.expireAt) {
+            return cached.skills;
+        }
+        List<Skill> skills = skillMapper.selectGlobalSkillsForTenant(
                         SkillScope.GLOBAL.name(), AgentLifeStatus.PUBLISHED.name(), null).stream()
                 .filter(s -> Boolean.TRUE.equals(s.getIsSystem()))
                 .collect(Collectors.toList());
+        globalSkillsCache = new CachedGlobalSkills(skills, System.currentTimeMillis() + GLOBAL_SKILL_CACHE_TTL_MS);
+        log.debug("GLOBAL 技能缓存已加载: count={}", skills.size());
+        return skills;
+    }
+
+    /**
+     * 手动清空 GLOBAL 技能缓存，供 P2-8 事件总线在技能发布/变更时触发立即失效。
+     */
+    public void forceReloadGlobalSkills() {
+        globalSkillsCache = null;
+        log.info("GLOBAL 技能缓存已清空，下次查询将重新加载 DB");
     }
 
     /**

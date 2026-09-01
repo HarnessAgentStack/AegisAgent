@@ -1,7 +1,7 @@
 package com.aegis.runtime.web;
 
 import com.aegis.core.common.web.Result;
-import com.aegis.core.common.tenant.TenantContextHolder;
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.runtime.service.rag.RagRetrieveService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -54,7 +54,10 @@ public class RagController {
             @RequestParam Long kbId,
             @RequestParam String query,
             @RequestParam(defaultValue = "5") int topK) {
-        TenantContextHolder.bind(tenantId);
-        return Result.success(ragRetrieveService.retrieve(tenantId, kbId, query, topK));
+        // 边界式租户作用域（P1-1）：WebFlux 阻塞式 controller 运行在 boundedElastic 线程，
+        // 网关过滤器的绑定不跨线程传递，需在执行线程上显式绑定；线程归池前必须清空。
+        try (var ignore = TenantContextScope.bound(tenantId)) {
+            return Result.success(ragRetrieveService.retrieve(tenantId, kbId, query, topK));
+        }
     }
 }

@@ -1,5 +1,6 @@
 package com.aegis.runtime.infrastructure.document;
 
+import com.aegis.core.common.text.TokenEstimator;
 import lombok.extern.slf4j.Slf4j;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -47,7 +48,7 @@ public class HtmlParser implements FileParser {
                 .text(markdown)
                 .metadata(ParsedContent.ParseMetadata.builder()
                         .charCount(markdown.length())
-                        .estimatedTokens(markdown.length() / 4)
+                        .estimatedTokens(TokenEstimator.estimateTokens(markdown))
                         .build())
                 .build();
     }

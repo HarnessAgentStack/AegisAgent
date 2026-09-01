@@ -36,6 +36,7 @@ public class SkillSubscriptionService {
 
     private final SkillSubscriptionMapper subscriptionMapper;
     private final SkillMapper skillMapper;
+    private final ResourceChangePublisher resourceChangePublisher;
 
     /**
      * 订阅技能。
@@ -121,6 +122,8 @@ public class SkillSubscriptionService {
 
         log.info("技能订阅成功: skillId={}, subscriberType={}, subscriberId={}, tenantId={}",
                 skillId, subscriberType, subscriberId, tenantId);
+
+        resourceChangePublisher.publishSkillSubscriptionChanged(tenantId, subscriberId, "SUBSCRIBE");
     }
 
     /**
@@ -158,6 +161,8 @@ public class SkillSubscriptionService {
 
         log.info("技能取消订阅: skillId={}, subscriberType={}, subscriberId={}, tenantId={}",
                 skillId, subscriberType, subscriberId, tenantId);
+
+        resourceChangePublisher.publishSkillSubscriptionChanged(tenantId, subscriberId, "UNSUBSCRIBE");
     }
 
     /**

@@ -1,6 +1,6 @@
 package com.aegis.runtime.service.conversation;
 
-import com.aegis.core.common.tenant.TenantContextHolder;
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.core.dto.agent.AgentEvent;
 import com.aegis.core.enums.session.SessionStatus;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
@@ -45,8 +45,12 @@ public class SessionProjectionService {
      * @param event 当前事件
      */
     public void onEvent(AegisTaskContext ctx, AgentEvent event) {
-        persistToolMessageIfNeeded(ctx, event);
-        updateStatusByEvent(ctx.getSessionId(), event);
+        // 恢复式租户作用域（P1-1）：事件回调运行在 AgentScope 内核线程（跨会话/租户复用），
+        // 落库操作需绑定租户，且离开时必须恢复进入前上下文，防止泄漏到同线程的后续请求。
+        try (var ignore = TenantContextScope.of(ctx.getTenantId())) {
+            persistToolMessageIfNeeded(ctx, event);
+            updateStatusByEvent(ctx.getSessionId(), event);
+        }
     }
 
     /**
@@ -62,49 +66,48 @@ public class SessionProjectionService {
      */
     public void onTerminate(AegisTaskContext ctx, String outputText, String reasoning,
                             int tokenInput, int tokenOutput, SignalType signal) {
-        // 恢复租户上下文（Reactor 线程切换后 ThreadLocal 丢失）
-        Long tenantId = ctx.getTenantId();
-        if (tenantId != null) {
-            TenantContextHolder.bind(tenantId);
-        }
-        try {
-            // 1. 助手消息落库（fire-and-forget）— 含 reasoning 思考过程（P2-TBL 修复原 0 填充）
-            if (outputText != null && !outputText.isEmpty()) {
-                sessionManageService.persistAssistantMessage(
-                        ctx.getSessionId(), ctx.getTenantId(), ctx.getUserId(),
-                        outputText, reasoning, tokenInput, tokenOutput, null, null);
+        // 恢复式租户作用域（P1-1）：终态回调运行在 AgentScope 内核线程（跨会话/租户复用），
+        // 落库操作需绑定租户，且离开时必须恢复进入前上下文，防止泄漏到同线程的后续请求。
+        try (var ignore = TenantContextScope.of(ctx.getTenantId())) {
+            try {
+                // 1. 助手消息落库（fire-and-forget）— 含 reasoning 思考过程（P2-TBL 修复原 0 填充）
+                if (outputText != null && !outputText.isEmpty()) {
+                    sessionManageService.persistAssistantMessage(
+                            ctx.getSessionId(), ctx.getTenantId(), ctx.getUserId(),
+                            outputText, reasoning, tokenInput, tokenOutput, null, null);
+                }
+            } catch (Exception e) {
+                log.error("persistAssistantMessage failed: sessionId={}", ctx.getSessionId(), e);
             }
-        } catch (Exception e) {
-            log.error("persistAssistantMessage failed: sessionId={}", ctx.getSessionId(), e);
-        }
 
-        // 2. 终态状态设置（HITL/已完结感知）
-        SessionStatus current = statusCache.get(ctx.getSessionId());
-        if (SessionStatus.PAUSED.equals(current)) {
-            // HITL 挂起：无论 complete/cancel/error 都保持 PAUSED
-            log.info("HITL 挂起中，保持 PAUSED 状态: sessionId={}", ctx.getSessionId());
-        } else if (SessionStatus.ENDED.equals(current)) {
-            // agent_end 已将状态设为 ENDED：智能体已正常完成回复，
-            // 即使后续 Flux 被 CANCEL（如 SSE 连接关闭），也保持 ENDED 不覆盖为 INTERRUPTED
-            log.info("智能体已正常完成（agent_end），保持 ENDED 状态: sessionId={}", ctx.getSessionId());
-        } else {
-            SessionStatus terminalStatus = switch (signal) {
-                case ON_COMPLETE -> SessionStatus.ENDED;
-                case CANCEL -> SessionStatus.INTERRUPTED;
-                case ON_ERROR -> SessionStatus.EXCEPTION;
-                default -> null;
-            };
-            if (terminalStatus != null) {
-                try {
-                    sessionManageService.updateStatus(ctx.getSessionId(), terminalStatus);
-                } catch (Exception e) {
-                    log.warn("设置终态失败: sessionId={}, status={}", ctx.getSessionId(), terminalStatus, e);
+            // 2. 终态状态设置（HITL/已完结感知）
+            SessionStatus current = statusCache.get(ctx.getSessionId());
+            if (SessionStatus.PAUSED.equals(current)) {
+                // HITL 挂起：无论 complete/cancel/error 都保持 PAUSED
+                log.info("HITL 挂起中，保持 PAUSED 状态: sessionId={}", ctx.getSessionId());
+            } else if (SessionStatus.ENDED.equals(current)) {
+                // agent_end 已将状态设为 ENDED：智能体已正常完成回复，
+                // 即使后续 Flux 被 CANCEL（如 SSE 连接关闭），也保持 ENDED 不覆盖为 INTERRUPTED
+                log.info("智能体已正常完成（agent_end），保持 ENDED 状态: sessionId={}", ctx.getSessionId());
+            } else {
+                SessionStatus terminalStatus = switch (signal) {
+                    case ON_COMPLETE -> SessionStatus.ENDED;
+                    case CANCEL -> SessionStatus.INTERRUPTED;
+                    case ON_ERROR -> SessionStatus.EXCEPTION;
+                    default -> null;
+                };
+                if (terminalStatus != null) {
+                    try {
+                        sessionManageService.updateStatus(ctx.getSessionId(), terminalStatus);
+                    } catch (Exception e) {
+                        log.warn("设置终态失败: sessionId={}, status={}", ctx.getSessionId(), terminalStatus, e);
+                    }
                 }
             }
-        }
 
-        // 3. 清理状态缓存
-        statusCache.remove(ctx.getSessionId());
+            // 3. 清理状态缓存
+            statusCache.remove(ctx.getSessionId());
+        }
     }
 
     /**
@@ -132,11 +135,8 @@ public class SessionProjectionService {
      * 持久化工具调用/结果消息到 session_message 表。
      */
     private void persistToolMessageIfNeeded(AegisTaskContext ctx, AgentEvent event) {
-        // 恢复租户上下文（Reactor 线程切换后 ThreadLocal 丢失）
+        // 租户上下文由 onEvent 入口统一绑定（TenantContextScope），此处无需重复绑定
         Long tId = ctx.getTenantId();
-        if (tId != null) {
-            TenantContextHolder.bind(tId);
-        }
         try {
             String eventType = event.getEvent();
             long tenantId = tId != null ? tId : 0L;

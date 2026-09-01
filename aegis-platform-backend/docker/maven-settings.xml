@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Maven 镜像加速配置（容器内构建专用）
+  - 阿里云公共仓库镜像中央仓库，解决容器内 DNS/网络拉取 Maven Central 慢或失败的问题
+  - 保留 central 的插件仓库映射，确保构建插件可正常下载
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+    <mirrors>
+        <mirror>
+            <id>aliyun-public</id>
+            <name>Aliyun Public Maven</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <mirrorOf>central</mirrorOf>
+        </mirror>
+        <mirror>
+            <id>aliyun-spring</id>
+            <name>Aliyun Spring Maven</name>
+            <url>https://maven.aliyun.com/repository/spring</url>
+            <mirrorOf>spring</mirrorOf>
+        </mirror>
+        <mirror>
+            <id>aliyun-spring-plugin</id>
+            <name>Aliyun Spring Plugin Maven</name>
+            <url>https://maven.aliyun.com/repository/spring-plugin</url>
+            <mirrorOf>spring-plugin</mirrorOf>
+        </mirror>
+        <mirror>
+            <id>aliyun-gradle-plugin</id>
+            <name>Aliyun Gradle Plugin Maven</name>
+            <url>https://maven.aliyun.com/repository/gradle-plugin</url>
+            <mirrorOf>gradle-plugin</mirrorOf>
+        </mirror>
+    </mirrors>
+</settings>

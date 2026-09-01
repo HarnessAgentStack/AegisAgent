@@ -44,8 +44,7 @@ import com.aegis.core.dto.security.PolicyDecision;
 import com.aegis.core.dto.security.SecurityPolicyContext;
 import com.aegis.core.enums.common.SecurityLevel;
 import com.aegis.core.dto.chat.SessionResourcesRef;
-import com.aegis.core.common.tenant.TenantContextHolder;
-import com.aegis.core.context.TenantContext;
+import com.aegis.core.common.tenant.TenantContextScope;
 
 /**
  * RAG 检索中间件：在 Agent 执行前触发知识库检索，注入上下文并发出 kb.reference 事件。
@@ -110,7 +109,8 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
             Agent agent, RuntimeContext ctx, AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
 
-        log.info("=== AegisRagMiddleware.onAgent 触发 ===");
+        // P2-6④：每轮触发的入口日志降 DEBUG（与事件流降噪同策略）
+        log.debug("AegisRagMiddleware.onAgent 触发");
         
         // 0. 全局开关检查
         if (!ragEnabled) {
@@ -238,19 +238,14 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
         }
 
         // v4.2: KB 安全等级 gate（覆盖绑定与会话引用的全部知识库）
-        // 安全等级按最终待检索 kbIds 全集查询——会话级引用与绑定库执行同一门控，
-        // 防止通过会话引用绕过安全等级校验
+        // P2-2②：一次 selectBatchIds 装载本轮全部 KB 实体——gate 安全等级与后续
+        // 名称补全共享同一结果集，消除 per-KB getKnowledgeBase 的 N 次同行重查（原 3N→1）
+        Map<Long, KnowledgeBase> kbEntityMap = new HashMap<>();
         Map<Long, SecurityLevel> kbLevels = new HashMap<>();
-        if (securityPolicyEngine != null) {
-            for (Long kbId : kbIds) {
-                try {
-                    com.aegis.core.domain.resource.KnowledgeBase kb = resourceQueryService.getKnowledgeBase(kbId);
-                    if (kb != null && kb.getSecurityLevel() != null) {
-                        kbLevels.put(kbId, kb.getSecurityLevel());
-                    }
-                } catch (Exception e) {
-                    log.debug("获取知识库安全等级失败: kbId={}", kbId);
-                }
+        for (KnowledgeBase kb : resourceQueryService.findKnowledgeBasesByIds(Set.copyOf(kbIds))) {
+            kbEntityMap.put(kb.getId(), kb);
+            if (kb.getSecurityLevel() != null) {
+                kbLevels.put(kb.getId(), kb.getSecurityLevel());
             }
         }
         // 过滤掉安全等级超标/需审批未决的知识库，并记录跳过原因（前端可见）
@@ -288,36 +283,26 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
             }
         }
 
-        // 5. 执行 RAG 检索（使用改写后的 effectiveQuery + recentHistory 传递给新签名）
+        // 5. 执行 RAG 检索（P2-2②：KB 名复用 gate 预载的 kbEntityMap，doc 名收集后批量查询）
         List<Map<String, Object>> allRefs = new ArrayList<>();
-        Map<Long, String> kbNameCache = new HashMap<>();
-        Map<Long, String> docNameCache = new HashMap<>();
+        Set<Long> pendingDocIds = new java.util.LinkedHashSet<>();
         List<String> historyForRetrieve = recentHistory != null ? recentHistory : Collections.emptyList();
         for (Long kbId : kbIds) {
             try {
                 // B4: topK=0 让 RagRetrieveService 使用知识库自身的 topK 配置
-                // （原硬编码 5 会忽略知识库配的 top_k，导致检索条数不符合用户预期）
-                // 新签名：额外传入 recentHistory 供 RagRetrieveService 内部二次 QueryRewrite
                 List<Map<String, Object>> results = ragRetrieveService.retrieve(
                         tenantId, kbId, effectiveQuery, 0, historyForRetrieve);
                 if (results != null && !results.isEmpty()) {
-                    // 标注来源知识库，并补充文档名/知识库名
-                    KnowledgeBase kb = resourceQueryService.getKnowledgeBase(kbId);
+                    // KB 名从 gate 预载实体直接读取（不再二次查询 getKnowledgeBase）
+                    KnowledgeBase kb = kbEntityMap.get(kbId);
                     String kbName = kb != null ? kb.getKbName() : null;
-                    kbNameCache.put(kbId, kbName);
-                    
                     for (Map<String, Object> ref : results) {
                         ref.put("kbId", kbId);
                         ref.put("kbName", kbName);
-                        
                         Object docIdObj = ref.get("docId");
                         if (docIdObj instanceof Number docIdNum) {
                             Long docId = docIdNum.longValue();
-                            if (!docNameCache.containsKey(docId)) {
-                                KbDocument doc = resourceQueryService.getKbDocument(docId);
-                                docNameCache.put(docId, doc != null ? doc.getFileName() : null);
-                            }
-                            ref.put("docName", docNameCache.get(docId));
+                            pendingDocIds.add(docId);
                             ref.put("id", "kb-ref-" + kbId + "-" + docId + "-" + ref.get("chunkIndex"));
                         } else {
                             ref.put("id", "kb-ref-" + kbId + "-" + ref.get("chunkIndex"));
@@ -327,6 +312,20 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
                 }
             } catch (Exception e) {
                 log.warn("RAG 检索失败: kbId={}, error={}", kbId, e.getMessage());
+            }
+        }
+
+        // P2-2②：批量查询文档名（原逐条 getKbDocument × D → 1 次 selectBatchIds）并补全引用
+        if (!pendingDocIds.isEmpty()) {
+            Map<Long, String> docNameMap = new HashMap<>();
+            for (KbDocument doc : resourceQueryService.findKbDocumentsByIds(pendingDocIds)) {
+                docNameMap.put(doc.getId(), doc.getFileName());
+            }
+            for (Map<String, Object> ref : allRefs) {
+                Object docIdObj = ref.get("docId");
+                if (docIdObj instanceof Number docIdNum) {
+                    ref.put("docName", docNameMap.get(docIdNum.longValue()));
+                }
             }
         }
 
@@ -504,11 +503,9 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
      * 确保任何检索请求都不会绕过创建者校验。校验异常时按安全优先原则整体忽略。
      */
     private List<Long> filterReferenceableKbIds(List<Long> rawKbIds, Long tenantId, Long userId) {
-        try {
-            // knowledge_base 受多租户行级过滤，回退路径可能运行在未绑定租户的线程上
-            if (tenantId != null) {
-                TenantContextHolder.set(TenantContext.builder().tenantId(tenantId).build());
-            }
+        // 恢复式租户作用域（P1-1）：knowledge_base 受多租户行级过滤，回退路径可能运行在
+        // 未绑定租户的线程上；AgentScope 内核线程跨会话复用，结束后必须恢复进入前上下文。
+        try (var ignore = TenantContextScope.of(tenantId)) {
             Set<Long> ids = rawKbIds.stream()
                     .filter(Objects::nonNull)
                     .collect(Collectors.toSet());

@@ -68,6 +68,8 @@ import com.aegis.runtime.service.agent.ResourceQueryService;
  * <ul>
  *   <li>SYSTEM / APPLICATION → {@code agentId}：同一智能体多用户共享</li>
  *   <li>UNIVERSAL → {@code userId}：每用户一个独立实例</li>
+ *   <li>所有类型尾部追加 {@code :v{agentVersion}}（P1-2）：会话钉住版本参与分池，
+ *       智能体升级后新老版本实例互不复用</li>
  * </ul>
  *
  * <h3>绑定指纹懒刷新</h3>
@@ -226,6 +228,7 @@ public class AegisAgentInstanceManager {
      * @param userId    用户ID
      * @param agentType 智能体类型：UNIVERSAL / APPLICATION / SYSTEM
      * @param agentId   智能体ID
+     * @param agentVersion 智能体版本（P1-2：会话钉住版本，参与池键隔离新旧版本实例）
      * @param sysPrompt 智能体系统提示词（null 时使用默认值）
      * @param bindings  动态绑定列表（来自模板，null 时 buildAgent 内部从 DB 加载）
      * @param modelTier 模型档位（STANDARD/LIGHT/STRONG）
@@ -234,18 +237,26 @@ public class AegisAgentInstanceManager {
      * @return HarnessAgent 实例
      */
     public HarnessAgent acquireOrBuild(String sessionId, long tenantId, long userId,
-                                       String agentType, long agentId, String sysPrompt,
+                                       String agentType, long agentId, String agentVersion, String sysPrompt,
                                        List<AgentBinding> bindings,
                                        List<Tool> preloadedTools,
                                        String modelTier,
                                        IsolationStrategy isolationStrategy,
                                        List<Long> sessionMcpServiceIds,
                                        com.aegis.runtime.service.agent.AssemblyResourceContext resources) {
-        // 1. 计算 poolKey（SYSTEM/APPLICATION→agentId 共享，UNIVERSAL→userId 独立）
-        String poolKey = computePoolKey(agentType, agentId, userId, tenantId);
+        // P1-7：会话级 MCP 资源不得进入共享池实例——使用会话专属池键，
+        // 使其天然与会话绑定、不与其他会话/用户共享（框架无 per-request toolkit overlay，
+        // 唯一完全正确的并发隔离方案）。
+        boolean hasSessionMcp = sessionMcpServiceIds != null && !sessionMcpServiceIds.isEmpty();
+        // 1. 计算 poolKey（SYSTEM/APPLICATION→agentId 共享，UNIVERSAL→userId 独立；
+        //    P1-2：键含版本——老会话钉住旧版本、新会话用新版本，两者天然分池，互不串染；
+        //    P1-7：会话级 MCP 存在时键含 sessionId——专属实例，不污染共享池）
+        String poolKey = computePoolKey(agentType, agentId, userId, tenantId, agentVersion,
+                hasSessionMcp ? sessionId : null);
 
         // 2. 计算当前绑定指纹，用于池命中后判定是否需要懒刷新
-        String currentBindingFp = BindingFingerprinter.fingerprint(bindings);
+        //    （P1-8：版本参与哈希，与池键共同保证版本语义的一致性判定）
+        String currentBindingFp = BindingFingerprinter.fingerprint(agentVersion, bindings);
 
         // 读路径持有读锁，防止驱逐/清理在 get 与 return 之间关闭 Agent
         rwLock.readLock().lock();
@@ -259,12 +270,11 @@ public class AegisAgentInstanceManager {
                             poolKey, agentType, agentId, pool.size());
                     return entry.agent;
                 }
-                // 指纹不一致 → 懒刷新工具链（移除旧工具 + 重新加载）+ 重物化工作区
-                log.info("fingerprint mismatch, refresh toolkit: poolKey={}, agentId={}, oldFp={}, newFp={}",
+                // P1-5：指纹不一致 → 先用旧工具兜底返回，锁外异步刷新（避免 MCP 网络 I/O 阻塞读锁）
+                log.info("fingerprint mismatch, fallback to stale tools + async refresh: poolKey={}, agentId={}, oldFp={}, newFp={}",
                         poolKey, agentId, entry.bindingFingerprint, currentBindingFp);
-                refreshToolkit(entry, agentId, preloadedTools, tenantId, userId, sessionMcpServiceIds, agentType, resources);
-                materializeWorkspace(agentType, agentId, userId, bindings);
-                entry.bindingFingerprint = currentBindingFp;
+                triggerAsyncRefresh(entry, agentId, preloadedTools, tenantId, userId,
+                        sessionMcpServiceIds, agentType, resources, currentBindingFp, bindings);
                 return entry.agent;
             }
         } finally {
@@ -283,10 +293,9 @@ public class AegisAgentInstanceManager {
                 if (currentBindingFp.equals(entry.bindingFingerprint)) {
                     return entry.agent;
                 }
-                // 指纹不一致（双检窗口期管理员修改了绑定）
-                refreshToolkit(entry, agentId, preloadedTools, tenantId, userId, sessionMcpServiceIds, agentType, resources);
-                materializeWorkspace(agentType, agentId, userId, bindings);
-                entry.bindingFingerprint = currentBindingFp;
+                // P1-5：双检窗口期指纹仍不一致，同样锁外异步刷新
+                triggerAsyncRefresh(entry, agentId, preloadedTools, tenantId, userId,
+                        sessionMcpServiceIds, agentType, resources, currentBindingFp, bindings);
                 return entry.agent;
             }
 
@@ -302,8 +311,8 @@ public class AegisAgentInstanceManager {
                     sysPrompt, bindings, preloadedTools, modelTier, isolationStrategy, sessionMcpServiceIds,
                     currentBindingFp, resources);
             pool.put(poolKey, newEntry);
-            log.info("构建 Agent 实例: poolKey={}, agentType={}, agentId={}, tenantId={}, poolSize={}",
-                    poolKey, agentType, agentId, tenantId, pool.size());
+            log.info("构建 Agent 实例: poolKey={}, agentType={}, agentId={}, tenantId={}, sessionMcp={}, poolSize={}",
+                    poolKey, agentType, agentId, tenantId, hasSessionMcp, pool.size());
             return newEntry.agent;
         } finally {
             rwLock.writeLock().unlock();
@@ -312,6 +321,45 @@ public class AegisAgentInstanceManager {
                 closeAgent(e);
             }
         }
+    }
+
+    /**
+     * P1-5：锁外异步刷新工具链（per-entry 锁 + CAS 指纹更新）。
+     *
+     * <p>指纹不一致时不再在读锁内同步执行 MCP listTools（可 block 60s），
+     * 而是：当前请求先用旧版工具集兜底返回，刷新在 boundedElastic 线程异步执行。
+     * per-entry 锁保证同一实例的多个并发刷新请求串行化（避免重复网络 I/O）；
+     * CAS 式指纹比对确保只有首个检测到不一致的请求实际执行刷新。
+     *
+     * <p>刷新完成后更新 entry.bindingFingerprint（volatile），后续请求即可命中新指纹直接复用。
+     */
+    private void triggerAsyncRefresh(AgentEntry entry, long agentId, List<Tool> preloadedTools,
+                                     long tenantId, long userId, List<Long> sessionMcpServiceIds,
+                                     String agentType,
+                                     com.aegis.runtime.service.agent.AssemblyResourceContext resources,
+                                     String newFingerprint, List<AgentBinding> bindings) {
+        reactor.core.publisher.Mono.fromRunnable(() -> {
+                    // per-entry 锁：同一实例的并发刷新串行化
+                    synchronized (entry.refreshLock) {
+                        // CAS 双检：可能已有其他线程完成了刷新
+                        if (newFingerprint.equals(entry.bindingFingerprint)) {
+                            return;
+                        }
+                        try {
+                            refreshToolkit(entry, agentId, preloadedTools, tenantId, userId,
+                                    sessionMcpServiceIds, agentType, resources);
+                            materializeWorkspace(agentType, agentId, userId, bindings);
+                            entry.bindingFingerprint = newFingerprint;
+                            log.info("async refresh completed: poolKey={}, agentId={}, newFp={}",
+                                    entry.poolKey, agentId, newFingerprint);
+                        } catch (Exception e) {
+                            log.error("async refresh failed, stale tools remain until next request: poolKey={}, agentId={}",
+                                    entry.poolKey, agentId, e);
+                        }
+                    }
+                })
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .subscribe(v -> {}, e -> log.error("async refresh scheduler error: poolKey={}", entry.poolKey, e));
     }
 
     /**
@@ -324,15 +372,32 @@ public class AegisAgentInstanceManager {
      * </ul>
      *
      * <p>key 前缀带 tenantId，保证不同租户不会撞 key 共享实例（含权限上下文/工具链）。
+     *
+     * <p>P1-2：key 尾部带 agentVersion——同一智能体升级后，老会话（钉住旧版本）与
+     * 新会话（最新版本）落入不同池条目，各自的 config/bindings/工具链严格同源，
+     * 消除「半新半旧」实例复用；老版本条目随 TTL/事件驱逐自然回收。
+     *
+     * <p>P1-7：当请求携带会话级 MCP 资源时，key 追加 sessionId 前缀——
+     * 使该实例专属于此会话，会话级 MCP 工具注册于独立 Toolkit，
+     * 不污染共享池实例（跨用户/跨会话零泄漏）。
+     *
+     * @param sessionScopeId 会话级隔离 ID（sessionId），null 表示无会话级资源（走共享池）
      */
-    private String computePoolKey(String agentType, long agentId, long userId, long tenantId) {
+    private String computePoolKey(String agentType, long agentId, long userId, long tenantId,
+                                  String agentVersion, String sessionScopeId) {
         // 加租户前缀，从结构上保证同池实例必同租户，防止跨租户撞 key
         String tenantPart = "T" + tenantId + ":";
+        // P1-7：会话级专属前缀（仅会话级 MCP 资源存在时）
+        String sessionPart = (sessionScopeId != null && !sessionScopeId.isEmpty())
+                ? "S:" + sessionScopeId + ":" : "";
+        // 版本后缀（P1-2）：版本为空时退化为无版本键（防御异常数据）
+        String versionPart = (agentVersion != null && !agentVersion.isEmpty())
+                ? ":v" + agentVersion : "";
         return switch (agentType) {
-            case "SYSTEM" -> tenantPart + "SYS:" + agentId;
-            case "APPLICATION" -> tenantPart + "APP:" + agentId;
-            case "UNIVERSAL" -> tenantPart + "UNI:" + userId;
-            default -> tenantPart + "APP:" + agentId;
+            case "SYSTEM" -> tenantPart + sessionPart + "SYS:" + agentId + versionPart;
+            case "APPLICATION" -> tenantPart + sessionPart + "APP:" + agentId + versionPart;
+            case "UNIVERSAL" -> tenantPart + sessionPart + "UNI:" + userId + versionPart;
+            default -> tenantPart + sessionPart + "APP:" + agentId + versionPart;
         };
     }
 
@@ -614,8 +679,12 @@ public class AegisAgentInstanceManager {
      * <p>distributedStore 已自动装配 baseStore/sandboxSnapshotSpec/sandboxExecutionGuard，
      * 此处仅需配置文件系统模式和 isolationScope。
      *
-     * <p>向 sandboxSpec 注入 sessionId 与 isolationStrategy，
-     * 使每个会话的工作区被路由到独立子目录，避免并发文件污染。
+     * <p>P1-3：workspaceRoot 改为会话无关的 pool 键派生路径——
+     * UNI={@code /workspace/{tenantId}/{agentId}/{userId}}，
+     * APP/SYS={@code /workspace/{tenantId}/{agentId}}。
+     * 池化实例被不同会话复用时 workspace 指向同一稳定路径，
+     * 不再因 sessionId 不可变导致串扰。
+     * 会话级隔离由 P1-7 会话专属池键保证（有会话级 MCP 时走独立实例）。
      *
      * @return 文件系统配置（含 sandboxRequired 标志与 slotKey，供 AgentEntry 追踪）
      */
@@ -645,8 +714,9 @@ public class AegisAgentInstanceManager {
                 : new AegisSandboxFilesystemSpec(sandboxBackend, sandboxCoordinator, minioSnapshotClient, sandboxResourceLoader);
         sandboxSpec.isolationScope(isolationScope);
         sandboxSpec.tenantContext(tenantId, userId, agentId, isolationScope, slotKey);
-        // 会话级隔离：使用 sessionId 派生 workspaceRoot 子目录
-        sandboxSpec.sessionId(sessionId);
+        // P1-3：显式 workspaceRoot（pool 键派生、会话无关），替代 sessionId 派生——
+        // 池化实例复用时不会因首个 sessionId 烘焙导致后续会话串扰
+        sandboxSpec.workspaceRoot(deriveWorkspaceRoot(agentType, tenantId, agentId, userId));
         // 默认隔离策略为 SHARED_PER_SCOPE，允许上层后续覆写
         sandboxSpec.isolationStrategy(isolationStrategy != null ? isolationStrategy : IsolationStrategy.SHARED_PER_SCOPE);
         // 传递智能体类型，供 Coordinator 池路由（UNIVERSAL→LIGHT / SYSTEM→HEAVY / 其他→STANDARD）
@@ -656,9 +726,25 @@ public class AegisAgentInstanceManager {
         // 向 AegisSandboxClientOptions 注入 MinioSnapshotClient
         sandboxSpec.getClientOptions().setMinioSnapshotClient(this.minioSnapshotClient);
         builder.filesystem(sandboxSpec);
-        log.info("沙箱模式构建: agentId={}, scope={}, slotKey={}, sessionId={}, snapshotEnabled={}",
-                agentId, isolationScope, slotKey, sessionId, this.snapshotSpec != null);
+        log.info("沙箱模式构建: agentId={}, scope={}, slotKey={}, workspaceRoot={}, snapshotEnabled={}",
+                agentId, isolationScope, slotKey, sandboxSpec.getClientOptions().getWorkspaceRoot(),
+                this.snapshotSpec != null);
         return new FilesystemConfig(true, slotKey);
+    }
+
+    /**
+     * P1-3：派生会话无关的 workspaceRoot（与 pool 键组件同源）。
+     *
+     * <ul>
+     *   <li>UNIVERSAL → {@code /workspace/{tenantId}/{agentId}/{userId}}（含 userId 隔离）</li>
+     *   <li>APPLICATION / SYSTEM → {@code /workspace/{tenantId}/{agentId}}（跨用户共享）</li>
+     * </ul>
+     */
+    private String deriveWorkspaceRoot(String agentType, long tenantId, long agentId, long userId) {
+        if ("UNIVERSAL".equals(agentType)) {
+            return "/workspace/" + tenantId + "/" + agentId + "/" + userId;
+        }
+        return "/workspace/" + tenantId + "/" + agentId;
     }
 
     /**
@@ -1045,6 +1131,8 @@ public class AegisAgentInstanceManager {
         final long tenantId;
         final String slotKey;
         final IsolationScope isolationScope;
+        // P1-5：per-entry 刷新锁，保证同一实例的异步刷新串行化（避免重复 MCP 网络 I/O）
+        final Object refreshLock = new Object();
 
         AgentEntry(HarnessAgent agent, String poolKey, String sessionId,
                    String agentType, long agentId,

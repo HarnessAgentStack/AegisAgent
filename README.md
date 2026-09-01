@@ -19,32 +19,51 @@
 
 ## 快速开始
 
-**前置要求**：Docker + Docker Compose v2
+**最快的体验方式**——仅需 Docker Desktop，一键拉起全栈：
 
-```bash
-# 克隆
-git clone xxx
-cd aegis
-
-# 一键全栈启动（基础设施 + 应用构建 + 启动）
-# macOS / Linux
-./quickstart.sh
-# Windows PowerShell
-.\quickstart.ps1
-
-# 或手动分步
-docker compose -f infra/docker-compose.yml up -d          # 基础设施
-docker compose -f infra/docker-compose.app.yml up -d --build  # 应用
+```powershell
+.\quickstart.ps1 all
+# 执行步骤：
+#   1. 启动 6 个基础设施容器（MySQL/Redis/Nacos/MinIO/etcd/Milvus）
+#   2. 容器内 Maven 编译后端三服务（阿里云镜像加速，无需本地 JDK/Maven）
+#   3. 容器内 npm build 前端 + 构建为 nginx 镜像
+#   4. 启动 4 个应用容器（gateway/admin/runtime/web）
+# 首次约 8~15 分钟（拉依赖），后续增量约 2~3 分钟
 ```
 
-启动完成后：
+启动完成后访问 http://localhost ，初始账号 `DEFAULT / admin / aegis@123`。
 
-| 入口    | 地址                    |
-| ----- | --------------------- |
-| 前端工作台 | http://localhost      |
-| 网关    | http://localhost:8080 |
-| 管理后台  | http://localhost:8082 |
-| 运行时   | http://localhost:8081 |
+---
+
+需要更快迭代或断点调试时，可切换到开发模式。两种模式对比：
+
+| 模式 | 启动脚本 | 依赖环境 | 核心参数 | 适用场景 |
+|------|---------|---------|---------|---------|
+| **演示模式**<br>全栈容器化 | `.\quickstart.ps1` | Docker Desktop + Compose v2 | `all` 全栈构建启动　`infra` 仅基础设施　`app` 仅应用(复用已起 infra)　`appdown` 停应用留 infra　`down` 停全部　`logs` 跟踪日志 | 社区体验、演示交付、验收测试；容器内构建，无需本地 JDK/Maven |
+| **开发模式**<br>基础设施容器 + 应用本机进程 | `.\aegis-service.ps1` | Docker + JDK 21 + Maven 3.9 + Node 20 | `start` 起基础设施 + 本机应用　`stop` 停全部　`appstop` 停应用留 infra　`status` 查看状态　`build` 构建 JAR　`restart` 重建并重启 | 日常开发；IDE 断点、DevTools 热重载、vite HMR |
+
+> 两模式共用同一套 `infra/docker-compose.yml`，切换时基础设施不重建、不丢数据，仅应用层切换。
+
+**模式间无缝切换**：
+
+```powershell
+# 演示模式 → 开发模式
+.\quickstart.ps1 appdown        # 停应用容器，保留基础设施
+.\aegis-service.ps1 start       # 复用基础设施，本机起 Java + vite
+
+# 开发模式 → 演示模式
+.\aegis-service.ps1 appstop     # 停本机进程，保留基础设施
+.\quickstart.ps1 app            # 复用基础设施，起应用容器
+```
+
+**访问入口**：
+
+| 入口 | 地址 |
+|------|------|
+| 前端工作台 | http://localhost |
+| 网关 | http://localhost:8080 |
+| 管理后台 | http://localhost:8082 |
+| 运行时 | http://localhost:8081 |
 
 **初始账号**：租户 `DEFAULT` / 用户名 `admin` / 密码 `aegis@123`（首次登录请修改）
 

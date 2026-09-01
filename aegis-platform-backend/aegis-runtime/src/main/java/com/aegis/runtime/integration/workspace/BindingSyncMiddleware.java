@@ -1,11 +1,14 @@
 package com.aegis.runtime.integration.workspace;
 
+import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.agent.AgentDef;
 import com.aegis.core.domain.workspace.AgentWorkspaceMaterial;
+import com.aegis.runtime.service.agent.AssemblyResourceContext;
 import com.aegis.runtime.service.agent.ResourceQueryService;
 import com.aegis.runtime.service.workspace.WorkspaceMaterialService;
 import com.aegis.runtime.integration.middleware.OrderedMiddleware;
 import com.aegis.runtime.integration.workspace.WorkspaceMaterializer;
+import com.aegis.runtime.integration.skill.AegisSkillRepository;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -89,12 +92,20 @@ public class BindingSyncMiddleware implements MiddlewareBase, OrderedMiddleware 
         }
 
         // 2. 计算当前绑定指纹
+        //    P2-1：从 RuntimeContext 读取装配期已加载的 enabledBindings，消除每轮重复 listEnabledBindings 查询
         String currentFingerprint;
-        try {
-            currentFingerprint = materializer.computeFingerprint(agentId);
-        } catch (Exception e) {
-            log.warn("计算绑定指纹失败，跳过同步检查: agentId={}", agentId, e);
-            return next.apply(input);
+        List<AgentBinding> ctxBindings = AssemblyResourceContext.enabledBindingsOf(ctx);
+        if (ctxBindings != null && !ctxBindings.isEmpty()) {
+            // 装配路径：直接从上下文绑定计算指纹（0 DB 查询）
+            currentFingerprint = BindingFingerprinter.fingerprint(ctxBindings);
+        } else {
+            // 回退路径：RuntimeContext 无装配期属性（非装配入口或上下文缺失）
+            try {
+                currentFingerprint = materializer.computeFingerprint(agentId);
+            } catch (Exception e) {
+                log.warn("计算绑定指纹失败，跳过同步检查: agentId={}", agentId, e);
+                return next.apply(input);
+            }
         }
 
         // P1 AGT-09 修复：仅检查当前会话用户的指纹（从 RuntimeContext 获取 userId），
@@ -109,7 +120,11 @@ public class BindingSyncMiddleware implements MiddlewareBase, OrderedMiddleware 
             log.debug("userId 解析失败，降级为全量同步逻辑: agentId={}, error={}", agentId, e.getMessage());
         }
 
-        String agentType = resolveAgentType(agentId);
+        // P2-1：agentType 从 RuntimeContext 读取（装配期已注入），消除 findAgentDefById 重复查询
+        String agentType = ctx.get(AegisSkillRepository.CTX_AGENT_TYPE, String.class);
+        if (agentType == null || agentType.isBlank()) {
+            agentType = resolveAgentType(agentId); // 回退路径
+        }
 
         if (currentUserId != null && currentUserId > 0) {
             // 仅检查当前用户的物化记录

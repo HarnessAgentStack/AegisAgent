@@ -181,10 +181,8 @@ public class AgentApiRuntimeController {
                     ? request.getSessionId()
                     : "api_" + UUID.randomUUID().toString().substring(0, 8);
 
-            // 构建透传上下文（tenantId/userId 必填，供 AgentAssemblyService 读取）
+            // 构建透传上下文（P2-7①：身份走强类型字段，context 仅保留鉴权/扩展透传位）
             Map<String, Object> context = new HashMap<>();
-            context.put("tenantId", api.getTenantId());
-            context.put("userId", 0L);  // 外部 API 调用使用系统用户标识
             context.put("authType", authType);
             if (bearerToken != null && bearerPassThrough) {
                 context.put("bearerToken", bearerToken);
@@ -196,10 +194,13 @@ public class AgentApiRuntimeController {
             }
 
             // 构建 ChatRequest 并通过真实执行引擎运行智能体
+            // tenantId/userId 强类型注入：外部 API 调用归属 API 配置租户，系统用户标识 0
             ChatRequest chatRequest = ChatRequest.builder()
                     .agentId(api.getAgentId())
                     .sessionId(sessionId)
                     .message(request.getInput())
+                    .tenantId(api.getTenantId())
+                    .userId(0L)
                     .context(context)
                     .replyId("api_" + UUID.randomUUID().toString().replace("-", ""))
                     .build();

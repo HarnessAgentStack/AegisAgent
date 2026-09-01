@@ -1,5 +1,6 @@
 package com.aegis.runtime.infrastructure.document;
 
+import com.aegis.core.common.text.TokenEstimator;
 import com.aegis.runtime.service.document.VisionDescriptionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,7 +61,7 @@ public class ImageParser implements FileParser {
                 .metadata(ParsedContent.ParseMetadata.builder()
                         .imageCount(1)
                         .charCount(description.length())
-                        .estimatedTokens(description.length() / 4)
+                        .estimatedTokens(TokenEstimator.estimateTokens(description))
                         .build())
                 .build();
     }

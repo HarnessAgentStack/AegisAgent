@@ -25,12 +25,11 @@ import java.util.List;
  *       {@link #boundSkillsOf(RuntimeContext)} 读取</li>
  * </ul>
  *
- * <h3>语义说明</h3>
- * <p>{@code enabledBindings} 与 {@code ResourceQueryService#listEnabledBindings} 查询语义
- * 完全一致（agentId + enabled=true，跨版本）；{@code boundSkills} 为其中 SKILL 类型绑定的
- * 全部实体（不区分 PUBLISHED 状态，由各消费方按自身规则过滤）。模板 bindings
- * （AgentPoolManager 按 agentId+version 查询）与本上下文<b>语义不同</b>，指纹计算仍用模板
- * bindings，本上下文仅替代各消费方的 enabled 查询。
+ * <h3>P2-9 语义说明</h3>
+ * <p>{@code enabledBindings} 直接派生自模板（{@link AgentPoolManager#loadTemplate} 按
+ * {@code agentId + agentVersion + enabled=true} 单口径加载），是绑定数据的唯一真相源——
+ * 指纹计算与工具注册读取同一份列表，消除口径分裂（D4）。{@code boundSkills} 为其中
+ * SKILL 类型绑定的全部实体（不区分 PUBLISHED 状态，由各消费方按自身规则过滤）。
  *
  * <h3>回退策略</h3>
  * <p>非装配路径调用（无 RuntimeContext 属性）时，消费方回退原 DB 直查，行为不变。

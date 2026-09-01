@@ -1,6 +1,6 @@
 package com.aegis.runtime.service.conversation;
 
-import com.aegis.core.common.tenant.TenantContextHolder;
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.core.domain.agent.AgentDef;
 import com.aegis.core.domain.agent.AgentConfig;
 import com.aegis.core.dto.agent.AgentEvent;
@@ -160,12 +160,15 @@ public class TaskExecutionService {
         // 捕获租户上下文，在 Reactor 线程切换后手动恢复（ThreadLocal 不跨线程）
         final Long tenantId = request.getTenantId();
 
+        // 边界式租户作用域（P1-1）：boundedElastic 线程在 callable 结束后归还线程池，
+        // 必须清空 ThreadLocal，防止下一请求（可能属另一租户）复用该线程时读到残留租户，
+        // 导致 MyBatis-Plus 租户插件以错误租户身份读写数据。
         return Mono.fromCallable(() -> {
-                    // 恢复租户上下文（boundedElastic 线程无 ThreadLocal 继承）
-                    TenantContextHolder.bind(tenantId);
-                    AegisTaskContext ctx = assemblyService.assemble(request, taskId);
-                    sessionHolder[0] = ctx.getSessionId();
-                    return ctx;
+                    try (var ignore = TenantContextScope.bound(tenantId)) {
+                        AegisTaskContext ctx = assemblyService.assemble(request, taskId);
+                        sessionHolder[0] = ctx.getSessionId();
+                        return ctx;
+                    }
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(ctx -> {
@@ -456,8 +459,12 @@ public class TaskExecutionService {
         if (converted == null) {
             return Mono.empty();
         }
-        log.info("========== [TaskExecution] Event: type={}, data={} ==========",
-                converted.getEvent(), converted.getData());
+        // P2-6④：高频事件（text.delta 等）逐条 INFO 降噪为 DEBUG，
+        // 压测日志量下降 ≥70%；非高频关键事件在下方分支保留 INFO
+        if (log.isDebugEnabled()) {
+            log.debug("[TaskExecution] Event: type={}, data={}",
+                    converted.getEvent(), converted.getData());
+        }
 
         // HITL 审批请求：保存到 Redis 供后续恢复使用，并标记暂停
         if ("hitl.request".equals(converted.getEvent())) {

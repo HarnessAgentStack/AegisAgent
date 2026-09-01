@@ -1,7 +1,5 @@
 package com.aegis.runtime.service.agent;
 
-import com.aegis.core.common.tenant.TenantContextHolder;
-import com.aegis.core.context.TenantContext;
 import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.agent.AgentConfig;
 import com.aegis.core.domain.agent.AgentDef;
@@ -87,6 +85,26 @@ public class AgentAssemblyService {
      * 负责把一次对话请求所需的所有运行要素组装到位，使 TaskExecutionService
      * 拿到结果即可直接调度执行，无需再做任何准备工作。
      *
+     * <h3>P2-7② 三相结构</h3>
+     * <ul>
+     *   <li><b>Phase 1 资源解析</b> {@link #resolveTemplateAndSession}：模板/会话分轨、
+     *       快照恢复、首轮版本锁定</li>
+     *   <li><b>Phase 2 上下文构建</b>：消息持久化（{@link #persistIncomingMessage}）→
+     *       实例获取（{@link #acquireHarnessAgent}）→ RuntimeContext 构造</li>
+     *   <li><b>Phase 3 组装交付</b>：AegisTaskContext 终态构建 + 与 RuntimeContext 双向绑定</li>
+     * </ul>
+     *
+     * <h3>P1-2 版本钉住（B 方案）：会话先行</h3>
+     * <p>装配顺序按「是否携带 sessionId」分两条路径：
+     * <ul>
+     *   <li><b>新会话</b>：模板先行（最新版）→ 生命周期校验 → 创建会话 → 首轮锁定快照
+     *       （先校验后建会话，避免为不可用智能体产生孤儿会话记录）</li>
+     *   <li><b>老会话</b>：会话先行 → 读取 {@code session.agentVersion}（首轮锁定）→
+     *       <b>按钉住版本加载模板</b>——config / bindings / 版本标签四者天然同源单一版本，
+     *       进行中会话不再随后续发布漂移；实例池键含版本（见
+     *       {@link AegisAgentInstanceManager#acquireOrBuild}），新老版本实例互不复用</li>
+     * </ul>
+     *
      * @param request 对话请求（已通过 ChatRequestValidator 校验）
      * @param taskId  任务ID
      * @return 完整的执行上下文（含 HarnessAgent 和 RuntimeContext）；装配失败时 ctx.blocked=true
@@ -96,10 +114,10 @@ public class AgentAssemblyService {
         Long userId = request.getUserId();
         Long agentId = request.getAgentId();
 
-        // 在工作线程上显式设置租户上下文（供 MyBatis-Plus 多租户插件读取）
-        if (tenantId != null) {
-            TenantContextHolder.set(TenantContext.builder().tenantId(tenantId).build());
-        }
+        // 租户上下文由 TaskExecutionService.execute() 以 TenantContextScope.bound(tenantId)
+        // 边界式作用域统一建立（P1-1），装配层不再重复设置 ThreadLocal。
+
+        IsolationStrategy isolationStrategy = request.resolveIsolationStrategy();
 
         AegisTaskContext.AegisTaskContextBuilder builder = AegisTaskContext.builder()
                 .taskId(taskId)
@@ -109,84 +127,43 @@ public class AgentAssemblyService {
                 .userName(resolveUserName(userId))
                 .startTime(LocalDateTime.now())
                 .traceId(taskId)
-                .isolationStrategy(request.resolveIsolationStrategy())
+                .isolationStrategy(isolationStrategy)
                 .requestedSkills(request.getSkills())
                 .sessionResources(request.getResources());
 
         try {
-            // Step 1: 从实例池加载智能体模板并校验生命周期状态
-            //   调用 agentPoolManager.getTemplate → 校验发布状态/草稿自用权限
-            //   产出：AgentRuntimeTemplate（含定义、配置、绑定）
-            AgentRuntimeTemplate template = resolveAgentTemplate(agentId, tenantId, userId, builder);
-            if (template == null) {
-                return builder.build();
+            // ============ Phase 1 资源解析（P2-7② 分相）============
+            // 模板/会话分轨（P1-2 版本钉住）+ 快照恢复 + 首轮版本锁定
+            TemplateSession ts = resolveTemplateAndSession(request, builder, tenantId, userId, agentId);
+            if (ts == null) {
+                return blockedContext(builder);
             }
-
-            // Step 2: 创建或复用会话
-            //   无 sessionId 时先冻结同智能体的旧活动会话，再调用 sessionManageService.getOrCreateSession
-            //   产出：Session（含 sessionId，后续步骤复用）
-            if (request.getSessionId() == null || request.getSessionId().isEmpty()) {
-                sessionManageService.freezeActiveSession(userId, agentId);
-            }
-            Session session = sessionManageService.getOrCreateSession(agentId, request.getSessionId(), tenantId, userId);
+            AgentRuntimeTemplate template = ts.template();
+            Session session = ts.session();
             builder.sessionId(session.getSessionId());
+            AgentConfig cfg = ts.restoredConfig();
 
-            // Step 3: 从版本快照恢复运行配置（快照优先于模板当前配置）
-            //   调用 restoreConfigFromSnapshot → 保证进行中会话配置不随后续编辑漂移
-            //   产出：AgentConfig（system prompt、模型档位、温度等）
-            AgentConfig cfg = restoreConfigFromSnapshot(session, template.getAgentConfig(),
-                    agentId, tenantId, builder);
+            // ============ Phase 2 上下文构建（P2-7② 分相）============
+            // 2a. 附件处理 + 用户消息持久化 + 会话状态流转
+            persistIncomingMessage(request, session, cfg, builder, tenantId, userId);
 
-            // Step 4: 首轮锁定版本快照（已有快照则跳过）
-            //   仅新会话首次调用时执行 lockVersionSnapshot，固化配置+绑定+版本号
-            //   产出：会话绑定版本快照，使后续轮次配置全程不变
-            if (session.getVersionSnapshot() == null) {
-                sessionManageService.lockVersionSnapshot(session.getSessionId(), agentId,
-                        template.getVersion(), cfg, template.getBindings(),
-                        template.getAgentDef() != null ? template.getAgentDef().getGovernanceTier() : null);
-            }
-
-            // Step 5: 处理附件并持久化用户消息，更新会话状态为 THINKING
-            //   先调用 buildMessageWithAttachments 处理附件（裁剪/多模态），再持久化消息
-            //   人机协同恢复场景：无新用户消息时跳过持久化，保持 STARTED 状态
-            //   产出：effectiveMessage + 图片多模态内容块
-            AdaptedContent adapted = buildMessageWithAttachments(
-                    request.getMessage(), request.getAttachments(), tenantId, userId, cfg);
-            String effectiveMessage = adapted.text();
-            if (effectiveMessage != null && !effectiveMessage.isEmpty()) {
-                sessionManageService.persistUserMessage(session.getSessionId(), tenantId, userId, effectiveMessage);
-                sessionManageService.updateStatus(session.getSessionId(), SessionStatus.THINKING);
-            } else {
-                // 人机协同恢复：无新用户消息，保持审批接口设置的 STARTED 状态
-                log.info("HITL 恢复：跳过用户消息持久化，保持 STARTED 状态: sessionId={}", session.getSessionId());
-            }
-            builder.userMessage(effectiveMessage);
-            if (!adapted.imageBlocks().isEmpty()) {
-                builder.multimodalBlocks(adapted.imageBlocks());
-            }
-
-            // Step 6: 一次性查询绑定资源，获取或构建 HarnessAgent
-            //   先调用 buildResourceContext 查询 enabled 绑定 + 批量加载 Skill 实体（供整条链路共享，避免重复查库）
-            //   再调用 acquireHarnessAgent 获取/构建 Agent → 触发中间件注册
-            //   产出：HarnessAgent + AssemblyResourceContext
+            // 2b. 从模板派生装配资源上下文（P2-9 单口径），获取或构建 HarnessAgent
             AgentDef def = template.getAgentDef();
             String agentType = def != null && def.getAgentType() != null
                     ? def.getAgentType().name() : "UNIVERSAL";
-            AssemblyResourceContext resources = buildResourceContext(agentId);
-            HarnessAgent agent = acquireHarnessAgent(builder, session.getSessionId(), cfg, def,
-                    builder.build().getIsolationStrategy(), agentType, resources);
+            AssemblyResourceContext resources = buildResourceContext(template);
+            HarnessAgent agent = acquireHarnessAgent(session.getSessionId(), cfg, def,
+                    isolationStrategy, agentType, resources, template.getVersion(),
+                    tenantId, userId, agentId, template.getBindings(), request.getResources());
             builder.agent(agent);
 
-            // Step 7: 构造 RuntimeContext（注入会话级资源、技能、绑定、智能体类型/ID）
-            //   调用 buildRuntimeContext → 装配期资源上下文与运行时中间件共享同一份数据
-            //   产出：RuntimeContext（含技能分轨、资源注入、装配上下文）
+            // 2c. 构造 RuntimeContext：装配期资源上下文与运行时中间件共享同一份数据
             RuntimeContext rc = buildRuntimeContext(session.getSessionId(), tenantId, userId,
                     request.getDeptId(), request.getSkills(), request.getResources(),
                     agentType, agentId, resources);
 
-            // Step 8: 组装最终 AegisTaskContext 并双向绑定 RuntimeContext
-            //   将 taskCtx 放入 RuntimeContext 供中间件链读取；同时回填 RuntimeContext 到 taskCtx
-            //   产出：AegisTaskContext（可直接交付 TaskExecutionService 执行）
+            // ============ Phase 3 组装交付（P2-7② 分相）============
+            // 双向绑定：taskCtx 放入 RuntimeContext 供中间件链读取，RuntimeContext 回填 taskCtx
             AegisTaskContext taskCtx = builder.build();
             rc.put(AegisTaskContext.class, taskCtx);
             taskCtx.setRuntimeContext(rc);
@@ -196,19 +173,111 @@ public class AgentAssemblyService {
         } catch (Exception e) {
             log.error("Assembly failed: taskId={}", taskId, e);
             builder.blocked(true).blockReason("装配智能体失败: " + e.getMessage());
-            return builder.build();
+            return blockedContext(builder);
+        }
+    }
+
+    /**
+     * 阻断态上下文构建（P2-6：assemble 内 {@code build()} 收敛——成功终态 1 处 +
+     * 阻断态统一经此助手，blocked 原因已由调用方写入 builder）。
+     */
+    private AegisTaskContext blockedContext(AegisTaskContext.AegisTaskContextBuilder builder) {
+        return builder.build();
+    }
+
+    /**
+     * Phase 1 产物：模板 + 会话 + 快照恢复后的运行配置（P2-7②）。
+     */
+    private record TemplateSession(AgentRuntimeTemplate template, Session session, AgentConfig restoredConfig) {}
+
+    /**
+     * Phase 1 资源解析（P2-7② 从 assemble 拆出）：模板与会话的分轨解析。
+     *
+     * <p>分轨规则（P1-2 版本钉住）：
+     * <ul>
+     *   <li><b>新会话</b>：模板先行（最新版）→ 校验生命周期 → 建会话 → 首轮锁定快照，
+     *       防止校验失败留下孤儿会话</li>
+     *   <li><b>老会话</b>：会话先行 → 取首轮锁定的 {@code session.getAgentVersion()}
+     *       钉住模板版本，config/bindings/版本标签严格同源</li>
+     * </ul>
+     *
+     * @return 解析结果；模板缺失/不可用时返回 null（blocked 原因已写入 builder）
+     */
+    private TemplateSession resolveTemplateAndSession(ChatRequest request,
+                                                       AegisTaskContext.AegisTaskContextBuilder builder,
+                                                       Long tenantId, Long userId, Long agentId) {
+        AgentRuntimeTemplate template;
+        Session session;
+        if (request.getSessionId() == null || request.getSessionId().isEmpty()) {
+            // ---- 新会话路径：模板先行 ----
+            template = resolveAgentTemplate(agentId, null, tenantId, userId, builder);
+            if (template == null) {
+                return null;
+            }
+            // P2-6：旧会话冻结收敛到 getOrCreateSession 锁内一次执行
+            //（原此处锁外先冻结一次、锁内再冻结一次，double-check 复用语义也被锁外冻结破坏）
+            session = sessionManageService.getOrCreateSession(agentId, request.getSessionId(), tenantId, userId);
+        } else {
+            // ---- 老会话路径：会话先行 → 按钉住版本加载模板 ----
+            session = sessionManageService.getOrCreateSession(agentId, request.getSessionId(), tenantId, userId);
+            template = resolveAgentTemplate(agentId, session.getAgentVersion(), tenantId, userId, builder);
+            if (template == null) {
+                return null;
+            }
+        }
+
+        // 从版本快照恢复运行配置（快照优先于模板当前配置，保证进行中会话不随后续编辑漂移）
+        AgentConfig cfg = restoreConfigFromSnapshot(session, template.getAgentConfig(),
+                agentId, tenantId, builder);
+
+        // 首轮锁定版本快照（仅新会话首次调用时执行，固化配置+绑定+版本号）
+        if (session.getVersionSnapshot() == null) {
+            sessionManageService.lockVersionSnapshot(session.getSessionId(), agentId,
+                    template.getVersion(), cfg, template.getBindings(),
+                    template.getAgentDef() != null ? template.getAgentDef().getGovernanceTier() : null);
+            // 内存同步钉住版本，保证本轮 ctx.agentVersion 与快照落库值一致
+            session.setAgentVersion(template.getVersion());
+        }
+        return new TemplateSession(template, session, cfg);
+    }
+
+    /**
+     * Phase 2a（P2-7② 从 assemble 拆出）：附件处理 + 用户消息持久化 + 状态流转。
+     *
+     * <p>人机协同恢复场景：无新用户消息时跳过持久化，保持审批接口设置的 STARTED 状态。
+     */
+    private void persistIncomingMessage(ChatRequest request, Session session, AgentConfig cfg,
+                                         AegisTaskContext.AegisTaskContextBuilder builder,
+                                         Long tenantId, Long userId) {
+        AdaptedContent adapted = buildMessageWithAttachments(
+                request.getMessage(), request.getAttachments(), tenantId, userId, cfg);
+        String effectiveMessage = adapted.text();
+        if (effectiveMessage != null && !effectiveMessage.isEmpty()) {
+            sessionManageService.persistUserMessage(session.getSessionId(), tenantId, userId, effectiveMessage);
+            sessionManageService.updateStatus(session.getSessionId(), SessionStatus.THINKING);
+        } else {
+            log.info("HITL 恢复：跳过用户消息持久化，保持 STARTED 状态: sessionId={}", session.getSessionId());
+        }
+        builder.userMessage(effectiveMessage);
+        if (!adapted.imageBlocks().isEmpty()) {
+            builder.multimodalBlocks(adapted.imageBlocks());
         }
     }
 
     /**
      * 从实例池加载智能体模板并校验生命周期状态。
      *
-     * <p>在整体链路中的角色：assemble 第 1 步，确保智能体存在且当前可被使用，
+     * <p>在整体链路中的角色：装配模板加载步骤，确保智能体存在且当前可被使用，
      * 同时将模板信息填入 AegisTaskContext builder。
+     *
+     * <p>P1-2：{@code pinnedVersion} 非空时按该版本加载模板（老会话钉住版本），
+     * 为空时解析最新版本（新会话/未锁定会话）。
+     *
+     * @param pinnedVersion 钉住版本（来自 session.agentVersion；null 表示取最新版）
      */
-    private AgentRuntimeTemplate resolveAgentTemplate(Long agentId, Long tenantId, Long userId,
-                                                       AegisTaskContext.AegisTaskContextBuilder builder) {
-        AgentRuntimeTemplate template = agentPoolManager.getTemplate(agentId, null, tenantId, userId);
+    private AgentRuntimeTemplate resolveAgentTemplate(Long agentId, String pinnedVersion, Long tenantId,
+                                                       Long userId, AegisTaskContext.AegisTaskContextBuilder builder) {
+        AgentRuntimeTemplate template = agentPoolManager.getTemplate(agentId, pinnedVersion, tenantId, userId);
         if (template == null || template.getAgentDef() == null) {
             builder.blocked(true).blockReason("智能体不存在或未发布: agentId=" + agentId);
             return null;
@@ -299,24 +368,25 @@ public class AgentAssemblyService {
     /**
      * 从实例池获取或构建 HarnessAgent 实例。
      *
-     * @param resources 装配期资源上下文（T3/T4：enabled 绑定 + 绑定 Skill 实体，
-     *                  传递给 ToolBridge 注册 Toolkit，避免其按 agentId 重新查 DB）
+     * <p>P2-6：全部输入直接传参（原实现从 builder 反复 {@code build()} 取值 6 次，
+     * 每次全量拷贝 30+ 字段），调用方 assemble 持有全部局部变量零成本传递。
+     *
+     * @param agentVersion 智能体版本（P1-2：参与实例池键，隔离新老版本实例）
+     * @param resources    装配期资源上下文（T3/T4：enabled 绑定 + 绑定 Skill 实体，
+     *                     传递给 ToolBridge 注册 Toolkit，避免其按 agentId 重新查 DB）
+     * @param bindings     模板绑定（P2-9：与指纹同口径的单版本 enabled 绑定）
      */
-    private HarnessAgent acquireHarnessAgent(AegisTaskContext.AegisTaskContextBuilder builder,
-                                              String sessionId, AgentConfig cfg, AgentDef def,
+    private HarnessAgent acquireHarnessAgent(String sessionId, AgentConfig cfg, AgentDef def,
                                               IsolationStrategy isolationStrategy, String agentType,
-                                              AssemblyResourceContext resources) {
-        long tenantId = builder.build().getTenantId() != null ? builder.build().getTenantId() : 0L;
-        long userId = builder.build().getUserId() != null ? builder.build().getUserId() : 0L;
-        long agentId = builder.build().getAgentId() != null ? builder.build().getAgentId() : 0L;
+                                              AssemblyResourceContext resources, String agentVersion,
+                                              Long tenantId, Long userId, Long agentId,
+                                              List<AgentBinding> bindings, SessionResourcesRef sessionResources) {
         String sysPrompt = cfg != null ? cfg.getSystemPrompt() : null;
-        List<AgentBinding> bindings = builder.build().getBindings();
         String modelTier = cfg != null && cfg.getModelTier() != null
                 ? cfg.getModelTier().name() : "STANDARD";
 
         // 从会话资源中提取临时选择的 MCP 服务ID列表
         List<Long> sessionMcpServiceIds = null;
-        SessionResourcesRef sessionResources = builder.build().getSessionResources();
         if (sessionResources != null && sessionResources.getMcpIds() != null) {
             sessionMcpServiceIds = sessionResources.getMcpIds();
         }
@@ -325,7 +395,12 @@ public class AgentAssemblyService {
         // 在 preloadedTools 为空时自动走绑定装配路径（toolBridge.resolveTools(toolkit, resources)），
         // 通过装配期资源上下文加载工具。传空列表会导致 resolveTools(toolkit, emptyList) 直接 return。
         return agentInstanceManager.acquireOrBuild(
-                sessionId, tenantId, userId, agentType, agentId, sysPrompt,
+                sessionId,
+                tenantId != null ? tenantId : 0L,
+                userId != null ? userId : 0L,
+                agentType,
+                agentId != null ? agentId : 0L,
+                agentVersion, sysPrompt,
                 bindings != null ? bindings : Collections.emptyList(),
                 null,
                 modelTier, isolationStrategy,
@@ -334,17 +409,24 @@ public class AgentAssemblyService {
     }
 
     /**
-     * 构建装配期资源上下文（T3/T4 核心：一次查询、多处共享）。
+     * 从模板派生装配期资源上下文（P2-9 单一真相源）。
      *
-     * <p>一次 {@code listEnabledBindings(agentId)} + 一次 {@code selectBatchIds} 批量加载
-     * 绑定 Skill 实体。结果供装配链（ToolBridge 的 TOOL/SKILL 注册）与运行时中间件
+     * <p>模板绑定已按 {@code agentId + agentVersion + enabled=true} 单口径加载（见
+     * {@link AgentPoolManager#loadTemplate}），本方法不再按 agentId 跨版本重查——
+     * 指纹输入（模板 bindings）与工具注册输入（本上下文 enabledBindings）从此同源，
+     * 消除 D4 口径分裂。
+     *
+     * <p>批量加载绑定 Skill 实体供装配链（ToolBridge 的 SKILL 注册）与运行时中间件
      * （RAG 检索 / SkillRepository 分轨装载 / BindingSync 指纹）共享，消除重复 SELECT。
      *
      * <p>查询失败时返回空上下文并记录日志，不阻断装配（各消费方回退自身 DB 直查）。
      */
-    private AssemblyResourceContext buildResourceContext(Long agentId) {
+    private AssemblyResourceContext buildResourceContext(AgentRuntimeTemplate template) {
         try {
-            List<AgentBinding> enabledBindings = resourceQueryService.listEnabledBindings(agentId);
+            List<AgentBinding> enabledBindings = template.getBindings();
+            if (enabledBindings == null || enabledBindings.isEmpty()) {
+                return AssemblyResourceContext.EMPTY;
+            }
             List<Long> skillIds = enabledBindings.stream()
                     .filter(b -> b.getResourceType() == com.aegis.core.enums.resource.ResourceType.SKILL
                             && b.getResourceId() != null)
@@ -352,10 +434,10 @@ public class AgentAssemblyService {
                     .distinct()
                     .toList();
             List<com.aegis.core.domain.resource.Skill> boundSkills =
-                    resourceQueryService.findSkillsByIds(skillIds);
+                    skillIds.isEmpty() ? List.of() : resourceQueryService.findSkillsByIds(skillIds);
             return new AssemblyResourceContext(enabledBindings, boundSkills);
         } catch (Exception e) {
-            log.warn("装配期资源上下文构建失败，回退各消费方 DB 直查: agentId={}", agentId, e);
+            log.warn("装配期资源上下文构建失败，回退各消费方 DB 直查: agentId={}", template.getAgentId(), e);
             return AssemblyResourceContext.EMPTY;
         }
     }

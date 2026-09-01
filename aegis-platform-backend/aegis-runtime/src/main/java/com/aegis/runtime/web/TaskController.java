@@ -312,17 +312,16 @@ public class TaskController {
     // ============ 内部方法 ============
 
     /**
-     * 注入网关上下文到 ChatRequest。
+     * 注入网关上下文到 ChatRequest（P2-7①：身份三元组强类型注入一次）。
+     *
+     * <p>以网关 Header 解析值<strong>无条件覆盖</strong>请求体同名字段（即使 Header 为
+     * null 也覆盖为 null），杜绝客户端在请求体伪造 tenantId/userId/deptId 透传下游；
+     * {@code context} Map 不再承载身份，保留为 API 透传扩展位。
      */
     private void injectContext(ChatRequest request, Long tenantId, Long userId, Long deptId) {
-        Map<String, Object> context = new HashMap<>();
-        if (request.getContext() != null) {
-            context.putAll(request.getContext());
-        }
-        if (tenantId != null) context.put("tenantId", tenantId);
-        if (userId != null) context.put("userId", userId);
-        if (deptId != null) context.put("deptId", deptId);
-        request.setContext(context);
+        request.setTenantId(tenantId);
+        request.setUserId(userId);
+        request.setDeptId(deptId);
     }
 
     /**

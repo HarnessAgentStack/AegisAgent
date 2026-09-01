@@ -24,7 +24,11 @@ import java.util.ArrayList;
  *   <li>{@code sessionId}：会话ID，可选；为空时由运行时创建新会话</li>
  *   <li>{@code message}：用户输入消息，必填</li>
  *   <li>{@code attachments}：附件列表，可选</li>
- *   <li>{@code context}：上下文信息（tenantId/userId/deptId），由网关注入</li>
+ *   <li>{@code tenantId}/{@code userId}/{@code deptId}：身份三元组，由网关 Header
+ *       （X-Tenant-Id / X-User-Id / X-Dept-Id）经 {@code injectContext} 一次性强类型注入
+ *       （P2-7①：原弱类型 {@code Map<String,Object>} 每请求重复解析 6+ 次）</li>
+ *   <li>{@code context}：仅保留 API 透传扩展位（authType/bearerToken/extraParams 等），
+ *       不再承载身份字段，下游禁止从此 Map 解析租户/用户</li>
  *   <li>{@code isolationStrategy}：沙箱隔离策略（SHARED_PER_SCOPE/DEDICATED_PER_SESSION/SHARED_WITH_QUOTA），可选，默认 SHARED_PER_SCOPE</li>
  * </ul>
  *
@@ -50,7 +54,29 @@ public class ChatRequest implements Serializable {
     /** 附件列表，可选 */
     private List<AttachmentRef> attachments;
 
-    /** 上下文信息（tenantId/userId/deptId），由网关注入 */
+    /**
+     * 租户ID（P2-7① 强类型化）。
+     * <p>由网关 Header 注入，{@code TaskController#injectContext} 以 Header 值无条件覆盖
+     * 请求体同名值，防止客户端伪造租户身份。外部 API 调用由
+     * {@code AgentApiRuntimeController} 以 API 归属租户填充。
+     */
+    private Long tenantId;
+
+    /**
+     * 用户ID（P2-7① 强类型化）。注入语义同 {@link #tenantId}。
+     */
+    private Long userId;
+
+    /**
+     * 部门ID（P2-7① 强类型化）。注入语义同 {@link #tenantId}，可选。
+     */
+    private Long deptId;
+
+    /**
+     * API 透传扩展位（P2-7①：不再承载 tenantId/userId/deptId）。
+     * <p>仅 {@code AgentApiRuntimeController} 写入鉴权上下文（authType/bearerToken 等）
+     * 与 extraParams；下游身份读取一律使用 {@link #tenantId}/{@link #userId}/{@link #deptId}。
+     */
     private Map<String, Object> context;
 
     /**
@@ -75,51 +101,6 @@ public class ChatRequest implements Serializable {
      * <p>允许用户在对话中临时选择可用资源，仅本次会话生效，不改变用户订阅关系。
      */
     private SessionResourcesRef resources;
-
-    /** 便捷方法：从 context 获取 tenantId */
-    public Long getTenantId() {
-        if (context == null) {
-            return null;
-        }
-        Object v = context.get("tenantId");
-        if (v == null) {
-            return null;
-        }
-        if (v instanceof Number n) {
-            return n.longValue();
-        }
-        return Long.valueOf(v.toString());
-    }
-
-    /** 便捷方法：从 context 获取 userId */
-    public Long getUserId() {
-        if (context == null) {
-            return null;
-        }
-        Object v = context.get("userId");
-        if (v == null) {
-            return null;
-        }
-        if (v instanceof Number n) {
-            return n.longValue();
-        }
-        return Long.valueOf(v.toString());
-    }
-
-    /** 便捷方法：从 context 获取 deptId */
-    public Long getDeptId() {
-        if (context == null) {
-            return null;
-        }
-        Object v = context.get("deptId");
-        if (v == null) {
-            return null;
-        }
-        if (v instanceof Number n) {
-            return n.longValue();
-        }
-        return v.toString().isEmpty() ? null : Long.valueOf(v.toString());
-    }
 
     /**
      * 解析隔离策略字符串为枚举。

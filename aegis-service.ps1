@@ -1,16 +1,24 @@
 <#
 .SYNOPSIS
-    Aegis Platform Service Manager (start/stop/status/build/restart)
+    Aegis Platform Service Manager (start/stop/appstop/status/build/restart)
 .DESCRIPTION
     环境变量约定（未设置时尝试自动探测，探测失败则报错退出）：
       JAVA_HOME   - JDK 安装目录（或 PATH 含 java）
       MVN_CMD     - mvn 可执行文件路径（或 PATH 含 mvn）
       AEGIS_HOME  - 工程根目录（默认脚本所在目录）
       DOCKER_EXE  - Docker Desktop 可执行文件路径（默认探测 Program Files）
+
+    Action 说明：
+      start    - 起基础设施(Docker) + 本机应用(Java/vite)
+      stop     - 停本机应用 + 停基础设施(Docker)
+      appstop  - 仅停本机应用进程，保留基础设施容器（切到 quickstart 全 Docker 模式用）
+      status   - 查看全部状态
+      build    - 构建后端 JAR
+      restart  - 停应用 + 清日志 + 构建 + 起全部
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("start", "stop", "status", "build", "restart")]
+    [ValidateSet("start", "stop", "appstop", "status", "build", "restart")]
     [string]$Action = "status"
 )
 
@@ -383,6 +391,13 @@ switch ($Action) {
         Stop-Infra
         Write-Host ""
         Write-Ok "All services stopped"
+    }
+    "appstop" {
+        Write-Info "仅停止本机应用进程（保留基础设施容器）..."
+        Stop-Frontend
+        Stop-Backend
+        Write-Host ""
+        Write-Ok "本机应用已停止，基础设施容器保留运行；可用 quickstart.ps1 切换到全 Docker 模式"
     }
     "restart" {
         Write-Info "Restarting all services (stop -> clear logs -> build -> start)..."

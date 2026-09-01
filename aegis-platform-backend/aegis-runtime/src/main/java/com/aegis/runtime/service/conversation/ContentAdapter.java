@@ -1,5 +1,6 @@
 package com.aegis.runtime.service.conversation;
 
+import com.aegis.core.common.text.TokenEstimator;
 import com.aegis.core.dto.agent.AttachmentRef;
 import com.aegis.runtime.infrastructure.document.AttachmentStrategy;
 import com.aegis.runtime.infrastructure.document.ParsedContent;
@@ -145,7 +146,8 @@ public class ContentAdapter {
      * </ol>
      */
     private String smartTruncate(String text, int tokenBudget) {
-        int charBudget = tokenBudget * 4; // 粗略估算：1 token ≈ 4 字符（中文）
+        // P1-4：字符集感知的 token→字符预算换算（中文按 1.3 token/字，英文按 4 字符/token）
+        int charBudget = TokenEstimator.tokenBudgetToCharBudget(tokenBudget, text);
 
         if (text.length() <= charBudget) {
             return text;
@@ -159,10 +161,11 @@ public class ContentAdapter {
         }
 
         return text.substring(0, truncateAt)
-                + "\n\n... (内容已智能截断，保留前 " + (truncateAt / 4) + " token)";
+                + "\n\n... (内容已智能截断，保留前 " + TokenEstimator.estimateTokens(text.substring(0, truncateAt)) + " token)";
     }
 
     private int estimateTokens(String text) {
-        return text != null ? text.length() / 4 : 0;
+        // P1-4：使用字符集感知估算替代 length()/4，中文输入不再严重偏低
+        return TokenEstimator.estimateTokens(text);
     }
 }

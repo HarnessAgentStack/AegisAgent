@@ -9,7 +9,7 @@ import com.aegis.core.enums.agent.AgentLifeStatus;
 import com.aegis.core.enums.common.SecurityLevel;
 import com.aegis.core.enums.model.ProviderStatus;
 import com.aegis.core.enums.resource.ResourceType;
-import com.aegis.core.common.tenant.TenantContextHolder;
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.core.enums.resource.SubscriberType;
 import com.aegis.core.enums.resource.ToolSourceType;
 import com.aegis.dal.mapper.resource.McpSubscriptionMapper;
@@ -130,24 +130,27 @@ public class AegisToolBridge {
 
         // WebFlux boundedElastic 线程 ThreadLocal 可能丢失，
         // 从 AssemblyResourceContext 的 binding 取 tenantId 手动 bind，
-        // 确保后续 findToolById/findSkillById 带正确租户过滤
-        Long ctxTenant = allBindings.get(0).getTenantId();
-        if (ctxTenant != null) {
-            TenantContextHolder.bind(ctxTenant);
+        // 确保后续 findToolById/findSkillById 带正确租户过滤。
+        // P1-1：恢复式作用域——块结束恢复进入前上下文，不再向线程池泄漏租户。
+        try (var ignore = TenantContextScope.of(
+                allBindings.get(0).getTenantId())) {
+            doResolveTools(toolkit, resources, allBindings);
         }
+    }
 
-        // 处理 TOOL 类型绑定
-        List<Tool> tools = new ArrayList<>();
-        for (AgentBinding binding : allBindings) {
-            if (binding.getResourceType() == ResourceType.TOOL) {
-                Tool tool = resourceQueryService.findToolById(binding.getResourceId());
-                if (tool == null) {
-                    log.warn("工具不存在，跳过: resourceId={}", binding.getResourceId());
-                    continue;
-                }
-                tools.add(tool);
-            }
-        }
+    /**
+     * {@link #resolveTools(Toolkit, AssemblyResourceContext)} 的实现体，
+     * 在调用方已建立租户作用域的前提下执行工具/技能注册。
+     */
+    private void doResolveTools(Toolkit toolkit, AssemblyResourceContext resources,
+                                List<AgentBinding> allBindings) {
+
+        // 处理 TOOL 类型绑定：批量预载消除 N+1（P2-3①，原逐个 findToolById）
+        List<Long> toolIds = allBindings.stream()
+                .filter(b -> b.getResourceType() == ResourceType.TOOL)
+                .map(AgentBinding::getResourceId)
+                .toList();
+        List<Tool> tools = resourceQueryService.findToolsByIds(toolIds);
         resolveTools(toolkit, tools);
 
         // 处理 SKILL 类型绑定：优先复用装配期批量预载实体（T4），缺失时降级单查
@@ -299,7 +302,8 @@ public class AegisToolBridge {
             McpService mcpService = resourceQueryService.findMcpServiceById(tool.getMcpServiceId());
             String endpoint = mcpService != null ? mcpService.getEndpoint() : null;
 
-            List<McpSchema.Tool> mcpTools = mcpInvoker.listTools(mcpServiceId);
+            // P2-2①：传入预加载的 mcpService，消除 listTools 内部同行重查（原 3 读→1 读）
+            List<McpSchema.Tool> mcpTools = mcpInvoker.listTools(mcpService);
             if (mcpTools == null || mcpTools.isEmpty()) {
                 log.warn("MCP 服务未暴露任何工具，跳过注册: mcpServiceId={}", mcpServiceId);
                 return;
@@ -413,17 +417,11 @@ public class AegisToolBridge {
             return 0;
         }
 
-        // 2. 过滤 PUBLISHED 状态的技能并注册
+        // 2. 批量查询技能实体并过滤 PUBLISHED 状态注册（P2-3②，原逐个 findSkillById）
+        List<Skill> skills = resourceQueryService.findSkillsByIds(subscribedSkillIds);
         int registered = 0;
-        for (Long skillId : subscribedSkillIds) {
-            Skill skill = resourceQueryService.findSkillById(skillId);
-            if (skill == null) {
-                log.warn("resolveSubscribedSkillAsTools: 订阅技能不存在，跳过: skillId={}", skillId);
-                continue;
-            }
+        for (Skill skill : skills) {
             if (skill.getLifeStatus() != AgentLifeStatus.PUBLISHED) {
-                log.info("resolveSubscribedSkillAsTools: 订阅技能非 PUBLISHED 状态，跳过: skillId={}, status={}",
-                        skillId, skill.getLifeStatus());
                 continue;
             }
             registerSkillAsTool(toolkit, skill);
@@ -475,21 +473,8 @@ public class AegisToolBridge {
             return 0;
         }
 
-        // 2. 过滤已发布且激活的服务
-        List<McpService> activeServices = new ArrayList<>();
-        for (Long serviceId : subscribedServiceIds) {
-            McpService service = resourceQueryService.findMcpServiceById(serviceId);
-            if (service != null
-                    && service.getLifeStatus() == AgentLifeStatus.PUBLISHED
-                    && service.getStatus() == ProviderStatus.ACTIVE) {
-                activeServices.add(service);
-            } else {
-                log.info("resolveMcpToolsForSubscriptions: 服务不符合条件, serviceId={}, lifeStatus={}, status={}",
-                        serviceId,
-                        service != null ? service.getLifeStatus() : "null",
-                        service != null ? service.getStatus() : "null");
-            }
-        }
+        // 2. 批量查询已发布且激活的 MCP 服务（P2-3③，原逐个 findMcpServiceById）
+        List<McpService> activeServices = resourceQueryService.findActiveMcpServicesByIds(Set.copyOf(subscribedServiceIds));
 
         log.info("resolveMcpToolsForSubscriptions: 过滤后有效服务数={}, 订阅数={}", activeServices.size(), subscribedServiceIds.size());
 
@@ -531,23 +516,12 @@ public class AegisToolBridge {
             return 0;
         }
 
+        // 批量查询已发布且激活的 MCP 服务（P2-3④，原逐个 findMcpServiceById）
         int totalRegistered = 0;
-        for (Long serviceId : mcpServiceIds) {
-            if (serviceId == null) {
-                continue;
-            }
-            McpService service = resourceQueryService.findMcpServiceById(serviceId);
-            if (service != null
-                    && service.getLifeStatus() == AgentLifeStatus.PUBLISHED
-                    && service.getStatus() == ProviderStatus.ACTIVE) {
-                int registered = registerToolsFromMcpService(toolkit, serviceId, service.getEndpoint());
-                totalRegistered += registered;
-            } else {
-                log.info("resolveMcpToolsForServiceIds: 服务不符合条件, serviceId={}, lifeStatus={}, status={}",
-                        serviceId,
-                        service != null ? service.getLifeStatus() : "null",
-                        service != null ? service.getStatus() : "null");
-            }
+        List<McpService> activeServices = resourceQueryService.findActiveMcpServicesByIds(
+                mcpServiceIds.stream().filter(java.util.Objects::nonNull).collect(Collectors.toSet()));
+        for (McpService service : activeServices) {
+            totalRegistered += registerToolsFromMcpService(toolkit, service.getId(), service.getEndpoint());
         }
 
         log.info("resolveMcpToolsForServiceIds: 完成加载, serviceCount={}, toolCount={}",

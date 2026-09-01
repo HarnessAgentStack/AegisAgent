@@ -43,7 +43,7 @@ import java.util.Map;
  *
  * <h3>失效机制</h3>
  * <ul>
- *   <li>自动失效：expireAfterAccess=idle-evict-minutes（配置驱动，默认 60min），长时间未访问自动回收</li>
+ *   <li>自动失效：expireAfterWrite=idle-evict-minutes（P2-8：保证最坏陈旧 ≤ TTL，热缓存不再"永不自动过期"）</li>
  *   <li>手动失效：{@link #invalidateTemplate(Long, String, Long)} 由配置变更触发</li>
  *   <li>容量上限：maximumSize=5000，超出按 LRU 淘汰</li>
  * </ul>
@@ -90,7 +90,10 @@ public class AgentPoolManager {
         int maxSize = runtimeProperties.getAgentPool().getMaxPerTenant() * 50;
         this.templateCache = Caffeine.newBuilder()
                 .maximumSize(Math.max(maxSize, 5000))
-                .expireAfterAccess(Duration.ofMinutes(runtimeProperties.getAgentPool().getIdleEvictMinutes()))
+                // P2-8：expireAfterWrite（而非 expireAfterAccess）——保证最坏陈旧 ≤ TTL。
+                // expireAfterAccess 衡量"访问距今"（热缓存永不自动过期），
+                // expireAfterWrite 衡量"数据距今"（加载后 TTL 必过期重建）。
+                .expireAfterWrite(Duration.ofMinutes(runtimeProperties.getAgentPool().getIdleEvictMinutes()))
                 .recordStats()
                 .removalListener((key, value, cause) ->
                         log.info("AgentRuntimeTemplate evicted: key={}, cause={}", key, cause))
@@ -241,11 +244,14 @@ public class AgentPoolManager {
             agentConfig = buildDefaultConfig(agentId, version, tenantId);
         }
 
-        // 3. 加载资源绑定
+        // 3. 加载资源绑定（P2-9 单一真相源口径：agentId + agentVersion + enabled=true）
+        //    模板绑定从此同时是「指纹输入」与「工具注册输入」的唯一来源——
+        //    disable 的绑定既不进指纹也不进注册，消除口径分裂（D4）。
         List<AgentBinding> bindings = agentBindingMapper.selectList(
                 new LambdaQueryWrapper<AgentBinding>()
                         .eq(AgentBinding::getAgentId, agentId)
-                        .eq(AgentBinding::getAgentVersion, version));
+                        .eq(AgentBinding::getAgentVersion, version)
+                        .eq(AgentBinding::getEnabled, true));
         if (bindings == null) {
             bindings = Collections.emptyList();
         }

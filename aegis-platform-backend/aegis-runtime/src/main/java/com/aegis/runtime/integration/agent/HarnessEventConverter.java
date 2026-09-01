@@ -128,13 +128,15 @@ public class HarnessEventConverter {
                             ((ToolResultStartEvent) event).getToolCallId());
                     break;
                 case "TOOL_RESULT_TEXT_DELTA":
-                    log.info("========== [EventConverter] TOOL_RESULT_TEXT_DELTA: toolCallId={}, deltaLen={} ==========",
+                    // P2-6④：高频增量日志降 DEBUG（与 TEXT_BLOCK_DELTA 同策略）
+                    log.debug("[EventConverter] TOOL_RESULT_TEXT_DELTA: toolCallId={}, deltaLen={}",
                             ((ToolResultTextDeltaEvent) event).getToolCallId(),
                             ((ToolResultTextDeltaEvent) event).getDelta() != null ?
                                     ((ToolResultTextDeltaEvent) event).getDelta().length() : 0);
                     break;
                 case "TOOL_RESULT_DATA_DELTA":
-                    log.info("========== [EventConverter] TOOL_RESULT_DATA_DELTA: toolCallId={} ==========",
+                    // P2-6④：高频增量日志降 DEBUG
+                    log.debug("[EventConverter] TOOL_RESULT_DATA_DELTA: toolCallId={}",
                             ((ToolResultDataDeltaEvent) event).getToolCallId());
                     break;
                 case "TOOL_RESULT_END":

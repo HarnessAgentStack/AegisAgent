@@ -13,7 +13,7 @@ import com.aegis.core.enums.resource.SkillScope;
 import com.aegis.core.security.SkillContentScanner;
 import com.aegis.core.web.annotation.TenantId;
 import com.aegis.core.web.annotation.UserId;
-import com.aegis.core.common.tenant.TenantContextHolder;
+import com.aegis.core.common.tenant.TenantContextScope;
 import org.springframework.web.bind.annotation.RequestHeader;
 import com.aegis.dal.mapper.agent.AgentBindingMapper;
 import com.aegis.dal.mapper.agent.AgentDefMapper;
@@ -402,28 +402,31 @@ public class SkillChatController {
     @GetMapping("/{id}/metadata")
     public SkillMetadataResponse getMetadata(@PathVariable Long id, @UserId Long userId,
                                          @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
-        TenantContextHolder.bind(tenantId);
-        Skill skill = skillMapper.selectById(id);
-        if (skill == null) return null;
-        // 权限校验：GLOBAL 技能所有人可见，LOCAL 技能仅作者可见
-        if (!canAccessSkill(skill, userId)) {
-            throw new com.aegis.core.common.error.BusinessException(
-                    com.aegis.core.common.web.ResultCode.FORBIDDEN, "无权查看该技能");
+        // 边界式租户作用域（P1-1）：WebFlux 阻塞式 controller 运行在 boundedElastic 线程，
+        // 网关过滤器的绑定不跨线程传递，需在执行线程上显式绑定；线程归池前必须清空。
+        try (var ignore = TenantContextScope.bound(tenantId)) {
+            Skill skill = skillMapper.selectById(id);
+            if (skill == null) return null;
+            // 权限校验：GLOBAL 技能所有人可见，LOCAL 技能仅作者可见
+            if (!canAccessSkill(skill, userId)) {
+                throw new com.aegis.core.common.error.BusinessException(
+                        com.aegis.core.common.web.ResultCode.FORBIDDEN, "无权查看该技能");
+            }
+            SkillMetadataResponse resp = new SkillMetadataResponse();
+            resp.setId(skill.getId());
+            resp.setSkillCode(skill.getSkillCode());
+            resp.setSkillName(skill.getSkillName());
+            resp.setDescription(skill.getDescription());
+            resp.setInstructions(skill.getInstructions());
+            resp.setInputs(skill.getInputs());
+            resp.setOutputs(skill.getOutputs());
+            resp.setBindingTools(skill.getBindingTools());
+            resp.setScope(skill.getScope() != null ? skill.getScope().name() : "LOCAL");
+            resp.setVersion(skill.getVersion());
+            resp.setLifeStatus(skill.getLifeStatus() != null ? skill.getLifeStatus().name() : null);
+            resp.setIsSystem(Boolean.TRUE.equals(skill.getIsSystem()));
+            return resp;
         }
-        SkillMetadataResponse resp = new SkillMetadataResponse();
-        resp.setId(skill.getId());
-        resp.setSkillCode(skill.getSkillCode());
-        resp.setSkillName(skill.getSkillName());
-        resp.setDescription(skill.getDescription());
-        resp.setInstructions(skill.getInstructions());
-        resp.setInputs(skill.getInputs());
-        resp.setOutputs(skill.getOutputs());
-        resp.setBindingTools(skill.getBindingTools());
-        resp.setScope(skill.getScope() != null ? skill.getScope().name() : "LOCAL");
-        resp.setVersion(skill.getVersion());
-        resp.setLifeStatus(skill.getLifeStatus() != null ? skill.getLifeStatus().name() : null);
-        resp.setIsSystem(Boolean.TRUE.equals(skill.getIsSystem()));
-        return resp;
     }
 
     // U6: 删除 getVersions 空实现端点——版本历史由 admin SkillVersionService
@@ -454,9 +457,11 @@ public class SkillChatController {
     @GetMapping("/{id}/skillmd")
     public Map<String, String> getSkillMd(@PathVariable Long id,
                                       @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
-        TenantContextHolder.bind(tenantId);
-        String content = skillPackagerTool.generateSkillMd(id);
-        return Map.of("content", content);
+        // 边界式租户作用域（P1-1）：同 getMetadata，boundedElastic 线程归池前必须清空
+        try (var ignore = TenantContextScope.bound(tenantId)) {
+            String content = skillPackagerTool.generateSkillMd(id);
+            return Map.of("content", content);
+        }
     }
 
     /**

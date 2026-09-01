@@ -64,6 +64,7 @@ public class McpManageService {
     private final McpClientService mcpClientService;
     private final McpToolSyncService mcpToolSyncService;
     private final ToolMapper toolMapper;
+    private final ResourceChangePublisher resourceChangePublisher;
 
     /**
      * 发布/注册 MCP 服务（管理员平台级）。
@@ -212,6 +213,8 @@ public class McpManageService {
 
         mcpToolSyncService.asyncSyncTools(serviceId, existing.getEndpoint(),
                 existing.getProtocol(), existing.getSecurityLevel());
+
+        resourceChangePublisher.publishMcpSubscriptionChanged(null, null, "ACTIVATE");
     }
 
     /**
@@ -228,6 +231,8 @@ public class McpManageService {
                 .eq(McpService::getId, serviceId)
                 .set(McpService::getStatus, ProviderStatus.PENDING));
         log.info("MCP服务禁用: id={}, code={}", serviceId, existing.getMcpCode());
+
+        resourceChangePublisher.publishMcpSubscriptionChanged(null, null, "DEACTIVATE");
     }
 
     /**
@@ -477,6 +482,8 @@ public class McpManageService {
                 .eq(McpService::getId, serviceId)
                 .setSql("subs_count = IFNULL(subs_count, 0) + 1"));
         log.info("MCP服务订阅: serviceId={}, tenantId={}, userId={}", serviceId, tenantId, userId);
+
+        resourceChangePublisher.publishMcpSubscriptionChanged(tenantId, userId, "SUBSCRIBE");
     }
 
     /**
@@ -506,6 +513,8 @@ public class McpManageService {
                 .eq(McpService::getId, serviceId)
                 .setSql("subs_count = GREATEST(IFNULL(subs_count, 0) - 1, 0)"));
         log.info("MCP服务取消订阅: serviceId={}, tenantId={}, userId={}", serviceId, tenantId, userId);
+
+        resourceChangePublisher.publishMcpSubscriptionChanged(tenantId, userId, "UNSUBSCRIBE");
     }
 
     /**

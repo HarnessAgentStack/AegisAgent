@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Aegis Platform 一键启动脚本 (Docker 全栈)
 .DESCRIPTION
@@ -8,12 +8,13 @@
     .\quickstart.ps1           # 全栈构建并启动
     .\quickstart.ps1 infra     # 仅基础设施
     .\quickstart.ps1 app       # 仅应用（前提：基础设施已起）
-    .\quickstart.ps1 down      # 停止全部
+    .\quickstart.ps1 appdown   # 仅停止应用容器，保留基础设施（切到本机开发用）
+    .\quickstart.ps1 down      # 停止全部（应用 + 基础设施）
     .\quickstart.ps1 logs      # 查看应用日志
 #>
 param(
     [Parameter(Position=0)]
-    [ValidateSet("all","infra","app","down","logs")]
+    [ValidateSet("all","infra","app","appdown","down","logs")]
     [string]$Action = "all"
 )
 
@@ -53,6 +54,11 @@ switch ($Action) {
         docker compose -f "$Infra/docker-compose.yml" -f "$Infra/docker-compose.app.yml" up -d --build
         Write-Host ""
         Log "全栈已启动 - 前端: http://localhost （DEFAULT / admin / aegis@123）"
+    }
+    "appdown" {
+        Log "仅停止应用容器（保留基础设施）..."
+        docker compose -f "$Infra/docker-compose.app.yml" down 2>$null
+        Log "应用已停止，基础设施保留运行；可用 aegis-service.ps1 切换到本机开发模式"
     }
     "down" {
         Log "停止应用..."

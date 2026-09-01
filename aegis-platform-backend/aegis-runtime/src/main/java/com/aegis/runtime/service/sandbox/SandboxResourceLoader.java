@@ -336,7 +336,9 @@ public class SandboxResourceLoader {
         }
 
         List<Long> kbIds = resourceQueryService.listBoundKbIds(agentId);
-        List<KnowledgeBase> kbs = resourceQueryService.findPublishedKnowledgeBasesByIds(new HashSet<>(kbIds));
+        List<KnowledgeBase> kbs = resourceQueryService.findKnowledgeBasesByIds(new HashSet<>(kbIds)).stream()
+                .filter(kb -> kb.getLifeStatus() == AgentLifeStatus.PUBLISHED)
+                .toList();
 
         List<Skill> skills = new ArrayList<>();
         for (AgentBinding binding : resourceQueryService.listEnabledBindings(agentId)) {

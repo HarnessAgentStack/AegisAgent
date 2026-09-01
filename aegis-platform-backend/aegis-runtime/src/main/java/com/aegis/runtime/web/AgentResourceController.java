@@ -1,6 +1,6 @@
 package com.aegis.runtime.web;
 
-import com.aegis.core.common.tenant.TenantContextHolder;
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.core.common.web.Result;
 import com.aegis.core.dto.chat.AvailableResourcesResponse;
 import com.aegis.core.dto.chat.AvailableResourcesResponse.KbResourceItem;
@@ -136,7 +136,17 @@ public class AgentResourceController {
             @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
             @RequestHeader(value = "X-User-Id", required = false) Long userId) {
 
-        TenantContextHolder.bind(tenantId);
+        // 边界式租户作用域（P1-1）：WebFlux 阻塞式 controller 运行在 boundedElastic 线程，
+        // 网关过滤器的绑定不跨线程传递，需在执行线程上显式绑定；线程归池前必须清空。
+        try (var ignore = TenantContextScope.bound(tenantId)) {
+            return doAvailable(agentId, tenantId, userId);
+        }
+    }
+
+    /**
+     * {@link #available} 的实现体（调用方已绑定租户作用域）。
+     */
+    private Result<AvailableResourcesResponse> doAvailable(Long agentId, Long tenantId, Long userId) {
         log.info("查询可用资源: agentId={}, tenantId={}, userId={}", agentId, tenantId, userId);
 
         // 无 agentId 时，返回市场级推荐资源（已发布且启用的）
@@ -241,7 +251,17 @@ public class AgentResourceController {
             @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
             @RequestHeader(value = "X-User-Id", required = false) Long userId) {
 
-        TenantContextHolder.bind(tenantId);
+        // 边界式租户作用域（P1-1）：同 available，boundedElastic 线程归池前必须清空
+        try (var ignore = TenantContextScope.bound(tenantId)) {
+            return doValidate(agentId, resources, userId);
+        }
+    }
+
+    /**
+     * {@link #validate} 的实现体（调用方已绑定租户作用域）。
+     */
+    private Result<AvailableResourcesResponse> doValidate(
+            Long agentId, SessionResourcesRef resources, Long userId) {
         log.info("验证资源引用: agentId={}, kbIds={}, mcpIds={}",
                 agentId,
                 resources != null ? resources.getKbIds() : null,

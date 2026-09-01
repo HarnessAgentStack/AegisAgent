@@ -1,5 +1,6 @@
 package com.aegis.runtime.service.conversation;
 
+import com.aegis.core.common.text.TokenEstimator;
 import com.aegis.core.common.tenant.TenantContextHolder;
 import com.aegis.core.domain.session.SessionMessage;
 import com.aegis.core.domain.session.SessionSummary;
@@ -128,7 +129,7 @@ public class SessionSummaryService {
                             .seqStart(seqStart)
                             .seqEnd(seqEnd)
                             .summaryText(result.trim())
-                            .tokenCount(result.length() / 4)
+                            .tokenCount(TokenEstimator.estimateTokens(result))
                             .build();
                     summary.setTenantId(tenantId);
                     summary.setCreateBy(userId);
