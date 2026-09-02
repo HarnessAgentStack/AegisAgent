@@ -11,26 +11,18 @@ import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.resource.Tool;
-import com.aegis.core.domain.sandbox.SandboxInstance;
 import com.aegis.core.dto.security.BuiltinToolRiskConfig;
 import com.aegis.core.dto.security.ToolRiskInfo;
 import com.aegis.core.spi.ISandboxBackend;
 import com.aegis.runtime.integration.ext.TenantSessionKey;
-import com.aegis.runtime.integration.middleware.AegisMiddlewareChain;
 import com.aegis.runtime.integration.skill.AegisSkillRepository;
+import io.agentscope.core.middleware.MiddlewareBase;
 import com.aegis.runtime.integration.workspace.WorkspaceMaterializer;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionRule;
-import com.aegis.runtime.service.sandbox.AegisSandboxCoordinator;
-import com.aegis.runtime.service.sandbox.IdleReleaseTracker;
-import com.aegis.runtime.service.sandbox.SandboxReadinessGate;
-import com.aegis.runtime.infrastructure.sandbox.client.AegisSandboxFilesystemSpec;
-import com.aegis.runtime.infrastructure.sandbox.client.LazySandboxFilesystemSpec;
 import com.aegis.runtime.infrastructure.sandbox.client.MinioSnapshotClient;
-import com.aegis.runtime.service.sandbox.SandboxResourceLoader;
-import com.aegis.runtime.service.sandbox.SlotKeyParser;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -50,7 +42,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
-import com.aegis.runtime.integration.middleware.AegisHitlRuleLoader;
 import com.aegis.core.enums.sandbox.IsolationStrategy;
 import com.aegis.core.enums.agent.GovernanceTier;
 import com.aegis.core.enums.common.SecurityLevel;
@@ -93,23 +84,14 @@ public class AegisAgentInstanceManager {
     private final DistributedStore distributedStore;
     private final WorkspaceMaterializer workspaceMaterializer;
     private final AegisToolBridge toolBridge;
-    /** 中间件链装配器，构建 Agent 时调用 build() 生成中间件列表注入 Builder */
-    private final AegisMiddlewareChain middlewareChain;
+    /** Aegis 自研中间件列表（Spring 自动注入所有 MiddlewareBase bean），构建 Agent 时直接注入 Builder */
+    private final List<MiddlewareBase> standaloneMiddlewares;
     private final ISandboxBackend sandboxBackend;
     private final SandboxSnapshotSpec snapshotSpec;
-    private final AegisSandboxCoordinator sandboxCoordinator;
-    /** 沙箱就绪门控，实例关闭时清理会话绑定，避免命中已释放的沙箱句柄 */
-    private final SandboxReadinessGate sandboxReadinessGate;
-    /** 空闲释放追踪器，后台周期扫描，长时间未使用的沙箱主动回池 */
-    private final IdleReleaseTracker idleReleaseTracker;
     /** 技能仓库，注册到 Builder 后技能中间件自动将可见技能注入系统提示词 */
     private final AegisSkillRepository skillRepository;
     /** MinIO 快照客户端，沙箱反序列化时重新绑定远程快照 */
     private final MinioSnapshotClient minioSnapshotClient;
-    /** 沙箱资源装载器，沙箱分配成功后异步物化知识库/技能/MCP 清单到工作区（不阻塞构建） */
-    private final SandboxResourceLoader sandboxResourceLoader;
-    /** HITL 规则加载器，将数据库审批配置转为权限规则注入权限上下文，运行时由框架权限引擎自动触发审批 */
-    private final AegisHitlRuleLoader hitlRuleLoader;
 
     /** AgentScope PermissionRule 加载器，从 sec_tool_policy 表加载策略矩阵映射为 PermissionBehavior */
     @Autowired
@@ -137,10 +119,6 @@ public class AegisAgentInstanceManager {
     @Value("${aegis.runtime.sandbox.enabled:false}")
     private boolean sandboxEnabled;
 
-    /** 沙箱惰性分配开关：开启后构建期不分配 Pod，推迟到首次沙箱工具调用时再分配 */
-    @Value("${aegis.runtime.sandbox.lazy-allocation.enabled:true}")
-    private boolean lazyAllocationEnabled;
-
     /** 实例池，读操作无锁并发，结构变更用写锁互斥 */
     private final ConcurrentHashMap<String, AgentEntry> pool = new ConcurrentHashMap<>();
 
@@ -153,29 +131,19 @@ public class AegisAgentInstanceManager {
     public AegisAgentInstanceManager(DistributedStore distributedStore,
                                      WorkspaceMaterializer workspaceMaterializer,
                                      AegisToolBridge toolBridge,
-                                     AegisMiddlewareChain middlewareChain,
+                                     List<MiddlewareBase> standaloneMiddlewares,
                                      ISandboxBackend sandboxBackend,
                                      SandboxSnapshotSpec snapshotSpec,
-                                     AegisSandboxCoordinator sandboxCoordinator,
                                      MinioSnapshotClient minioSnapshotClient,
-                                     AegisHitlRuleLoader hitlRuleLoader,
-                                     AegisSkillRepository skillRepository,
-                                     SandboxResourceLoader sandboxResourceLoader,
-                                     SandboxReadinessGate sandboxReadinessGate,
-                                     IdleReleaseTracker idleReleaseTracker) {
+                                     AegisSkillRepository skillRepository) {
         this.distributedStore = distributedStore;
         this.workspaceMaterializer = workspaceMaterializer;
         this.toolBridge = toolBridge;
-        this.middlewareChain = middlewareChain;
+        this.standaloneMiddlewares = standaloneMiddlewares;
         this.sandboxBackend = sandboxBackend;
         this.snapshotSpec = snapshotSpec;
-        this.sandboxCoordinator = sandboxCoordinator;
         this.minioSnapshotClient = minioSnapshotClient;
-        this.hitlRuleLoader = hitlRuleLoader;
         this.skillRepository = skillRepository;
-        this.sandboxResourceLoader = sandboxResourceLoader;
-        this.sandboxReadinessGate = sandboxReadinessGate;
-        this.idleReleaseTracker = idleReleaseTracker;
     }
 
     /**
@@ -190,23 +158,12 @@ public class AegisAgentInstanceManager {
         });
         cleaner.scheduleAtFixedRate(this::cleanExpired,
                 cleanIntervalMinutes, cleanIntervalMinutes, TimeUnit.MINUTES);
-        // 复用清理线程周期，扫描空闲超阈值沙箱主动回池
-        cleaner.scheduleAtFixedRate(() -> {
-            try {
-                if (idleReleaseTracker != null) {
-                    idleReleaseTracker.scanAndRelease();
-                }
-            } catch (Exception e) {
-                log.warn("IdleReleaseTracker 周期扫描异常: {}", e.getMessage());
-            }
-        }, cleanIntervalMinutes, cleanIntervalMinutes, TimeUnit.MINUTES);
         log.info("AegisAgentInstanceManager 已初始化: maxSize={}, idleTimeout={}min, cleanInterval={}min",
                 maxSize, idleTimeoutMinutes, cleanIntervalMinutes);
-        // 验证沙箱配置状态
-        log.info("沙箱配置状态: sandboxEnabled={}, sandboxBackend={}, sandboxCoordinator={}",
+        // 沙箱池已移交 AgentScope SandboxManager + SandboxLifecycleMiddleware，本管理器仅负责 Agent 实例池 LRU/TTL
+        log.info("沙箱配置状态: sandboxEnabled={}, sandboxBackend={}",
                 sandboxEnabled,
-                sandboxBackend != null ? sandboxBackend.getClass().getSimpleName() : "null",
-                sandboxCoordinator != null ? "available" : "null");
+                sandboxBackend != null ? sandboxBackend.getClass().getSimpleName() : "null");
     }
 
     /**
@@ -517,8 +474,8 @@ public class AegisAgentInstanceManager {
     /**
      * 构建新 HarnessAgent 实例。
      *
-     * <p>集成 WorkspaceMaterializer（资源物化）、AegisToolBridge（工具桥接）、
-     * AegisSandboxFilesystemSpec（沙箱桥接）。
+     * <p>集成 WorkspaceMaterializer（资源物化）、AegisToolBridge（工具桥接），
+     * 沙箱语义由 AgentScope SandboxManager 原生承载（Phase 2 减法后走 RemoteFS）。
      *
      * <h3>构建流程</h3>
      * <ol>
@@ -727,8 +684,8 @@ public class AegisAgentInstanceManager {
                 .skillsEnabled(true)
                 .maxIters(maxIters)
                 .agentId(String.valueOf(agentId))
-                // 中间件链由 AgentScope 内核驱动
-                .middlewares(middlewareChain.build())
+                // 中间件链由 AgentScope 内核按 order 降序驱动（Phase 2 精简后直接注入 List）
+                .middlewares(standaloneMiddlewares)
                 // 启用 AS 压缩链路 + 工具结果驱逐 + 溢出兜底；禁用 LLM 驱动的 flushBeforeCompact，
                 // 跨会话记忆持久化已由 AegisMemoryMiddleware 在应用层异步处理。
                 .compaction(CompactionConfig.builder()
@@ -775,57 +732,16 @@ public class AegisAgentInstanceManager {
                                                   String sessionId,
                                                   IsolationStrategy isolationStrategy,
                                                   String agentType) {
-        if (!sandboxEnabled || sandboxBackend == null) {
-            // 记录跳过沙箱模式的原因
-            log.warn("跳过沙箱模式: sandboxEnabled={}, sandboxBackend={}, agentId={}",
-                    sandboxEnabled, sandboxBackend != null ? sandboxBackend.getClass().getSimpleName() : "null", agentId);
-            // distributedStore 会通过 injectStoreIfAbsent 自动注入 baseStore
-            RemoteFilesystemSpec fsSpec = new RemoteFilesystemSpec()
-                    .isolationScope(isolationScope);
-            builder.filesystem(fsSpec);
-            return new FilesystemConfig(false, null);
-        }
-
-        String slotKey = buildSlotKeyForAgent(isolationScope, agentType, tenantId, userId, agentId);
-        // T1 沙箱惰性分配：lazy-allocation 开关开启且非 SYSTEM 智能体时注入 LazySandboxFilesystemSpec，
-        // 构建期不触发 allocateSlot（SYSTEM 仍常驻 RESIDENT，§2.2 非目标）；回滚关闭即恢复原 spec
-        boolean lazySandbox = lazyAllocationEnabled && !"SYSTEM".equals(agentType);
-        AegisSandboxFilesystemSpec sandboxSpec = lazySandbox
-                ? new LazySandboxFilesystemSpec(sandboxBackend, sandboxCoordinator, minioSnapshotClient, sandboxResourceLoader)
-                : new AegisSandboxFilesystemSpec(sandboxBackend, sandboxCoordinator, minioSnapshotClient, sandboxResourceLoader);
-        sandboxSpec.isolationScope(isolationScope);
-        sandboxSpec.tenantContext(tenantId, userId, agentId, isolationScope, slotKey);
-        // P1-3：显式 workspaceRoot（pool 键派生、会话无关），替代 sessionId 派生——
-        // 池化实例复用时不会因首个 sessionId 烘焙导致后续会话串扰
-        sandboxSpec.workspaceRoot(deriveWorkspaceRoot(agentType, tenantId, agentId, userId));
-        // 默认隔离策略为 SHARED_PER_SCOPE，允许上层后续覆写
-        sandboxSpec.isolationStrategy(isolationStrategy != null ? isolationStrategy : IsolationStrategy.SHARED_PER_SCOPE);
-        // 传递智能体类型，供 Coordinator 池路由（UNIVERSAL→LIGHT / SYSTEM→HEAVY / 其他→STANDARD）
-        sandboxSpec.agentType(agentType);
-        // 启用快照功能，并传递 MinioSnapshotClient 用于反序列化时重新绑定
-        sandboxSpec.snapshotSpec(this.snapshotSpec);
-        // 向 AegisSandboxClientOptions 注入 MinioSnapshotClient
-        sandboxSpec.getClientOptions().setMinioSnapshotClient(this.minioSnapshotClient);
-        builder.filesystem(sandboxSpec);
-        log.info("沙箱模式构建: agentId={}, scope={}, slotKey={}, workspaceRoot={}, snapshotEnabled={}",
-                agentId, isolationScope, slotKey, sandboxSpec.getClientOptions().getWorkspaceRoot(),
-                this.snapshotSpec != null);
-        return new FilesystemConfig(true, slotKey);
-    }
-
-    /**
-     * P1-3：派生会话无关的 workspaceRoot（与 pool 键组件同源）。
-     *
-     * <ul>
-     *   <li>UNIVERSAL → {@code /workspace/{tenantId}/{agentId}/{userId}}（含 userId 隔离）</li>
-     *   <li>APPLICATION / SYSTEM → {@code /workspace/{tenantId}/{agentId}}（跨用户共享）</li>
-     * </ul>
-     */
-    private String deriveWorkspaceRoot(String agentType, long tenantId, long agentId, long userId) {
-        if ("UNIVERSAL".equals(agentType)) {
-            return "/workspace/" + tenantId + "/" + agentId + "/" + userId;
-        }
-        return "/workspace/" + tenantId + "/" + agentId;
+        // Phase 2 减法：自建沙箱池体系已删除，沙箱 acquire/release/persist 语义
+        // 交由 AgentScope SandboxManager + SandboxLifecycleMiddleware 原生处理。
+        // 当前阶段 sandboxEnabled 默认 false，统一走 RemoteFS 路径；
+        // distributedStore 会通过 injectStoreIfAbsent 自动注入 baseStore。
+        log.info("文件系统配置(纯 RemoteFS): agentId={}, scope={}, agentType={}, sandboxEnabled={}",
+                agentId, isolationScope, agentType, sandboxEnabled);
+        RemoteFilesystemSpec fsSpec = new RemoteFilesystemSpec()
+                .isolationScope(isolationScope);
+        builder.filesystem(fsSpec);
+        return new FilesystemConfig(false, null);
     }
 
     /**
@@ -842,24 +758,6 @@ public class AegisAgentInstanceManager {
     }
 
     /**
-     * 按智能体类型合成 slotKey（系统智能体 RESIDENT 常驻语义）。
-     *
-     * <p>SYSTEM 智能体在 AgentScope 层仍以 {@code IsolationScope.GLOBAL} 构建（保持框架语义），
-     * 但 slotKey 注入 RESIDENT 专用格式 {@code aegis:resident:sys:{agentId}}，
-     * 使每个系统智能体绑定一个专属常驻实例（不参与动态分配与回收）。
-     * 其余类型与 {@link SlotKeyParser#build} 保持一致。
-     */
-    private String buildSlotKeyForAgent(IsolationScope isolationScope, String agentType,
-                                        long tenantId, long userId, long agentId) {
-        if ("SYSTEM".equals(agentType)) {
-            String residentKey = SlotKeyParser.buildResident(agentId);
-            log.info("A3 系统智能体常驻槽位: agentId={}, residentSlotKey={}", agentId, residentKey);
-            return residentKey;
-        }
-        return SlotKeyParser.build(isolationScope, tenantId, userId, agentId);
-    }
-
-    /**
      * 构建权限上下文（装配期单源决策）。
      *
      * <p>治理档位（STANDARD/ENHANCED/STRICT）仅决定沙箱隔离强度，
@@ -871,9 +769,8 @@ public class AegisAgentInstanceManager {
      *   <li>{@code needApproval=false} → 等级映射 L1/L2 → ALLOW，框架层直接放行</li>
      *   <li>{@code needApproval=true} → 一律映射 L3 → ASK（审批表意与等级直映一致，
      *       避免 browser_use 这类 MEDIUM+needApproval 的矛盾组合被误放行）</li>
-     *   <li>HitlNode 显式配置审批的工具<b>不注册 ALLOW</b>（PermissionEngine 评估序为
-     *       deny → ask → 工具自检 → allow，ASK 先于 ALLOW，不排除重叠会致同一工具兼具 ASK+ALLOW 产生歧义），其 ASK 规则由
-     *       {@link AegisHitlRuleLoader#loadHitlRules} 注入</li>
+     *   <li>HITL 审批由 {@code AegisPermissionRuleLoader} 从 sec_tool_policy 表统一映射为
+ *       PermissionBehavior（ALLOW/ASK/DENY），Phase 2 精简后不再依赖独立 HitlRuleLoader</li>
      *   <li>{@code http_request} 排除在外：其风险随 HTTP 方法动态变化（GET 只读 / POST 写操作），
      *       动态评估依赖 RequireUserConfirmEvent 转换期的 {@code evaluateRisk}，
      *       装配期无条件 ALLOW 会短路方法级拦截</li>
@@ -910,11 +807,7 @@ public class AegisAgentInstanceManager {
             log.warn("加载 AgentDef 失败，使用默认治理档位 STANDARD: agentId={}", agentId, e);
         }
 
-        // 2. HitlNode 显式配置审批的工具集合：这些工具禁止注册 ALLOW
-        //    （PermissionEngine 中 ALLOW 优先于 ASK，ALLOW 会静默覆盖管理员审批配置）
-        Set<String> hitlAskTools = hitlRuleLoader.resolveAskToolNames(agentId);
-
-        // 3. 枚举全部内置工具，装配期按资源等级直映生成规则
+        // 2. 枚举全部内置工具，装配期按资源等级直映生成规则（HITL 审批已由 AegisPermissionRuleLoader 统一处理）
         int allowCount = 0;
         int askCount = 0;
         for (Map.Entry<String, ToolRiskInfo> entry : BuiltinToolRiskConfig.getAllTools().entrySet()) {
@@ -924,12 +817,6 @@ public class AegisAgentInstanceManager {
             // http_request：风险随 HTTP 方法动态变化，保留 RequireUserConfirmEvent
             // 转换期的参数级评估（GET 放行 / POST 审批），装配期不做静态 ALLOW
             if ("http_request".equals(toolName)) {
-                continue;
-            }
-            // HitlNode 显式配置审批的工具：不注册 ALLOW，ASK 规则由 loadHitlRules 注入
-            if (hitlAskTools.contains(toolName)) {
-                log.info("内置工具因 HitlNode 审批配置跳过装配期放行: agentId={}, tool={}",
-                        agentId, toolName);
                 continue;
             }
 
@@ -958,10 +845,7 @@ public class AegisAgentInstanceManager {
             }
         }
 
-        // 4. HITL 规则（DB 动态加载，最后注入保证与枚举逻辑使用同一缓存视图）
-        hitlRuleLoader.loadHitlRules(agentId, permBuilder);
-
-        // 5. 动态工具扫描：Toolkit 中不在内置工具列表 + 不在特殊排除集合中的工具，
+        // 3. 动态工具扫描：Toolkit 中不在内置工具列表 + 不在特殊排除集合中的工具，
         //    统一注册 ALLOW 规则。这些工具包括：GLOBAL 系统技能（skill_creator）、
         //    用户订阅技能、MCP 动态工具、会话级 MCP 工具等。
         //    安全前提：它们都是通过 AegisToolBridge 从数据库加载的，已通过审核流程。
@@ -983,11 +867,6 @@ public class AegisAgentInstanceManager {
                 if (specialExclusions.contains(toolName)) {
                     continue;
                 }
-                // 跳过 HitlNode 显式配置审批的工具（避免覆盖 ASK 规则）
-                if (hitlAskTools.contains(toolName)) {
-                    log.debug("动态工具因 HitlNode 审批配置跳过 ALLOW: agentId={}, tool={}", agentId, toolName);
-                    continue;
-                }
                 // 为动态工具注册 ALLOW 规则
                 permBuilder.addAllowRule(toolName, new PermissionRule(
                         toolName, null, PermissionBehavior.ALLOW, "aegis-dynamic-tool"));
@@ -995,8 +874,8 @@ public class AegisAgentInstanceManager {
             }
         }
 
-        log.info("buildPermissionContext: agentId={}, tier={}, builtinAllow={}, builtinAskOrDeny={}, hitlAskTools={}, dynamicAllow={}",
-                agentId, tier, allowCount, askCount, hitlAskTools, dynamicAllowCount);
+        log.info("buildPermissionContext: agentId={}, tier={}, builtinAllow={}, builtinAskOrDeny={}, dynamicAllow={}",
+                agentId, tier, allowCount, askCount, dynamicAllowCount);
         return permBuilder.build();
     }
 
@@ -1140,10 +1019,10 @@ public class AegisAgentInstanceManager {
     }
 
     /**
-     * 关闭 Agent 实例（触发沙箱回收 + AgentState 落盘）。
+     * 关闭 Agent 实例（触发 AgentState 落盘）。
      *
-     * <p>当 AgentEntry 标记 sandboxRequired 时，通过 sandboxCoordinator
-     * 查找 slotKey 对应的 OCCUPIED 沙箱实例，按 isolationScope 决定策略回收。
+     * <p>Phase 2 减法：自建沙箱池已删除，沙箱 release 语义由 AgentScope
+     * SandboxManager + SandboxLifecycleMiddleware 原生处理，此处仅关闭 Agent 并记录日志占位。
      */
     private void closeAgent(AgentEntry entry) {
         // 1. 关闭 Agent（触发 AgentState 落盘）
@@ -1154,35 +1033,9 @@ public class AegisAgentInstanceManager {
         } catch (Exception e) {
             log.warn("关闭 Agent 实例失败: poolKey={}, agentId={}", entry.poolKey, entry.agentId, e);
         }
-
-        // 2. 沙箱释放（★ 不回收，只标记 IDLE，回收由 admin 执行）
-        if (entry.sandboxRequired && entry.tenantId > 0 && entry.slotKey != null) {
-            try {
-                SandboxInstance sbxInstance = sandboxCoordinator.findOccupiedBySlotKey(entry.slotKey);
-                if (sbxInstance != null) {
-                    boolean saveSnapshot = entry.isolationScope != IsolationScope.GLOBAL;
-                    sandboxCoordinator.releaseSlot(entry.tenantId,
-                            sbxInstance.getInstanceId(), saveSnapshot);
-                    log.info("沙箱随实例驱逐已释放: poolKey={}, agentId={}, instanceId={}, saveSnapshot={}",
-                            entry.poolKey, entry.agentId, sbxInstance.getInstanceId(), saveSnapshot);
-                } else {
-                    // T1：懒分配场景下 sbxInstance 可能为 null（全程未触发沙箱工具），跳过释放
-                    log.debug("沙箱驱逐跳过释放(未分配或已释放): poolKey={}, slotKey={}",
-                            entry.poolKey, entry.slotKey);
-                }
-            } catch (Exception e) {
-                log.warn("沙箱释放失败: poolKey={}, slotKey={}",
-                        entry.poolKey, entry.slotKey, e);
-            }
-        }
-        // T1：清理沙箱就绪门控的会话绑定，避免下次工具调用命中 stale handle（已释放实例）
-        if (entry.sessionId != null && sandboxReadinessGate != null) {
-            sandboxReadinessGate.clear(entry.sessionId);
-        }
-        // T1：清理空闲释放追踪表（会话结束，无需再追踪）
-        if (entry.sessionId != null && idleReleaseTracker != null) {
-            idleReleaseTracker.remove(entry.sessionId);
-        }
+        // 2. 沙箱释放占位：已移交 AgentScope SandboxManager，无需手动 releaseSlot / 清理 ReadinessGate / IdleTracker
+        log.info("沙箱释放占位(已移交 SandboxManager): poolKey={}, agentId={}",
+                entry.poolKey, entry.agentId);
     }
 
     /**

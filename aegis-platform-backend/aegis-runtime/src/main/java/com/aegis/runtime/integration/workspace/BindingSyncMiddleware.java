@@ -6,7 +6,6 @@ import com.aegis.core.domain.workspace.AgentWorkspaceMaterial;
 import com.aegis.runtime.service.agent.AssemblyResourceContext;
 import com.aegis.runtime.service.agent.ResourceQueryService;
 import com.aegis.runtime.service.workspace.WorkspaceMaterialService;
-import com.aegis.runtime.integration.middleware.OrderedMiddleware;
 import com.aegis.runtime.integration.workspace.WorkspaceMaterializer;
 import com.aegis.runtime.integration.skill.AegisSkillRepository;
 import io.agentscope.core.agent.Agent;
@@ -45,19 +44,19 @@ import java.util.function.Function;
  * </ol>
  *
  * <h3>执行顺序</h3>
- * <p>{@link #order()} 返回 75，位于 Tenant(80) 之后、Intent(67)/RAG(65) 之前。
- * 绑定同步检测在租户校验通过后才执行，Security/Tenant 拦截的请求不会触发
+ * <p>{@link #order()} 返回 75，位于 Trace(95) 之后、RAG(70) 之前。
+ * 绑定同步检测在租户校验通过后才执行，被拦截的请求不会触发
  * computeFingerprint 与 findByAgentAndUser 的 DB I/O。
  *
- * <p>注意：本中间件已纳入 Aegis OrderedMiddleware 洋葱链（与 Tenant/ContentFilter/
- * Memory 等同链装配），由 {@code AegisMiddlewareChain} 统一排序注入 HarnessAgent。
+ * <p>Phase 2 精简后直接实现 {@link MiddlewareBase} 并 override {@code order()}，
+ * 由 AgentScope 内核按 order 降序统一装配注入 HarnessAgent。
  *
  * @author wang.zhen
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class BindingSyncMiddleware implements MiddlewareBase, OrderedMiddleware {
+public class BindingSyncMiddleware implements MiddlewareBase {
 
     private final WorkspaceMaterializer materializer;
     private final WorkspaceMaterialService workspaceMaterialService;
@@ -65,8 +64,8 @@ public class BindingSyncMiddleware implements MiddlewareBase, OrderedMiddleware 
 
     @Override
     public int order() {
-        // order=75：位于 Tenant(80) 之后、Intent(67)/RAG(65) 之前。
-        // 绑定同步检测在租户校验之后执行，被 Security/Tenant 拦截的请求不触发
+        // Phase 2 精简：order=75，位于 Trace(95) 之后、RAG(70) 之前。
+        // 绑定同步检测在租户校验之后执行，被拦截的请求不触发
         // computeFingerprint/findByAgentAndUser 的 DB I/O。
         return 75;
     }

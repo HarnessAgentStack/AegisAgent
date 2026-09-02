@@ -13,7 +13,7 @@ import reactor.core.publisher.Flux;
 import java.util.function.Function;
 
 /**
- * 输出安全审计中间件（洋葱链 order=10）。
+ * 输出脱敏中间件（洋葱链 order=50）。
  *
  * <p>原基于内容安全策略引擎的脱敏评估链路已随策略引擎下线，当前仅保留对下游事件流
  * 的异常日志记录，不再对流式输出做脱敏变换或阻断。
@@ -23,12 +23,12 @@ import java.util.function.Function;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class AegisMaskMiddleware implements MiddlewareBase, OrderedMiddleware {
+public class AegisMaskMiddleware implements MiddlewareBase {
 
     @Override
     public int order() {
-        // order=10：最内层，在所有安全控制之后、输出之前执行
-        return 10;
+        // Phase 2 精简：order=50，输出脱敏层（唯一无替代的输出安全中间件）
+        return 50;
     }
 
     @Override

@@ -1,27 +1,26 @@
 package com.aegis.runtime.integration.middleware;
 
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.resource.KbDocument;
 import com.aegis.core.domain.resource.KnowledgeBase;
+import com.aegis.core.dto.chat.SessionResourcesRef;
 import com.aegis.core.enums.intent.IntentType;
 import com.aegis.core.enums.resource.ResourceType;
-import com.aegis.runtime.integration.middleware.AegisIntentMiddleware;
-import com.aegis.runtime.service.conversation.AegisTaskContext;
-import com.aegis.runtime.service.intent.IntentRecognitionService.IntentResult;
-import com.aegis.runtime.service.intent.QueryRewriteService;
-import com.aegis.runtime.service.rag.RagRetrieveService;
 import com.aegis.runtime.service.agent.AssemblyResourceContext;
 import com.aegis.runtime.service.agent.ResourceQueryService;
+import com.aegis.runtime.service.conversation.AegisTaskContext;
+import com.aegis.runtime.service.intent.IntentRecognitionService;
+import com.aegis.runtime.service.intent.QueryRewriteService;
+import com.aegis.runtime.service.rag.RagRetrieveService;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.CustomEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
-import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,6 +31,7 @@ import reactor.core.publisher.Mono;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -39,216 +39,144 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import com.aegis.core.dto.chat.SessionResourcesRef;
-import com.aegis.core.common.tenant.TenantContextScope;
-
 /**
- * RAG 检索中间件：在 Agent 执行前触发知识库检索，注入上下文并发出 kb.reference 事件。
+ * RAG 检索中间件（Phase 2 精简版，order=70）。
  *
- * <p>作为 AgentScope {@link OrderedMiddleware} 的实现，注入 HarnessAgent 的中间件链，
- * 在 onAgent 钩子中：
+ * <p>合并了原 {@code AegisIntentMiddleware} 的意图识别职责（内部化）与原 ContentFilter 的
+ * 敏感词检测职责。删除 {@code TaskContextResolver} 与 {@code securityPolicyEngine} 残留依赖，
+ * 直接从 {@link RuntimeContext} 读取 {@link AegisTaskContext}。
+ *
+ * <h3>onAgent 职责</h3>
  * <ol>
- *   <li>从 input.msgs() 提取用户查询文本</li>
- *   <li>查询 agent_binding 中 KNOWLEDGE_BASE 类型的绑定</li>
- *   <li>调用 {@link RagRetrieveService#retrieve} 执行向量检索</li>
- *   <li>发出 {@code kb.reference} 事件，携带检索结果</li>
- *   <li>将检索结果注入系统提示词，供 LLM 生成时参考</li>
+ *   <li>提取 userQuery + 最近 5 轮 USER 历史</li>
+ *   <li>调用 {@link IntentRecognitionService#recognize} 识别意图，写入 {@code aegis.intent}
+ *       （供 {@code AegisSkillRepository} 技能可见性 gate 读取）</li>
+ *   <li>闲聊意图且无显式知识库引用时跳过 RAG</li>
+ *   <li>QueryRewrite 共指消解 → 知识库绑定查询 → 向量检索（{@link RagRetrieveService#retrieve}）</li>
+ *   <li>发出 {@code kb.reference} 事件，并将 RAG 上下文存入 RuntimeContext</li>
  * </ol>
  *
- * <h3>执行时机</h3>
- * <p>order=65，在 AgentScope 降序排列中位于：
+ * <h3>onSystemPrompt 职责</h3>
  * <ul>
- *   <li>租户隔离(80) 之后执行 — 确保 tenantId 已注入上下文</li>
- *   <li>配额检查(70) 之后执行 — 确保资源配额已校验</li>
- *   <li>内容过滤(60) 之前执行 — 在系统提示词被内容安全变换前完成 RAG 上下文注入</li>
+ *   <li>注入 RAG 上下文（或基础约束）到系统提示词</li>
+ *   <li>敏感词检测（合并 ContentFilter）：命中则追加脱敏约束</li>
  * </ul>
  *
  * <h3>降级策略</h3>
- * <p>RAG 检索失败不阻塞对话流程，仅记录警告日志并透传 next.apply(input)。
- * 确保检索异常不会影响主链路稳定性。单库检索失败不影响其他库的检索。</p>
- *
- * <h3>配置开关</h3>
- * <p>通过 {@code aegis.runtime.rag.enabled=false} 全局禁用 RAG 检索，默认开启。</p>
+ * <p>意图识别 / RAG 检索失败均不阻塞主流程，仅记录日志并透传 next.apply(input)。
  *
  * @author wang.zhen
- * @see RagRetrieveService
- * @see ResourceQueryService
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
+public class AegisRagMiddleware implements MiddlewareBase {
 
-    @PostConstruct
-    public void init() {
-        log.info("AegisRagMiddleware 已初始化: ragEnabled={}, order={}", ragEnabled, order());
-    }
+    /** RuntimeContext 中存储意图识别结果的 key（与 AegisSkillRepository 本地常量同值） */
+    public static final String CTX_KEY_INTENT = "aegis.intent";
+
+    /** 基础敏感词集合（合并自原 ContentFilter 职责，最小内联实现） */
+    private static final Set<String> SENSITIVE_WORDS = Set.of(
+            "password", "passwd", "secret", "token", "apikey", "api_key",
+            "身份证", "银行卡", "密码", "密钥");
 
     private final RagRetrieveService ragRetrieveService;
     private final ResourceQueryService resourceQueryService;
     private final QueryRewriteService queryRewriteService;
+    private final IntentRecognitionService intentService;
 
-    /** RAG 中间件开关，默认开启。设为 false 可全局禁用 RAG 检索 */
+    /** RAG 中间件开关，默认开启 */
     @Value("${aegis.runtime.rag.enabled:true}")
     private boolean ragEnabled;
 
     @Override
     public int order() {
-        return 65;
+        // order=70：位于 Trace(95)/BindingSync(75) 之后，Mask(50)/Audit(30) 之前
+        return 70;
     }
 
     @Override
-    public Flux<AgentEvent> onAgent(
-            Agent agent, RuntimeContext ctx, AgentInput input,
-            Function<AgentInput, Flux<AgentEvent>> next) {
-
-        // P2-6④：每轮触发的入口日志降 DEBUG（与事件流降噪同策略）
+    public Flux<AgentEvent> onAgent(Agent agent, RuntimeContext ctx, AgentInput input,
+                                    Function<AgentInput, Flux<AgentEvent>> next) {
         log.debug("AegisRagMiddleware.onAgent 触发");
-        
-        // 0. 全局开关检查
-        if (!ragEnabled) {
-            log.info("RAG 中间件已禁用（aegis.runtime.rag.enabled=false），跳过检索");
-            return next.apply(input);
-        }
 
-        // 0.1 意图检查：CHITCHAT 跳过 RAG，但**显式带知识库时强制走 RAG**
-        // 用户主动勾选知识库 = 明确意图要检索，哪怕 query 是闲聊也要搜
-        boolean hasExplicitKbRef = false;
-        try {
-            AegisTaskContext quickCtx = ctx.get(AegisTaskContext.class);
-            if (quickCtx != null && quickCtx.getSessionResources() != null
-                    && quickCtx.getSessionResources().getKbIds() != null
-                    && !quickCtx.getSessionResources().getKbIds().isEmpty()) {
-                hasExplicitKbRef = true;
-            }
-        } catch (Exception ignored) {
-        }
-        IntentType intent = readIntentType(ctx);
-        if (intent == IntentType.CHITCHAT && !hasExplicitKbRef) {
-            log.debug("AegisRagMiddleware: 闲聊意图且无显式知识库引用，跳过 RAG 检索");
-            return next.apply(input);
-        }
-        if (intent == IntentType.CHITCHAT && hasExplicitKbRef) {
-            log.info("AegisRagMiddleware: 闲聊意图但用户显式选择了知识库，仍执行 RAG 检索");
-        }
-
-        // 1. 提取用户查询 + 最近 5 轮 USER 历史（供 QueryRewrite 共指消解使用）
-        String userQuery = extractUserQuery(input);
-        if (userQuery == null || userQuery.isBlank()) {
-            log.debug("无用户查询文本，跳过 RAG 检索");
-            return next.apply(input);
-        }
-        List<String> recentHistory = extractRecentUserHistory(input);
-
-        // 2. 从 RuntimeContext 直接获取 AegisTaskContext（优先），回退到 TaskContextResolver
-        AegisTaskContext taskCtx = null;
-        try {
-            taskCtx = ctx.get(AegisTaskContext.class);
-        } catch (Exception e) {
-            log.debug("从 RuntimeContext 直接获取 AegisTaskContext 失败: {}", e.getMessage());
-        }
-        if (taskCtx == null) {
-            taskCtx = TaskContextResolver.resolve(agent);
-        }
+        AegisTaskContext taskCtx = ctx.get(AegisTaskContext.class);
         if (taskCtx == null || taskCtx.getAgentId() == null) {
-            log.debug("AegisTaskContext 未获取到或 agentId 为空，跳过 RAG 检索: agentId={}",
+            log.debug("AegisTaskContext 未注入或 agentId 为空，跳过: agentId={}",
                     agent != null ? agent.getAgentId() : "null");
             return next.apply(input);
         }
 
         long agentId = taskCtx.getAgentId();
+        Long tenantId = taskCtx.getTenantId() != null ? taskCtx.getTenantId() : resolveTenantId(ctx);
 
-        // 3. 获取 tenantId（优先从 AegisTaskContext，其次从 RuntimeContext）
-        Long tenantId = taskCtx.getTenantId();
-        if (tenantId == null) {
-            tenantId = resolveTenantId(ctx);
-        }
+        // 1. 提取用户查询 + 最近 5 轮 USER 历史
+        String userQuery = extractUserQuery(input);
+        List<String> recentHistory = extractRecentUserHistory(input);
 
-        // 3.1 QueryRewrite：共指消解，得到独立检索 query
-        // 无论知识库是否配置 enableQueryRewrite，中间件层先做统一改写入口；
-        // 后续 RagRetrieveService.retrieve() 内部会根据 kb.enableQueryRewrite
-        // 决定是否做二次改写（此时 query 已是独立文本，二次改写安全无副作用）
-        String effectiveQuery = userQuery;
-        if (recentHistory != null && !recentHistory.isEmpty()) {
+        // 2. 合并意图识别（内部化）：写入 aegis.intent 供技能 gate 读取
+        IntentRecognitionService.IntentResult intentResult = null;
+        if (userQuery != null && !userQuery.isBlank()) {
             try {
-                String rewritten = queryRewriteService.resolveCoreference(userQuery, recentHistory, tenantId);
-                if (rewritten != null && !rewritten.isBlank() && !rewritten.equals(userQuery)) {
-                    effectiveQuery = rewritten;
-                    log.debug("AegisRagMiddleware QueryRewrite: 原始=[{}], 改写=[{}]", userQuery, effectiveQuery);
-                }
+                intentResult = intentService.recognize(tenantId, userQuery, recentHistory);
+                ctx.put(CTX_KEY_INTENT, intentResult);
+                log.info("意图识别完成: agentId={}, query={}, intent={}, confidence={}, needRag={}, needTools={}",
+                        agentId, truncate(userQuery, 60), intentResult.intent(), intentResult.confidence(),
+                        intentResult.needRag(), intentResult.needTools());
             } catch (Exception e) {
-                // LLM 异常降级为原始 query
-                log.warn("AegisRagMiddleware QueryRewrite 失败，降级为原始 query: error={}", e.getMessage());
+                log.warn("意图识别失败，降级为不跳过 RAG: agentId={}, error={}", agentId, e.getMessage());
             }
         }
 
-        // 4. 查询知识库绑定（agent_binding + 会话级资源引用）
-        // T3 收敛：优先复用装配期 AssemblyResourceContext 预载的 enabled 绑定，
-        // 上下文缺失（构建失败/非装配链路）时降级 DB 直查
+        // 3. 全局开关检查
+        if (!ragEnabled) {
+            log.debug("RAG 中间件已禁用（aegis.runtime.rag.enabled=false），跳过检索");
+            return next.apply(input);
+        }
+
+        // 4. 闲聊意图且无显式知识库引用 → 跳过 RAG
+        boolean hasExplicitKbRef = hasExplicitKbRef(taskCtx);
+        IntentType intent = intentResult != null ? intentResult.intent() : null;
+        if (intent == IntentType.CHITCHAT && !hasExplicitKbRef) {
+            log.debug("闲聊意图且无显式知识库引用，跳过 RAG 检索: agentId={}", agentId);
+            return next.apply(input);
+        }
+
+        // 5. 无查询文本 → 跳过 RAG
+        if (userQuery == null || userQuery.isBlank()) {
+            log.debug("无用户查询文本，跳过 RAG 检索");
+            return next.apply(input);
+        }
+
+        // 6. QueryRewrite：共指消解
+        String effectiveQuery = resolveEffectiveQuery(userQuery, recentHistory, tenantId);
+
+        // 7. 查询知识库绑定（装配期预载优先，回退 DB 直查）
         List<AgentBinding> allBindings = AssemblyResourceContext.enabledBindingsOf(ctx);
         if (allBindings == null) {
             allBindings = resourceQueryService.listEnabledBindings(agentId);
         }
-        List<Long> kbIds = new ArrayList<>();
-        
-        // 4.1 从 agent_binding 获取绑定的知识库
-        for (AgentBinding binding : allBindings) {
-            if (binding.getResourceType() == ResourceType.KNOWLEDGE_BASE) {
-                kbIds.add(binding.getResourceId());
-            }
-        }
-        
-        // 4.2 会话级知识库引用：优先使用 RuntimeContext 中已校验的列表
-        // （AgentAssemblyService.buildRuntimeContext 已通过 filterValidKbIds 过滤
-        //   "不存在/未发布"的知识库；原始请求 kbIds 中的无效 ID 不应进入检索链路，
-        //   否则会产生"知识库不存在"告警并浪费一路检索）
-        List<Long> sessionKbIdsFromCtx = resolveSessionKbIds(ctx);
-        SessionResourcesRef sessionResources = taskCtx.getSessionResources();
-        List<Long> sessionKbIds;
-        if (sessionKbIdsFromCtx != null && !sessionKbIdsFromCtx.isEmpty()) {
-            sessionKbIds = sessionKbIdsFromCtx;
-            log.debug("RAG 使用已校验的会话级知识库（RuntimeContext）: agentId={}, sessionKbCount={}",
-                    agentId, sessionKbIds.size());
-        } else if (sessionResources != null && sessionResources.getKbIds() != null
-                && !sessionResources.getKbIds().isEmpty()) {
-            // 兼容路径：RuntimeContext 未注入时回退到原始引用，但必须补做可引用性校验
-            // （草稿/审核中知识库仅创建者本人可引用，防止同租户用户越权检索未发布库）
-            sessionKbIds = filterReferenceableKbIds(sessionResources.getKbIds(), tenantId, taskCtx.getUserId());
-            log.warn("RAG 回退到会话级知识库引用（RuntimeContext 缺失，已按可引用性过滤）: agentId={}, raw={}, valid={}",
-                    agentId, sessionResources.getKbIds().size(), sessionKbIds.size());
-        } else {
-            sessionKbIds = List.of();
-        }
-        for (Long kbId : sessionKbIds) {
-            if (kbId != null && !kbIds.contains(kbId)) {
-                kbIds.add(kbId);
-            }
-        }
-
+        List<Long> kbIds = collectKbIds(allBindings, ctx, taskCtx, tenantId);
         if (kbIds.isEmpty()) {
             log.debug("智能体未绑定知识库且无会话级资源引用，跳过 RAG 检索: agentId={}", agentId);
             return next.apply(input);
         }
 
-        // P2-2②：一次 selectBatchIds 装载本轮全部 KB 实体，后续名称补全复用同一结果集，
-        // 消除 per-KB getKnowledgeBase 的 N 次同行重查（原 3N→1）
+        // 8. 一次批量装载 KB 实体（名称补全复用）
         Map<Long, KnowledgeBase> kbEntityMap = new HashMap<>();
         for (KnowledgeBase kb : resourceQueryService.findKnowledgeBasesByIds(Set.copyOf(kbIds))) {
             kbEntityMap.put(kb.getId(), kb);
         }
-        List<Map<String, Object>> skippedKbs = new ArrayList<>();
 
-        // 5. 执行 RAG 检索（P2-2②：KB 名复用 gate 预载的 kbEntityMap，doc 名收集后批量查询）
+        // 9. 执行 RAG 检索
         List<Map<String, Object>> allRefs = new ArrayList<>();
-        Set<Long> pendingDocIds = new java.util.LinkedHashSet<>();
+        Set<Long> pendingDocIds = new LinkedHashSet<>();
         List<String> historyForRetrieve = recentHistory != null ? recentHistory : Collections.emptyList();
         for (Long kbId : kbIds) {
             try {
-                // B4: topK=0 让 RagRetrieveService 使用知识库自身的 topK 配置
                 List<Map<String, Object>> results = ragRetrieveService.retrieve(
                         tenantId, kbId, effectiveQuery, 0, historyForRetrieve);
                 if (results != null && !results.isEmpty()) {
-                    // KB 名从 gate 预载实体直接读取（不再二次查询 getKnowledgeBase）
                     KnowledgeBase kb = kbEntityMap.get(kbId);
                     String kbName = kb != null ? kb.getKbName() : null;
                     for (Map<String, Object> ref : results) {
@@ -270,7 +198,7 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
             }
         }
 
-        // P2-2②：批量查询文档名（原逐条 getKbDocument × D → 1 次 selectBatchIds）并补全引用
+        // 10. 批量查询文档名补全引用
         if (!pendingDocIds.isEmpty()) {
             Map<Long, String> docNameMap = new HashMap<>();
             for (KbDocument doc : resourceQueryService.findKbDocumentsByIds(pendingDocIds)) {
@@ -285,60 +213,32 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
         }
 
         if (allRefs.isEmpty()) {
-            // 无命中但有被门控跳过的库：仍发事件，让前端明确告知用户"引用的库未参与检索"
-            if (!skippedKbs.isEmpty()) {
-                Map<String, Object> skipEventData = new HashMap<>(4);
-                skipEventData.put("replyId", extractReplyId(ctx));
-                skipEventData.put("refs", List.of());
-                skipEventData.put("query", effectiveQuery);
-                skipEventData.put("kbCount", 0);
-                skipEventData.put("skippedKbs", skippedKbs);
-                log.info("RAG 检索被门控跳过: agentId={}, skipped={}", agentId, skippedKbs.size());
-                AgentEvent skipEvent = new CustomEvent("kb.reference", skipEventData);
-                return Flux.just(skipEvent)
-                        .concatWith(next.apply(input));
-            }
             log.debug("RAG 无检索结果: agentId={}, kbCount={}", agentId, kbIds.size());
             return next.apply(input);
         }
 
-        log.info("RAG 检索完成: agentId={}, kbCount={}, refCount={}, skipped={}",
-                agentId, kbIds.size(), allRefs.size(), skippedKbs.size());
+        log.info("RAG 检索完成: agentId={}, kbCount={}, refCount={}", agentId, kbIds.size(), allRefs.size());
 
-        // 6. 构建 kb.reference 事件数据
-        Map<String, Object> eventData = new HashMap<>(8);
+        // 11. 发出 kb.reference 事件
+        Map<String, Object> eventData = new HashMap<>(4);
         eventData.put("replyId", extractReplyId(ctx));
         eventData.put("refs", allRefs);
         eventData.put("query", effectiveQuery);
         eventData.put("kbCount", kbIds.size());
-        if (!skippedKbs.isEmpty()) {
-            eventData.put("skippedKbs", skippedKbs);
-        }
-
         AgentEvent kbRefEvent = new CustomEvent("kb.reference", eventData);
 
-        // 7. 将 RAG 上下文存储到 RuntimeContext，供后续 Prompt 构建器读取
+        // 12. RAG 上下文存入 RuntimeContext，供 onSystemPrompt 注入
         String ragContext = buildRagContext(allRefs);
         try {
             ctx.put("aegis.ragContext", ragContext);
             ctx.put("aegis.ragRefs", allRefs);
-            log.debug("RAG 上下文已存储到 RuntimeContext: contextLen={}", ragContext.length());
         } catch (Exception e) {
             log.warn("RAG 上下文存储失败: {}", e.getMessage());
         }
 
-        // 8. 返回：先发出 kb.reference 事件，再透传原始输入（由 onSystemPrompt 从 RuntimeContext 注入系统提示词）
-        return Flux.just(kbRefEvent)
-                .concatWith(next.apply(input));
+        return Flux.just(kbRefEvent).concatWith(next.apply(input));
     }
 
-    /**
-     * onSystemPrompt 触发点：从 RuntimeContext 读取 RAG 上下文并注入系统提示词。
-     *
-     * <p>在系统提示词构建时，读取由 onAgent 存储到 RuntimeContext 的
-     * {@code aegis.ragContext}，追加到系统提示词末尾，供 LLM 参考。
-     * 同时添加基础约束：禁止使用文件工具搜索知识库文档。
-     */
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String prompt) {
         if (prompt == null || prompt.isEmpty()) {
@@ -346,66 +246,121 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
         }
         try {
             String ragContext = ctx.get("aegis.ragContext", String.class);
-            if (ragContext == null || ragContext.isEmpty()) {
-                // 无知识库上下文：只加基础约束（如果还没加的话）
-                if (prompt.contains("【重要约束】")) {
-                    return Mono.just(prompt);
-                }
-                String baseConstraint = "\n\n【重要约束】"
-                        + "1. 严禁使用文件工具（list_files/glob_files/grep_files/read_file 等）在工作区搜索文档——"
-                        + "工作区中不存在知识库文档。"
-                        + "2. 代码执行必须使用 aegis_execute 工具（描述为\"Aegis 代码执行 - Python 计算与数据处理\"），"
-                        + "该工具使用 Aegis 后台沙箱池，具备安全隔离和超时保护。\n";
-                return Mono.just(prompt + baseConstraint);
+            String base;
+            if (ragContext != null && !ragContext.isEmpty()) {
+                base = ragContext;
+            } else if (prompt.contains("【重要约束】")) {
+                base = "";
+            } else {
+                base = buildBaseConstraint();
             }
-            // 有知识库上下文：直接追加 ragContext
-            // ragContext 本身已包含完整的 "【知识库检索结果】" 标记 + 检索内容 + 结尾约束
-            // 注意：不要检查 prompt.contains("【知识库检索结果】") —— IntentMiddleware 的 RAG_QUERY 模板里
-            // 有 "请优先参考【知识库检索结果】中的内容回答" 提示文本，会导致误判
-            String finalPrompt = prompt + ragContext;
-            log.info(">>> RAG onSystemPrompt EXIT: appended ragContext, finalPromptLen={}", finalPrompt.length());
-            return Mono.just(finalPrompt);
+            String result = base.isEmpty() ? prompt : prompt + base;
+
+            // 敏感词检测（合并 ContentFilter 职责）：扫描注入后提示词，命中则追加脱敏约束
+            String hit = detectSensitive(result);
+            if (hit != null) {
+                log.info("AegisRagMiddleware 敏感词命中，追加脱敏约束: word={}", hit);
+                result = result + "\n\n【敏感信息约束】请勿在回复中直接输出密钥、口令、"
+                        + "身份证号、银行卡号等敏感信息，必要时以掩码形式呈现。\n";
+            }
+            return Mono.just(result);
         } catch (Exception e) {
-            log.error(">>> RAG onSystemPrompt 异常: {}", e.getMessage(), e);
+            log.error("AegisRagMiddleware onSystemPrompt 异常: {}", e.getMessage(), e);
             return Mono.just(prompt);
         }
     }
 
-    /**
-     * 从 AgentInput 中提取用户查询文本。
-     *
-     * <p>取最后一条 user 角色消息的文本内容作为查询。
-     */
+    // ==================== 私有工具方法 ====================
+
+    private List<Long> collectKbIds(List<AgentBinding> allBindings, RuntimeContext ctx,
+                                    AegisTaskContext taskCtx, Long tenantId) {
+        List<Long> kbIds = new ArrayList<>();
+        for (AgentBinding binding : allBindings) {
+            if (binding.getResourceType() == ResourceType.KNOWLEDGE_BASE) {
+                kbIds.add(binding.getResourceId());
+            }
+        }
+        // 会话级知识库引用：优先 RuntimeContext 已校验列表，回退原始引用 + 可引用性校验
+        List<Long> sessionKbIdsFromCtx = resolveSessionKbIds(ctx);
+        List<Long> sessionKbIds;
+        SessionResourcesRef sessionResources = taskCtx.getSessionResources();
+        if (sessionKbIdsFromCtx != null && !sessionKbIdsFromCtx.isEmpty()) {
+            sessionKbIds = sessionKbIdsFromCtx;
+        } else if (sessionResources != null && sessionResources.getKbIds() != null
+                && !sessionResources.getKbIds().isEmpty()) {
+            sessionKbIds = filterReferenceableKbIds(sessionResources.getKbIds(), tenantId, taskCtx.getUserId());
+            log.warn("RAG 回退到会话级知识库引用（RuntimeContext 缺失，已按可引用性过滤）: raw={}, valid={}",
+                    sessionResources.getKbIds().size(), sessionKbIds.size());
+        } else {
+            sessionKbIds = List.of();
+        }
+        for (Long kbId : sessionKbIds) {
+            if (kbId != null && !kbIds.contains(kbId)) {
+                kbIds.add(kbId);
+            }
+        }
+        return kbIds;
+    }
+
+    private String resolveEffectiveQuery(String userQuery, List<String> recentHistory, Long tenantId) {
+        if (recentHistory == null || recentHistory.isEmpty()) {
+            return userQuery;
+        }
+        try {
+            String rewritten = queryRewriteService.resolveCoreference(userQuery, recentHistory, tenantId);
+            if (rewritten != null && !rewritten.isBlank() && !rewritten.equals(userQuery)) {
+                log.debug("QueryRewrite: 原始=[{}], 改写=[{}]", userQuery, rewritten);
+                return rewritten;
+            }
+        } catch (Exception e) {
+            log.warn("QueryRewrite 失败，降级为原始 query: error={}", e.getMessage());
+        }
+        return userQuery;
+    }
+
+    private boolean hasExplicitKbRef(AegisTaskContext taskCtx) {
+        try {
+            SessionResourcesRef ref = taskCtx.getSessionResources();
+            return ref != null && ref.getKbIds() != null && !ref.getKbIds().isEmpty();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private List<Long> filterReferenceableKbIds(List<Long> rawKbIds, Long tenantId, Long userId) {
+        try (var ignore = TenantContextScope.of(tenantId)) {
+            Set<Long> ids = rawKbIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
+            return resourceQueryService.findReferenceableKnowledgeBasesByIds(ids, userId)
+                    .stream().map(KnowledgeBase::getId).collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("回退路径知识库可引用性校验失败，忽略全部会话级引用: error={}", e.getMessage());
+            return List.of();
+        }
+    }
+
     private String extractUserQuery(AgentInput input) {
         if (input == null || input.msgs() == null || input.msgs().isEmpty()) {
             return null;
         }
         List<Msg> msgs = input.msgs();
-        // 取最后一条用户消息
         for (int i = msgs.size() - 1; i >= 0; i--) {
             Msg msg = msgs.get(i);
             if (msg != null && msg.getRole() == MsgRole.USER) {
-                String textContent = msg.getTextContent();
-                if (textContent != null && !textContent.isBlank()) {
-                    return textContent;
+                String text = msg.getTextContent();
+                if (text != null && !text.isBlank()) {
+                    return text;
                 }
             }
         }
         return null;
     }
 
-    /**
-     * 从 AgentInput 中提取最近 5 条 USER 历史消息（不含最新那条，最新那条由 extractUserQuery 返回）。
-     *
-     * <p>按时间正序返回，供 QueryRewrite 共指消解使用。</p>
-     */
     private List<String> extractRecentUserHistory(AgentInput input) {
         List<String> result = new ArrayList<>();
         if (input == null || input.msgs() == null || input.msgs().isEmpty()) {
             return result;
         }
         List<Msg> msgs = input.msgs();
-        // 倒序遍历，跳过最后一条 USER（当前 query），收集前面的 USER
         boolean skippedLatestUser = false;
         for (int i = msgs.size() - 1; i >= 0; i--) {
             Msg msg = msgs.get(i);
@@ -414,69 +369,18 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
             }
             if (!skippedLatestUser) {
                 skippedLatestUser = true;
-                continue; // 跳过最新 USER 消息（已作为 userQuery 提取）
+                continue;
             }
             String text = msg.getTextContent();
             if (text != null && !text.isBlank()) {
                 result.add(text);
-                if (result.size() >= 5) break; // 最多收集 5 条
+                if (result.size() >= 5) break;
             }
         }
-        // 反转回正序
-        java.util.Collections.reverse(result);
+        Collections.reverse(result);
         return result;
     }
 
-    /**
-     * 从 RuntimeContext 读取意图识别结果中的 IntentType。
-     *
-     * <p>兼容两种存储方式：{@link IntentResult} record 或直接 {@link IntentType}。</p>
-     *
-     * @return IntentType，未识别或读取失败时返回 null
-     */
-    private static IntentType readIntentType(RuntimeContext ctx) {
-        if (ctx == null) return null;
-        try {
-            Object raw = ctx.get(AegisIntentMiddleware.CTX_KEY_INTENT);
-            if (raw instanceof IntentResult ir) {
-                return ir.intent();
-            }
-            if (raw instanceof IntentType it) {
-                return it;
-            }
-        } catch (Exception e) {
-            log.debug("读取 aegis.intent 失败: {}", e.getMessage());
-        }
-        return null;
-    }
-
-    /**
-     * 回退路径的可引用性校验：过滤"不存在 / 未发布且非创建者"的知识库。
-     *
-     * <p>正常路径由 AgentAssemblyService.filterValidKbIds 在装配期完成校验并注入
-     * RuntimeContext；本方法仅在 RuntimeContext 缺失的兼容路径上补做同一套规则，
-     * 确保任何检索请求都不会绕过创建者校验。校验异常时按安全优先原则整体忽略。
-     */
-    private List<Long> filterReferenceableKbIds(List<Long> rawKbIds, Long tenantId, Long userId) {
-        // 恢复式租户作用域（P1-1）：knowledge_base 受多租户行级过滤，回退路径可能运行在
-        // 未绑定租户的线程上；AgentScope 内核线程跨会话复用，结束后必须恢复进入前上下文。
-        try (var ignore = TenantContextScope.of(tenantId)) {
-            Set<Long> ids = rawKbIds.stream()
-                    .filter(Objects::nonNull)
-                    .collect(Collectors.toSet());
-            return resourceQueryService.findReferenceableKnowledgeBasesByIds(ids, userId)
-                    .stream()
-                    .map(KnowledgeBase::getId)
-                    .collect(Collectors.toList());
-        } catch (Exception e) {
-            log.warn("回退路径知识库可引用性校验失败，忽略全部会话级引用: error={}", e.getMessage());
-            return List.of();
-        }
-    }
-
-    /**
-     * 从 RuntimeContext 解析 tenantId。
-     */
     private Long resolveTenantId(RuntimeContext ctx) {
         if (ctx == null) return null;
         try {
@@ -490,9 +394,6 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
         return null;
     }
 
-    /**
-     * 从 RuntimeContext 提取 replyId。
-     */
     private String extractReplyId(RuntimeContext ctx) {
         if (ctx == null) return null;
         try {
@@ -502,11 +403,33 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
         }
     }
 
-    /**
-     * 构建 RAG 上下文文本，用于注入系统提示词。
-     *
-     * <p>包含完整约束：禁止使用文件工具、代码执行工具要求、引用知识库回答要求。
-     */
+    @SuppressWarnings("unchecked")
+    private List<Long> resolveSessionKbIds(RuntimeContext ctx) {
+        if (ctx == null) return List.of();
+        try {
+            Object raw = ctx.get("aegis.sessionKbIds");
+            if (raw == null) return List.of();
+            if (raw instanceof List<?> list) {
+                List<Long> result = new ArrayList<>();
+                for (Object item : list) {
+                    if (item instanceof Number n) result.add(n.longValue());
+                }
+                return result;
+            }
+            if (raw.getClass().isArray()) {
+                Object[] arr = (Object[]) raw;
+                List<Long> result = new ArrayList<>();
+                for (Object item : arr) {
+                    if (item instanceof Number n) result.add(n.longValue());
+                }
+                return result;
+            }
+        } catch (Exception e) {
+            log.debug("解析会话级知识库ID失败: {}", e.getMessage());
+        }
+        return List.of();
+    }
+
     private String buildRagContext(List<Map<String, Object>> refs) {
         StringBuilder sb = new StringBuilder();
         sb.append("\n\n【知识库检索结果】\n");
@@ -516,9 +439,7 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
             Double score = ref.get("score") instanceof Number n ? n.doubleValue() : null;
             Long kbId = ref.get("kbId") instanceof Number n ? n.longValue() : null;
             sb.append(String.format("%d. [知识库#%s, 相似度=%.3f] %s\n",
-                    i + 1, kbId != null ? kbId : "?",
-                    score != null ? score : 0.0,
-                    truncate(content, 200)));
+                    i + 1, kbId != null ? kbId : "?", score != null ? score : 0.0, truncate(content, 200)));
         }
         sb.append("\n【重要约束】\n");
         sb.append("1. 严禁使用文件工具（list_files/glob_files/grep_files/read_file 等）在工作区搜索文档——"
@@ -530,54 +451,26 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
         return sb.toString();
     }
 
+    private static String buildBaseConstraint() {
+        return "\n\n【重要约束】"
+                + "1. 严禁使用文件工具（list_files/glob_files/grep_files/read_file 等）在工作区搜索文档——"
+                + "工作区中不存在知识库文档。"
+                + "2. 代码执行必须使用 aegis_execute 工具（描述为\"Aegis 代码执行 - Python 计算与数据处理\"），"
+                + "该工具使用 Aegis 后台沙箱池，具备安全隔离和超时保护。\n";
+    }
+
+    private static String detectSensitive(String text) {
+        if (text == null || text.isEmpty()) return null;
+        String lower = text.toLowerCase();
+        for (String w : SENSITIVE_WORDS) {
+            if (lower.contains(w.toLowerCase())) return w;
+        }
+        return null;
+    }
+
     private static String truncate(String s, int maxLen) {
         if (s == null) return "";
         if (s.length() <= maxLen) return s;
         return s.substring(0, maxLen) + "...";
-    }
-
-    /**
-     * 从 RuntimeContext 中解析会话级资源引用的知识库ID列表。
-     *
-     * <p>读取由 {@link AgentAssemblyService#buildRuntimeContext} 注入的
-     * {@code aegis.sessionKbIds} 键值，该值存储了会话中用户选择引用的知识库ID。</p>
-     *
-     * @param ctx 运行时上下文
-     * @return 会话级知识库ID列表，若不存在则返回空列表
-     */
-    @SuppressWarnings("unchecked")
-    private List<Long> resolveSessionKbIds(RuntimeContext ctx) {
-        if (ctx == null) {
-            return List.of();
-        }
-        try {
-            Object raw = ctx.get("aegis.sessionKbIds");
-            if (raw == null) {
-                return List.of();
-            }
-            if (raw instanceof List<?> list) {
-                List<Long> result = new ArrayList<>();
-                for (Object item : list) {
-                    if (item instanceof Number n) {
-                        result.add(n.longValue());
-                    }
-                }
-                return result;
-            }
-            if (raw.getClass().isArray()) {
-                Object[] arr = (Object[]) raw;
-                List<Long> result = new ArrayList<>();
-                for (Object item : arr) {
-                    if (item instanceof Number n) {
-                        result.add(n.longValue());
-                    }
-                }
-                return result;
-            }
-            log.debug("aegis.sessionKbIds 类型不匹配: type={}", raw.getClass().getName());
-        } catch (Exception e) {
-            log.debug("解析会话级知识库ID失败: {}", e.getMessage());
-        }
-        return List.of();
     }
 }

@@ -40,7 +40,7 @@ import java.util.function.Function;
  * <p>审计写入失败不阻塞主流程，仅记录错误日志。
  *
  * <h3>执行顺序</h3>
- * <p>order=20。preCall 最后执行（确保所有校验已通过后记录 START），
+ * <p>order=30。preCall 最后执行（确保所有校验已通过后记录 START），
  * postCall 最先执行（确保记录完整结果）。
  *
  * @author wang.zhen
@@ -48,7 +48,7 @@ import java.util.function.Function;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class AegisAuditLogMiddleware implements MiddlewareBase, OrderedMiddleware {
+public class AegisAuditLogMiddleware implements MiddlewareBase {
 
     private final AuditLogService auditLogService;
 
@@ -57,8 +57,8 @@ public class AegisAuditLogMiddleware implements MiddlewareBase, OrderedMiddlewar
 
     @Override
     public int order() {
-        // P0 MW-01 修复：AS 降序执行，审计日志须记录完整结果故靠后
-        return 20;
+        // Phase 2 精简：order=30，审计日志须记录完整结果故靠后执行
+        return 30;
     }
 
     @Override

@@ -1,15 +1,7 @@
 package com.aegis.runtime.integration.tool;
 
-import com.aegis.core.domain.sandbox.SandboxAllocationContext;
-import com.aegis.core.enums.sandbox.IsolationStrategy;
 import com.aegis.core.spi.ISandboxBackend;
-import com.aegis.runtime.service.sandbox.AegisSandboxCoordinator;
-import com.aegis.runtime.service.sandbox.IdleReleaseTracker;
-import com.aegis.runtime.service.sandbox.SandboxHandle;
-import com.aegis.runtime.service.sandbox.SandboxReadinessGate;
-import com.aegis.runtime.service.sandbox.SandboxReadinessRequest;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
-import com.aegis.runtime.service.sandbox.SlotKeyParser;
 import com.aegis.runtime.integration.agent.ToolResultCache;
 import com.alibaba.fastjson2.JSON;
 import io.agentscope.core.agent.RuntimeContext;
@@ -21,7 +13,6 @@ import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionDecision;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.ToolCallParam;
-import io.agentscope.harness.agent.IsolationScope;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -37,11 +28,10 @@ import java.util.Map;
  * <p>在沙箱环境中执行代码（主要是 Python），用于计算、数据处理等场景。
  * 优先使用 K8s 沙箱执行，沙箱不可用时降级为本地执行。
  *
- * <h3>A1 改造：统一沙箱复用</h3>
- * <p>沙箱分配与智能体框架完全对齐：按智能体类型解析 IsolationScope（UNIVERSAL→USER、
- * SYSTEM→GLOBAL、其他→AGENT），通过 {@link SlotKeyParser#build} 构建一致的 slotKey，
- * 复用智能体级沙箱实例，杜绝"单请求占用多个沙箱"问题。池路由决策（P0-2）同步传递
- * agentType 至 {@link AegisSandboxCoordinator#allocateSlot}。
+ * <h3>Phase 2 减法：沙箱链路移交</h3>
+ * <p>自建沙箱池体系（Coordinator/ReadinessGate/SlotKeyParser 等）已删除，沙箱 acquire/release/persist
+ * 语义交由 AgentScope SandboxManager + SandboxLifecycleMiddleware 原生承载。aegis_execute 暂未接入
+ * 新的 sandbox 句柄获取路径，调用即 fail-closed 返回错误（sandboxEnabled 默认 false，可接受降级）。
  *
  * <h3>功能</h3>
  * <p>执行 Python 代码，返回执行结果和标准输出。
@@ -53,14 +43,7 @@ import java.util.Map;
 public class AegisExecuteTool extends ToolBase {
 
     private final ToolResultCache toolResultCache;
-    private final AegisSandboxCoordinator sandboxCoordinator;
     private final ISandboxBackend sandboxBackend;
-    /** A5：沙箱资源装载器（工具首次执行前 await 装载完成，可选注入） */
-    private final com.aegis.runtime.service.sandbox.SandboxResourceLoader sandboxResourceLoader;
-    /** T1：沙箱就绪门控（替代独立 allocateSlot，三态收敛） */
-    private final com.aegis.runtime.service.sandbox.SandboxReadinessGate sandboxReadinessGate;
-    /** T1：空闲释放追踪器（工具成功执行后 touch，N 分钟无使用主动释放回池） */
-    private final com.aegis.runtime.service.sandbox.IdleReleaseTracker idleReleaseTracker;
 
     /** A5：资源装载等待超时（秒），超时降级为按需语义 */
     private static final long RESOURCE_LOAD_TIMEOUT_SEC = 10;
@@ -95,11 +78,7 @@ public class AegisExecuteTool extends ToolBase {
      * @param sandboxBackend       沙箱后端（用于在沙箱中执行命令）
      */
     public AegisExecuteTool(ToolResultCache toolResultCache,
-                             AegisSandboxCoordinator sandboxCoordinator,
-                             ISandboxBackend sandboxBackend,
-                             com.aegis.runtime.service.sandbox.SandboxResourceLoader sandboxResourceLoader,
-                             com.aegis.runtime.service.sandbox.SandboxReadinessGate sandboxReadinessGate,
-                             com.aegis.runtime.service.sandbox.IdleReleaseTracker idleReleaseTracker) {
+                             ISandboxBackend sandboxBackend) {
         super(ToolBase.builder()
                 .name("aegis_execute")
                 .description("【Aegis 代码执行 - Python 计算与数据处理】\n"
@@ -111,11 +90,7 @@ public class AegisExecuteTool extends ToolBase {
                         + "返回: {result, stdout, stderr, language}。")
                 .inputSchema(INPUT_SCHEMA));
         this.toolResultCache = toolResultCache;
-        this.sandboxCoordinator = sandboxCoordinator;
         this.sandboxBackend = sandboxBackend;
-        this.sandboxResourceLoader = sandboxResourceLoader;
-        this.sandboxReadinessGate = sandboxReadinessGate;
-        this.idleReleaseTracker = idleReleaseTracker;
     }
 
     /**
@@ -188,9 +163,9 @@ public class AegisExecuteTool extends ToolBase {
             // P0-3：fail-closed —— 沙箱不可用时不降级宿主执行（原降级会裸跑宿主 Python，
             // 继承父进程环境/权限且无独立工作目录，沙箱故障窗口 = 无审批直通宿主）。
             // 沙箱组件缺失或异常时返回结构化错误，工具结果照常回传 LLM（流不中断）。
-            if (sandboxCoordinator == null || sandboxBackend == null || tid == null) {
-                log.error("execute 工具沙箱组件不可用，fail-closed 拒绝执行: coordinator={}, backend={}, tenantId={}",
-                        sandboxCoordinator != null, sandboxBackend != null, tid);
+            if (sandboxBackend == null || tid == null) {
+                log.error("execute 工具沙箱组件不可用，fail-closed 拒绝执行: backend={}, tenantId={}",
+                        sandboxBackend != null, tid);
                 result.put("result", null);
                 result.put("stdout", "");
                 result.put("stderr", "沙箱不可用：执行环境未配置或租户上下文缺失，代码未执行");
@@ -228,9 +203,8 @@ public class AegisExecuteTool extends ToolBase {
     /**
      * 在沙箱中执行代码。
      *
-     * <p>A1 改造：沙箱分配与智能体框架（{@code AegisAgentInstanceManager#configureFilesystem}）完全对齐——
-     * 按智能体类型解析 IsolationScope，通过 {@link SlotKeyParser#build} 构建一致的 slotKey，
-     * 从而复用智能体级沙箱实例，杜绝"单请求占用多个沙箱"问题。
+     * <p>Phase 2 减法：自建沙箱池已删除，沙箱分配语义交由 AgentScope SandboxManager 原生承载。
+     * 当前 aegis_execute 暂未接入新的 sandbox 句柄获取路径，fail-closed 拒绝执行。
      *
      * @param tenantId  租户ID
      * @param userId    用户ID
@@ -249,68 +223,12 @@ public class AegisExecuteTool extends ToolBase {
                     "Unsupported language: " + language + ". Currently only Python is supported.");
         }
 
-        // 1. 沙箱就绪门控 —— T1：经 SandboxReadinessGate 三态收敛（已分配/预取中/同步兜底），
-        //    替代原独立 allocateSlot，与框架懒沙箱 spec 对齐，纯聊天会话零 Pod 占用
-        IsolationScope scope = resolveIsolationScope(agentType);
-        String slotKey = SlotKeyParser.build(scope, tenantId, userId, agentId);
-        SandboxReadinessRequest readinessReq = SandboxReadinessRequest.of(
-                sessionId, slotKey, scope, tenantId, userId, agentId, agentType);
-        SandboxHandle handle = sandboxReadinessGate.awaitSandboxReady(readinessReq, SANDBOX_ALLOCATE_TIMEOUT_SEC);
-
-        String instanceId = handle.instanceId();
-        String podName = handle.podName();
-        String namespace = handle.namespace();
-        String k8sResourceId = namespace + "/" + podName;
-
-        log.info("沙箱分配成功: instanceId={}, podName={}, namespace={}", instanceId, podName, namespace);
-
-        // A5：工具首次执行前等待资源装载完成（异步装载与 LLM 首 Token 并行；
-        // 超时 10s 降级为按需语义继续执行并告警，不阻断代码执行本身）
-        if (sandboxResourceLoader != null
-                && !sandboxResourceLoader.awaitLoading(instanceId, RESOURCE_LOAD_TIMEOUT_SEC)) {
-            log.warn("[A5] 等待资源装载超时/未装载，降级为按需语义继续执行: instanceId={}, slotKey={}",
-                    instanceId, slotKey);
-        }
-
-        try {
-            // 2. 创建 Python 脚本文件
-            // 注意：不能用 heredoc（<< 'AEGIS_CODE_EOF'），因为 KubernetesSandboxBackend.exec 会在
-            // 命令末尾追加 "; echo \"__EXIT_CODE:$?\""，污染 heredoc 结束定界符行（定界符必须独占一行），
-            // 导致 heredoc 悬空产生 Python 语法错误。改用 base64 传输，单行命令与追加机制天然兼容。
-            String pythonScript = wrapPythonCode(code);
-            String b64Script = java.util.Base64.getEncoder()
-                    .encodeToString(pythonScript.getBytes(StandardCharsets.UTF_8));
-            String uploadCmd = "printf '%s' '" + b64Script + "' | base64 -d > /tmp/aegis_execute.py";
-            sandboxBackend.exec(tenantId, k8sResourceId, uploadCmd, 10);
-
-            // 3. 执行 Python 脚本
-            ISandboxBackend.ExecResult execResult = sandboxBackend.exec(
-                    tenantId, k8sResourceId, "python3 /tmp/aegis_execute.py", EXEC_TIMEOUT_SEC);
-
-            if (execResult == null) {
-                throw new RuntimeException("沙箱执行返回 null");
-            }
-
-            if (execResult.exitCode != 0) {
-                throw new RuntimeException("Python execution failed with exit code " + execResult.exitCode
-                        + ": " + (execResult.stderr != null ? execResult.stderr : ""));
-            }
-
-            log.debug("沙箱执行成功: stdoutLen={}", execResult.stdout != null ? execResult.stdout.length() : 0);
-            // T1：刷新空闲释放计时器，N 分钟无使用主动回池（§4.5）
-            if (idleReleaseTracker != null) {
-                idleReleaseTracker.touch(sessionId, slotKey, instanceId, tenantId, scope);
-            }
-            return execResult.stdout != null ? execResult.stdout.trim() : "";
-
-        } finally {
-            // 4. 清理临时文件
-            try {
-                sandboxBackend.exec(tenantId, k8sResourceId, "rm -f /tmp/aegis_execute.py", 5);
-            } catch (Exception e) {
-                log.warn("清理沙箱临时文件失败: {}", e.getMessage());
-            }
-        }
+        // Phase 2 减法：SandboxReadinessGate/awaitSandboxReady 与 SlotKeyParser 已移除，
+        // 沙箱 acquire/release/persist 语义交由 AgentScope SandboxManager 原生承载。
+        // aegis_execute 暂未接入新的 sandbox 句柄获取路径，fail-closed 拒绝执行
+        // （sandboxEnabled 默认 false，沙箱功能暂时降级，可接受）。
+        throw new IllegalStateException(
+                "沙箱分配链路已移交 AgentScope SandboxManager（Phase 2 减法），aegis_execute 暂未接入新句柄获取路径");
     }
 
     /**
@@ -530,21 +448,6 @@ public class AegisExecuteTool extends ToolBase {
             log.debug("execute: 解析 agentType 失败: {}", e.getMessage());
             return null;
         }
-    }
-
-    /**
-     * A1：智能体类型 → IsolationScope 映射。
-     *
-     * <p>与 {@code AegisAgentInstanceManager#resolveIsolationScope} 保持完全一致：
-     * UNIVERSAL→USER、SYSTEM→GLOBAL、其他（含 null）→AGENT，
-     * 确保 execute 工具与框架分配到同一个沙箱槽位。
-     */
-    private IsolationScope resolveIsolationScope(String agentType) {
-        return switch (agentType == null ? "" : agentType) {
-            case "UNIVERSAL" -> IsolationScope.USER;
-            case "SYSTEM" -> IsolationScope.AGENT;
-            default -> IsolationScope.AGENT;
-        };
     }
 
     /**

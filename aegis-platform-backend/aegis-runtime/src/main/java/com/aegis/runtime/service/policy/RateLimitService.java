@@ -137,8 +137,8 @@ public class RateLimitService {
             }
             return true;
         } catch (Exception e) {
-            log.error("限流检查异常（放行）: key={}", key, e);
-            return true;
+            log.error("限流检查异常（fail-closed 拒绝）: key={}", key, e);
+            return false;
         }
     }
 

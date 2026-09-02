@@ -271,10 +271,6 @@ public class TaskExecutionService {
         }
 
         RuntimeContext rc = ctx.getRuntimeContext();
-        // ★ 关键注入：将 AegisTaskContext 放入 AgentScope 原生 RuntimeContext 的类型化单例。
-        // 中间件执行时通过 ctx.get(AegisTaskContext.class) 取回，实现执行器 ↔ 中间件的上下文共享。
-        // 详见 TaskContextResolver.resolve(agent) 的解析路径。
-        rc.put(AegisTaskContext.class, ctx);
 
         // ====== 阶段 1：构造消息列表 ======
         // 消息按优先级分 3 层：

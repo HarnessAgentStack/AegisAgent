@@ -457,7 +457,7 @@ public class SessionManageService {
      * 之后 INCR 原子自增。Redis 不可用时降级回 DB MAX(seq)+1（保留正确性，放弃跨实例互斥）。
      */
     private int nextSeqViaRedis(String sessionId, Long tenantId) {
-        String key = "aegis:msg:seq:" + sessionId;
+        String key = "aegis:tenant:" + tenantId + ":msg:seq:" + sessionId;
         try {
             // C7 修复：仅首次初始化需读 DB MAX(seq)（FOR UPDATE 锁读）；key 存在后纯 INCR，热路径零 DB 读。
             // 初始化与自增合并为单次 Lua 原子操作，消除 SETNX→set→INCR 之间的竞态覆盖窗口。
@@ -714,7 +714,7 @@ public class SessionManageService {
         // P2-9：同步删除 Redis AgentState（原 deleteSession 只删 MySQL，Redis agent_state 永久残留→孤儿堆积）
         // AS2 key 模式：aegis:session:{userId}/{sessionId}:agent_state（userId 可能 null，用 "0" 占位）
         Long stateUserId = session.getUserId() != null ? session.getUserId() : 0L;
-        String stateKey = "aegis:session:" + stateUserId + "/" + sessionId + ":agent_state";
+        String stateKey = "aegis:tenant:" + session.getTenantId() + ":session:" + stateUserId + "/" + sessionId + ":agent_state";
         try {
             stringRedisTemplate.delete(stateKey);
             // _keys 索引 key（RedisBaseStore 维护的 keys 索引，删除主 key 须连带清理）

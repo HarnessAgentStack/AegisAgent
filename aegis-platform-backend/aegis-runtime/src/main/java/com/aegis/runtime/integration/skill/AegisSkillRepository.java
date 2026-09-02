@@ -12,7 +12,6 @@ import com.aegis.core.enums.resource.SkillScope;
 import com.aegis.core.enums.resource.SubscriberType;
 import com.aegis.dal.mapper.resource.SkillMapper;
 import com.aegis.dal.mapper.resource.SkillSubscriptionMapper;
-import com.aegis.runtime.integration.middleware.AegisIntentMiddleware;
 import com.aegis.runtime.service.agent.ResourceQueryService;
 import com.aegis.runtime.service.intent.IntentRecognitionService;
 import com.alibaba.fastjson2.JSONObject;
@@ -76,6 +75,9 @@ public class AegisSkillRepository implements RuntimeContextSkillRepository {
 
     /** RuntimeContext 属性键：当前智能体 ID（A4 分轨装载，由 buildRuntimeContext 写入） */
     public static final String CTX_AGENT_ID = "agentId";
+
+    /** RuntimeContext 属性键：当前意图识别结果（由意图中间件写入，用于技能可见性 gate；与 AegisIntentMiddleware.CTX_KEY_INTENT 同值） */
+    private static final String CTX_KEY_INTENT = "aegis.intent";
 
     private final SkillMapper skillMapper;
     private final SkillSubscriptionMapper skillSubscriptionMapper;
@@ -395,7 +397,7 @@ public class AegisSkillRepository implements RuntimeContextSkillRepository {
     private IntentType readIntentType(RuntimeContext ctx) {
         if (ctx == null) return null;
         try {
-            Object raw = ctx.get(AegisIntentMiddleware.CTX_KEY_INTENT);
+            Object raw = ctx.get(CTX_KEY_INTENT);
             if (raw instanceof IntentRecognitionService.IntentResult ir) {
                 return ir.intent();
             }

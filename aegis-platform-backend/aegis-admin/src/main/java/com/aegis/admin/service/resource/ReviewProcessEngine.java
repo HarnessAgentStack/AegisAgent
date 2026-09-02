@@ -1,34 +1,24 @@
 package com.aegis.admin.service.resource;
 
-import com.aegis.dal.mapper.agent.AgentDefMapper;
-import com.aegis.dal.mapper.agent.AgentConfigMapper;
-import com.aegis.dal.mapper.resource.KnowledgeBaseMapper;
-import com.aegis.dal.mapper.resource.McpServiceMapper;
-import com.aegis.dal.mapper.resource.ResourceReviewMapper;
-import com.aegis.dal.mapper.resource.SkillMapper;
+import com.aegis.admin.service.resource.handler.ResourceReviewHandler;
+import com.aegis.admin.service.resource.handler.ResourceReviewInfo;
 import com.aegis.core.common.error.BusinessException;
 import com.aegis.core.common.web.ResultCode;
-import com.aegis.core.domain.agent.AgentConfig;
-import com.aegis.core.domain.agent.AgentDef;
-import com.aegis.core.domain.resource.KnowledgeBase;
-import com.aegis.core.domain.resource.McpService;
 import com.aegis.core.domain.resource.ResourceReview;
-import com.aegis.core.domain.resource.Skill;
 import com.aegis.core.enums.agent.AgentLifeStatus;
-import com.aegis.core.enums.agent.GovernanceTier;
-import com.aegis.core.enums.resource.ResourceType;
 import com.aegis.core.enums.common.ReviewStatus;
+import com.aegis.core.enums.resource.ResourceType;
+import com.aegis.dal.mapper.resource.ResourceReviewMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import com.aegis.admin.service.resource.KnowledgeBaseService;
-import com.aegis.admin.service.resource.SkillManageService;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 审核流程引擎。
@@ -60,15 +50,21 @@ import com.aegis.admin.service.resource.SkillManageService;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class ReviewProcessEngine {
 
     private final ResourceReviewMapper resourceReviewMapper;
-    private final KnowledgeBaseMapper knowledgeBaseMapper;
-    private final SkillMapper skillMapper;
-    private final AgentDefMapper agentDefMapper;
-    private final AgentConfigMapper agentConfigMapper;
-    private final McpServiceMapper mcpServiceMapper;
+    private final Map<ResourceType, ResourceReviewHandler> handlers;
+
+    /**
+     * Spring 注入所有 {@link ResourceReviewHandler} 实现，按 {@link ResourceReviewHandler#supportedType()}
+     * 转为 Map 供按类型分发，新增资源类型仅需新增 Handler 实现即可被自动纳入，无需改动本引擎。
+     */
+    public ReviewProcessEngine(ResourceReviewMapper resourceReviewMapper,
+                               List<ResourceReviewHandler> handlerList) {
+        this.resourceReviewMapper = resourceReviewMapper;
+        this.handlers = handlerList.stream()
+                .collect(Collectors.toMap(ResourceReviewHandler::supportedType, h -> h));
+    }
 
     /**
      * 提交审核（DRAFT/REJECTED → REVIEWING）。
@@ -106,85 +102,18 @@ public class ReviewProcessEngine {
             return existing != null ? existing.getId() : null;
         }
         // ★ 幂等检查结束
-        // 校验资源存在且状态允许提交
-        String resourceName;
-        String resourceVersion;
-        Integer securityLevel = null;
-        Long authorUserId = null;
-        Long authorDeptId = null;
-        if (type == ResourceType.KNOWLEDGE_BASE) {
-            KnowledgeBase kb = knowledgeBaseMapper.selectById(resourceId);
-            if (kb == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "知识库不存在: " + resourceId);
-            }
-            if (kb.getLifeStatus() != AgentLifeStatus.DRAFT
-                    && kb.getLifeStatus() != AgentLifeStatus.REJECTED) {
-                throw new BusinessException(ResultCode.CONFLICT,
-                        "知识库当前状态不可提交审核: " + kb.getLifeStatus());
-            }
-            resourceName = kb.getKbName();
-            resourceVersion = kb.getVersion();
-            if (kb.getSecurityLevel() != null) {
-                securityLevel = kb.getSecurityLevel().ordinal() + 1;
-            }
-            authorUserId = kb.getAuthorUserId();
-            authorDeptId = kb.getAuthorDeptId();
-        } else if (type == ResourceType.SKILL) {
-            Skill skill = skillMapper.selectById(resourceId);
-            if (skill == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "技能不存在: " + resourceId);
-            }
-            if (skill.getLifeStatus() != AgentLifeStatus.DRAFT
-                    && skill.getLifeStatus() != AgentLifeStatus.REJECTED) {
-                throw new BusinessException(ResultCode.CONFLICT,
-                        "技能当前状态不可提交审核: " + skill.getLifeStatus());
-            }
-            resourceName = skill.getSkillName();
-            resourceVersion = skill.getVersion();
-            if (skill.getSecurityLevel() != null) {
-                securityLevel = skill.getSecurityLevel().ordinal() + 1;
-            }
-            authorUserId = skill.getAuthorUserId();
-            authorDeptId = skill.getAuthorDeptId();
-        } else if (type == ResourceType.AGENT) {
-            AgentDef agent = agentDefMapper.selectById(resourceId);
-            if (agent == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "智能体不存在: " + resourceId);
-            }
-            if (agent.getLifeStatus() != AgentLifeStatus.DRAFT
-                    && agent.getLifeStatus() != AgentLifeStatus.REJECTED) {
-                throw new BusinessException(ResultCode.CONFLICT,
-                        "智能体当前状态不可提交审核: " + agent.getLifeStatus());
-            }
-            resourceName = agent.getAgentName();
-            resourceVersion = agent.getVersion();
-            if (agent.getGovernanceTier() != null) {
-                securityLevel = agent.getGovernanceTier().ordinal() + 1;
-            }
-            authorUserId = agent.getAuthorUserId();
-            authorDeptId = agent.getAuthorDeptId();
-        } else if (type == ResourceType.MCP_SERVICE) {
-            McpService service = mcpServiceMapper.selectById(resourceId);
-            if (service == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "MCP服务不存在: " + resourceId);
-            }
-            if (service.getLifeStatus() != AgentLifeStatus.DRAFT
-                    && service.getLifeStatus() != AgentLifeStatus.REJECTED
-                    && service.getLifeStatus() != null) {
-                throw new BusinessException(ResultCode.CONFLICT,
-                        "MCP服务当前状态不可提交审核: " + service.getLifeStatus());
-            }
-            resourceName = service.getMcpName();
-            resourceVersion = service.getVersion();
-            if (service.getSecurityLevel() != null) {
-                securityLevel = service.getSecurityLevel().ordinal() + 1;
-            }
-            authorUserId = null;
-            authorDeptId = null;
-        } else {
+        // 校验资源存在且状态允许提交：SPI 分发到对应资源类型的 Handler
+        ResourceReviewHandler handler = handlers.get(type);
+        if (handler == null) {
             throw new BusinessException(ResultCode.PARAM_ERROR,
                     "不支持审核的资源类型: " + resourceType);
         }
+        ResourceReviewInfo info = handler.loadResourceInfo(resourceId);
+        String resourceName = info.resourceName();
+        String resourceVersion = info.resourceVersion();
+        Integer securityLevel = info.securityLevel();
+        Long authorUserId = info.authorUserId();
+        Long authorDeptId = info.authorDeptId();
 
         // 创建或重用审核单（驳回后重新提交时更新已有记录）
         LambdaQueryWrapper<ResourceReview> existingWrapper = new LambdaQueryWrapper<ResourceReview>()
@@ -290,14 +219,11 @@ public class ReviewProcessEngine {
                 .set(ResourceReview::getReviewTime, LocalDateTime.now())
                 .set(ResourceReview::getRejectReason, reason));
 
-        // 资源回退：AGENT/MCP_SERVICE/SKILL 回退为 REJECTED，其他资源回退为 DRAFT
-        // U3 统一：SKILL 与 SkillReviewService.reject 对齐回 REJECTED
-        // （明确驳回标记，submitForReview 允许 REJECTED 重提，语义闭环）
+        // 资源回退：由各 ResourceReviewHandler 决定回退状态
+        // （AGENT/MCP_SERVICE/SKILL → REJECTED；KNOWLEDGE_BASE → DRAFT；未知类型兜底 DRAFT）
         ResourceType type = review.getResourceType();
-        AgentLifeStatus rejectStatus = (type == ResourceType.AGENT
-                || type == ResourceType.MCP_SERVICE
-                || type == ResourceType.SKILL)
-                ? AgentLifeStatus.REJECTED : AgentLifeStatus.DRAFT;
+        ResourceReviewHandler handler = handlers.get(type);
+        AgentLifeStatus rejectStatus = handler != null ? handler.rejectStatus() : AgentLifeStatus.DRAFT;
         updateResourceLifeStatus(type, review.getResourceId(),
                 rejectStatus, null, null);
 
@@ -404,101 +330,23 @@ public class ReviewProcessEngine {
     /**
      * 更新资源生命周期状态，并在发布时递增版本号。
      *
+     * <p>通过 SPI 分发到对应资源类型的 {@link ResourceReviewHandler}，由 Handler 执行
+     * 具体的 selectById 校验、版本递增与状态更新（含 AgentConfig 快照复制等类型特定副作用）。
+     *
      * @param type          资源类型
      * @param resourceId    资源ID
      * @param lifeStatus    目标状态
-     * @param newVersion    新版本号（null 时不更新版本）
+     * @param newVersion    新版本号（null 时由 Handler 按状态递增）
      * @param publishedTime 发布时间（null 时不更新）
      */
     private void updateResourceLifeStatus(ResourceType type, Long resourceId,
                                            AgentLifeStatus lifeStatus,
                                            String newVersion,
                                            LocalDateTime publishedTime) {
-        if (type == ResourceType.KNOWLEDGE_BASE) {
-            KnowledgeBase kb = knowledgeBaseMapper.selectById(resourceId);
-            if (kb == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "知识库不存在: " + resourceId);
-            }
-            String version = newVersion != null ? newVersion : bumpVersion(kb.getVersion(), lifeStatus);
-            knowledgeBaseMapper.update(null, new LambdaUpdateWrapper<KnowledgeBase>()
-                    .eq(KnowledgeBase::getId, resourceId)
-                    .set(KnowledgeBase::getLifeStatus, lifeStatus)
-                    .set(KnowledgeBase::getVersion, version)
-                    .set(publishedTime != null, KnowledgeBase::getPublishedTime, publishedTime));
-        } else if (type == ResourceType.SKILL) {
-            Skill skill = skillMapper.selectById(resourceId);
-            if (skill == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "技能不存在: " + resourceId);
-            }
-            String version = newVersion != null ? newVersion : bumpVersion(skill.getVersion(), lifeStatus);
-            skillMapper.update(null, new LambdaUpdateWrapper<Skill>()
-                    .eq(Skill::getId, resourceId)
-                    .set(Skill::getLifeStatus, lifeStatus)
-                    .set(Skill::getVersion, version)
-                    .set(publishedTime != null, Skill::getPublishedTime, publishedTime));
-        } else if (type == ResourceType.AGENT) {
-            AgentDef agent = agentDefMapper.selectById(resourceId);
-            if (agent == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "智能体不存在: " + resourceId);
-            }
-            String version = newVersion != null ? newVersion : bumpVersion(agent.getVersion(), lifeStatus);
-            // 审核通过时复制当前配置为新版本快照
-            if (lifeStatus == AgentLifeStatus.PUBLISHED) {
-                AgentConfig currentCfg = agentConfigMapper.selectOne(new LambdaQueryWrapper<AgentConfig>()
-                        .eq(AgentConfig::getAgentId, resourceId)
-                        .eq(AgentConfig::getVersion, agent.getVersion())
-                        .last("LIMIT 1"));
-                if (currentCfg != null) {
-                    currentCfg.setId(null);
-                    currentCfg.setVersion(version);
-                    agentConfigMapper.insert(currentCfg);
-                }
-            }
-            agentDefMapper.update(null, new LambdaUpdateWrapper<AgentDef>()
-                    .eq(AgentDef::getId, resourceId)
-                    .set(AgentDef::getLifeStatus, lifeStatus)
-                    .set(AgentDef::getVersion, version)
-                    .set(publishedTime != null, AgentDef::getPublishedTime, publishedTime));
-        } else if (type == ResourceType.MCP_SERVICE) {
-            McpService service = mcpServiceMapper.selectById(resourceId);
-            if (service == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "MCP服务不存在: " + resourceId);
-            }
-            String version = bumpVersion(service.getVersion(), lifeStatus);
-            mcpServiceMapper.update(null, new LambdaUpdateWrapper<McpService>()
-                    .eq(McpService::getId, resourceId)
-                    .set(McpService::getLifeStatus, lifeStatus)
-                    .set(McpService::getVersion, version)
-                    .set(publishedTime != null, McpService::getPublishedTime, publishedTime));
-            log.info("MCP服务状态更新: id={}, lifeStatus={}, version={}",
-                    resourceId, lifeStatus, version);
+        ResourceReviewHandler handler = handlers.get(type);
+        if (handler != null) {
+            handler.updateLifeStatus(resourceId, lifeStatus, newVersion, publishedTime);
         }
-    }
-
-    /**
-     * 版本号递增。
-     * 草稿版本 0.0.x → 首次发布 1.0.0
-     * 已发布版本 x.y.z → 重新发布 x.(y+1).0
-     * 其他状态保持原版本。
-     */
-    private String bumpVersion(String currentVersion, AgentLifeStatus targetStatus) {
-        if (targetStatus != AgentLifeStatus.PUBLISHED) {
-            return currentVersion;
-        }
-        if (currentVersion == null || currentVersion.isEmpty()) {
-            return "1.0.0";
-        }
-        try {
-            String[] parts = currentVersion.split("\\.");
-            if (parts.length >= 2) {
-                int major = Integer.parseInt(parts[0]);
-                int minor = Integer.parseInt(parts[1]);
-                return major + "." + (minor + 1) + ".0";
-            }
-        } catch (Exception e) {
-            log.warn("版本号格式非法，回退原值: {}", currentVersion);
-        }
-        return currentVersion;
     }
 
     private ResourceType parseResourceType(String resourceType) {

@@ -28,6 +28,9 @@ import com.aegis.runtime.integration.model.ModelRouteResolver;
 import com.aegis.runtime.integration.pool.AgentPoolManager;
 import com.aegis.runtime.integration.pool.AgentRuntimeTemplate;
 import io.agentscope.core.agent.RuntimeContext;
+import com.aegis.runtime.integration.context.AegisTenant;
+import com.aegis.runtime.integration.context.AegisAgentMeta;
+import com.aegis.runtime.integration.context.AegisGovernance;
 import io.agentscope.core.message.Base64Source;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.ImageBlock;
@@ -471,13 +474,10 @@ public class AgentAssemblyService {
         RuntimeContext.Builder builder = RuntimeContext.builder()
                 .sessionId(sessionId)
                 .userId(String.valueOf(userId))
-                .put("tenantId", String.valueOf(tenantId))
-                .put("deptId", deptId != null ? String.valueOf(deptId) : "")
-                .put(AegisSkillRepository.CTX_AGENT_TYPE, agentType != null ? agentType : "UNIVERSAL")
-                .put(AegisSkillRepository.CTX_AGENT_ID, String.valueOf(agentId))
+                // Phase 1: typedAttributes 注入 tenant/agent/governance，替代散落的 string key
+                .put(AegisTenant.class, new AegisTenant(tenantId))
+                .put(AegisAgentMeta.class, new AegisAgentMeta(agentId, agentType != null ? agentType : "UNIVERSAL"))
                 .put(AegisSkillRepository.CTX_REQUESTED_SKILLS, requestedCodes)
-                // T3/T4：注入装配期资源上下文，供 RAG/SkillRepository/BindingSync 中间件读取，
-                // 消除运行时重复 listEnabledBindings 与绑定 Skill 双重加载
                 .put(AssemblyResourceContext.CTX_ENABLED_BINDINGS,
                         resources != null ? resources.enabledBindings() : List.of())
                 .put(AssemblyResourceContext.CTX_BOUND_SKILLS,
