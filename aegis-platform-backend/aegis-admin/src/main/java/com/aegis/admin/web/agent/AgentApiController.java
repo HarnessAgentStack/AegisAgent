@@ -107,7 +107,7 @@ public class AgentApiController {
      * 更新 API 配置（限流/鉴权/出境等）。
      */
     @PutMapping("/{id}")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "UPDATE_AGENT_API", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody AgentApi api,
                            @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
@@ -126,7 +126,7 @@ public class AgentApiController {
      * 重置 API 密钥。
      */
     @PostMapping("/{id}/reset-key")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "RESET_AGENT_API_KEY", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<String> resetApiKey(@PathVariable Long id,
                                   @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
@@ -146,7 +146,7 @@ public class AgentApiController {
      * 启用/禁用 API。
      */
     @PostMapping("/{id}/status")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "UPDATE_AGENT_API_STATUS", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<Void> updateStatus(@PathVariable Long id, @RequestParam boolean enabled,
                                  @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
@@ -195,7 +195,7 @@ public class AgentApiController {
      * 更新 API 的 Schema 配置（入参/出参/示例）。
      */
     @PutMapping("/{id}/schema")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "UPDATE_AGENT_API_SCHEMA", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<Void> updateSchema(@PathVariable Long id, @RequestBody AgentApi api,
                                  @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
@@ -214,7 +214,7 @@ public class AgentApiController {
      * 在线测试 API（仅记录时间，实际执行由 runtime 服务处理）。
      */
     @PostMapping("/{id}/test")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "TEST_AGENT_API", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<AgentApi> testApi(@PathVariable Long id,
                                 @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
@@ -235,7 +235,7 @@ public class AgentApiController {
      * 为指定 API 生成新的 API Key。
      */
     @PostMapping("/{id}/keys")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "GENERATE_AGENT_API_KEY", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<Map<String, Object>> generateKey(
             @PathVariable Long id,
@@ -282,7 +282,7 @@ public class AgentApiController {
      * 轮换 API Key（生成新 Key，吊销旧 Key）。
      */
     @PostMapping("/{id}/rotate-key")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "ROTATE_AGENT_API_KEY", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<Map<String, Object>> rotateKey(
             @PathVariable Long id,
@@ -349,7 +349,7 @@ public class AgentApiController {
      * 递增 API 版本号（minor 版本 +1）。
      */
     @PostMapping("/{id}/bump-version")
-    @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.PUBLISH, resourceIdParam = "id")
+    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.PUBLISH, resourceIdParam = "id")
     @Auditable(operation = "BUMP_AGENT_API_VERSION", resourceType = "AGENT_API", resourceIdParam = "id")
     public Result<AgentApiVersionInfo> bumpVersion(@PathVariable Long id,
                                                @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,

@@ -1,5 +1,6 @@
 package com.aegis.admin.service.resource;
 
+import com.aegis.core.domain.agent.AgentApi;
 import com.aegis.core.domain.agent.AgentDef;
 import com.aegis.core.domain.agent.AgentSubscription;
 import com.aegis.core.domain.resource.KnowledgeBase;
@@ -42,6 +43,7 @@ public class ResourceOwnerService {
 
     // Mapper 引用
     private final com.aegis.dal.mapper.agent.AgentDefMapper agentDefMapper;
+    private final com.aegis.dal.mapper.agent.AgentApiMapper agentApiMapper;
     private final com.aegis.dal.mapper.agent.AgentSubscriptionMapper agentSubscriptionMapper;
     private final com.aegis.dal.mapper.resource.SkillMapper skillMapper;
     private final com.aegis.dal.mapper.resource.SkillSubscriptionMapper skillSubscriptionMapper;
@@ -126,10 +128,30 @@ public class ResourceOwnerService {
         // 3. 根据资源类型校验创建者和订阅者权限
         return switch (resourceType) {
             case AGENT -> checkAgentAccess(resourceId, userId, permission);
+            // AGENT_API 资源无独立 owner：先解析 agent_api → agentId，再按所属智能体校验
+            // （修复：此前 AgentApiController 的 /{id}/** 端点误用 AGENT 类型直查 agent_def，
+            //   将 agent_api 主键当 agentId 查询必然"智能体不存在"→ 一律 403）
+            case AGENT_API -> checkAgentApiAccess(resourceId, userId, permission);
             case SKILL -> checkSkillAccess(resourceId, userId, permission);
             case KNOWLEDGE_BASE -> checkKbAccess(resourceId, userId, permission);
             case MCP_SERVICE, TOOL, DATASET -> checkMcporToolAccess(resourceId, userId, resourceType);
         };
+    }
+
+    /**
+     * 校验智能体开放 API 配置的访问权限。
+     *
+     * <p>agent_api 无独立作者字段，归属随所属智能体：
+     * 以 apiId 解析 {@code agent_api.agentId} 后复用 {@link #checkAgentAccess}，
+     * 智能体创建者（及 VIEW 权限下的订阅者）即拥有其 API 配置的管理权。
+     */
+    private boolean checkAgentApiAccess(Long apiId, Long userId, ResourcePermission permission) {
+        AgentApi api = agentApiMapper.selectById(apiId);
+        if (api == null) {
+            log.warn("API配置不存在: apiId={}", apiId);
+            return false;
+        }
+        return checkAgentAccess(api.getAgentId(), userId, permission);
     }
 
     /**
@@ -250,6 +272,10 @@ public class ResourceOwnerService {
                 case AGENT -> {
                     AgentDef agent = agentDefMapper.selectById(resourceId);
                     yield agent != null ? agent.getTenantId() : null;
+                }
+                case AGENT_API -> {
+                    AgentApi api = agentApiMapper.selectById(resourceId);
+                    yield api != null ? api.getTenantId() : null;
                 }
                 case SKILL -> {
                     Skill skill = skillMapper.selectById(resourceId);

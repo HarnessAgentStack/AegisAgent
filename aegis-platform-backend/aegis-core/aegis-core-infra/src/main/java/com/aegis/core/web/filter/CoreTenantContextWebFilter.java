@@ -34,6 +34,7 @@ import java.util.Set;
  * <p>与网关 {@code SecurityConfig} 白名单对齐：
  * <ul>
  *   <li>{@code /api/admin/auth/**} - 登录认证接口（登录前无 tenantId/userId）</li>
+ *   <li>{@code /api/runtime/internal/**} - 服务间内部端点（Admin→Runtime 缓存失效通知等）</li>
  *   <li>{@code /actuator/**} - 健康检查与监控探针</li>
  *   <li>{@code /favicon.ico} - 浏览器图标</li>
  * </ul>
@@ -67,7 +68,11 @@ public class CoreTenantContextWebFilter implements WebFilter {
     private static final Set<String> WHITELIST_PREFIX = Set.of(
             "/api/admin/auth/",
             "/actuator/",
-            "/api/admin/resource/mcp/services/"
+            "/api/admin/resource/mcp/services/",
+            // 服务间内部端点（如 Admin 通知 Runtime 失效模板缓存）：
+            // 无用户会话上下文（WebClient 直连，不携带 X-Tenant-Id/X-User-Id），
+            // 端点自身以必填参数显式声明租户，无匿名越权面
+            "/api/runtime/internal/"
     );
 
     @Override

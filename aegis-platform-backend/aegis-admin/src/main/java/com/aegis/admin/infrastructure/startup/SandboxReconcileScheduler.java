@@ -4,6 +4,7 @@ import com.aegis.admin.config.infra.SandboxK8sProperties;
 import com.aegis.admin.service.sandbox.SandboxInstanceManageService;
 import com.aegis.admin.service.sandbox.SandboxReconcileLockService;
 import com.aegis.admin.infrastructure.sandbox.K8sClusterService;
+import com.aegis.admin.infrastructure.sandbox.K8sClusterService.PodCreateResult;
 import com.aegis.admin.infrastructure.sandbox.spi.ImageRegistryRouter;
 import com.aegis.core.domain.sandbox.SandboxBaseImage;
 import com.aegis.core.domain.sandbox.SandboxInstance;
@@ -17,16 +18,21 @@ import com.aegis.dal.mapper.sandbox.SandboxInstanceMapper;
 import com.aegis.dal.mapper.sandbox.SandboxLeaseMapper;
 import com.aegis.dal.mapper.sandbox.SandboxPoolMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import io.fabric8.kubernetes.api.model.Pod;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -37,6 +43,7 @@ import java.util.UUID;
  * <h3>Reconcile 循环（每 2 分钟执行一次）</h3>
  * <ol>
  *   <li><b>健康检查</b>：探活 IDLE + OCCUPIED 实例，失败 → 标记 ABNORMAL</li>
+ *   <li><b>孤儿 Pod 对账</b>：K8s 中存在但 DB 无记录的僵尸 Pod（超保护窗）→ 删除，释放 ResourceQuota</li>
  *   <li><b>OCCUPIED 超时回收</b>：长时间无心跳的 OCCUPIED 实例 → 强制回收为脏 IDLE</li>
  *   <li><b>异常修复</b>：ABNORMAL 实例 → 清理 OCCUPIED 遗留 + 重建 Pod，失败超限 → DESTROYED</li>
  *   <li><b>回收脏 IDLE</b>：IDLE(initialized=0) 且空闲超时 → 回收（默认硬回收：Pod 重建+镜像初始化）→ IDLE(initialized=1)</li>
@@ -50,6 +57,7 @@ import java.util.UUID;
  *   <li>K8s 不可用时降级为仅 DB 操作（不创建/销毁 Pod）</li>
  *   <li>预热时受 max_instances 上限约束（不会超过容量上限）</li>
  *   <li>缩容时优先销毁最旧的 IDLE 实例（按 last_recycle_time 升序）</li>
+ *   <li>Pod 创建遇 ResourceQuota 满时立即中止本轮批量流程（剩余创建必然失败，等待下轮对账释放后自愈）</li>
  * </ul>
  *
  * @author wang.zhen
@@ -91,7 +99,7 @@ public class SandboxReconcileScheduler {
             return;
         }
 
-        int healthChecked = 0, recycled = 0, preheated = 0, scaledDown = 0, repaired = 0, errors = 0, occupiedRecovered = 0, expiredReclaimed = 0, residentEnsured = 0, orphanedReclaimed = 0;
+        int healthChecked = 0, recycled = 0, preheated = 0, scaledDown = 0, repaired = 0, errors = 0, occupiedRecovered = 0, expiredReclaimed = 0, residentEnsured = 0, orphanedReclaimed = 0, orphanPodsReclaimed = 0;
 
         try {
             // 常驻保障 —— 为启用的 SYSTEM 智能体确保 RESIDENT 实例绑定
@@ -121,6 +129,7 @@ public class SandboxReconcileScheduler {
                     scaledDown += result.scaledDown;
                     repaired += result.repaired;
                     occupiedRecovered += result.occupiedRecovered;
+                    orphanPodsReclaimed += result.orphanPodsReclaimed;
                 } catch (Exception e) {
                     errors++;
                     log.error("[Reconcile] 处理池 {} 异常: {}", pool.getId(), e.getMessage(), e);
@@ -134,8 +143,8 @@ public class SandboxReconcileScheduler {
         }
 
         long cost = System.currentTimeMillis() - start;
-        log.info("[Reconcile] 扫描完成: 常驻保障={}, 租约过期回收={}, 泄漏回收={}, 健康检查={}, OCCUPIED回收={}, 回收={}, 预热={}, 缩容={}, 修复={}, 错误={}, 耗时={}ms",
-                residentEnsured, expiredReclaimed, orphanedReclaimed, healthChecked, occupiedRecovered, recycled, preheated, scaledDown, repaired, errors, cost);
+        log.info("[Reconcile] 扫描完成: 常驻保障={}, 租约过期回收={}, 泄漏回收={}, 健康检查={}, OCCUPIED回收={}, 孤儿Pod清理={}, 回收={}, 预热={}, 缩容={}, 修复={}, 错误={}, 耗时={}ms",
+                residentEnsured, expiredReclaimed, orphanedReclaimed, healthChecked, occupiedRecovered, orphanPodsReclaimed, recycled, preheated, scaledDown, repaired, errors, cost);
     }
 
     // =========================================================================
@@ -197,8 +206,13 @@ public class SandboxReconcileScheduler {
                     }
 
                     // 3. 创建常驻实例（与预热产物同构：Pod + 工作区初始化 + 落库 RESIDENT）
-                    if (createResidentInstance(residentPool, agent, slotKey)) {
+                    PodCreateResult created = createResidentInstance(residentPool, agent, slotKey);
+                    if (created == PodCreateResult.CREATED) {
                         ensured++;
+                    } else if (created == PodCreateResult.QUOTA_EXCEEDED) {
+                        log.warn("[Reconcile][A3] 常驻保障中止（ResourceQuota 已满）: agentId={}, 剩余待下轮对账释放后处理",
+                                agent.getId());
+                        break;
                     }
                 } catch (Exception e) {
                     log.error("[Reconcile][A3] 常驻保障异常: agentId={}, error={}",
@@ -233,11 +247,11 @@ public class SandboxReconcileScheduler {
     /**
      * 创建 RESIDENT 常驻实例（Pod + 工作区初始化 + 落库绑定）。
      *
-     * @return 是否创建成功
+     * @return 创建结果（见 {@link PodCreateResult}）
      */
-    private boolean createResidentInstance(SandboxPool pool,
-                                           com.aegis.core.domain.agent.AgentDef agent,
-                                           String slotKey) {
+    private PodCreateResult createResidentInstance(SandboxPool pool,
+                                                   com.aegis.core.domain.agent.AgentDef agent,
+                                                   String slotKey) {
         ensureNamespace(pool.getNamespace());
         String imageRef = resolveImageRef(pool);
 
@@ -247,13 +261,13 @@ public class SandboxReconcileScheduler {
         labels.put("pool", pool.getPoolCode());
         labels.put("resident", String.valueOf(agent.getId()));
 
-        boolean created = k8sClusterService.createSandboxPod(
+        PodCreateResult created = k8sClusterService.createSandboxPod(
                 pool.getNamespace(), podName, imageRef,
                 pool.getCpuLimit(), pool.getMemLimitMb(), labels);
-        if (!created) {
-            log.warn("[Reconcile][A3] 常驻实例创建失败（Pod 创建失败）: agentId={}, pool={}",
-                    agent.getId(), pool.getPoolCode());
-            return false;
+        if (created != PodCreateResult.CREATED) {
+            log.warn("[Reconcile][A3] 常驻实例创建失败（Pod 创建失败: {}）: agentId={}, pool={}",
+                    created, agent.getId(), pool.getPoolCode());
+            return created;
         }
 
         boolean running = k8sClusterService.waitForPodRunning(
@@ -264,7 +278,7 @@ public class SandboxReconcileScheduler {
             log.warn("[Reconcile][A3] 常驻实例创建失败（Pod 等待超时）: agentId={}, podName={}",
                     agent.getId(), podName);
             k8sClusterService.deletePod(pool.getNamespace(), podName);
-            return false;
+            return PodCreateResult.FAILED;
         }
 
         // 工作区初始化（与预热产物同构）
@@ -293,7 +307,7 @@ public class SandboxReconcileScheduler {
 
         log.info("[Reconcile][A3] 常驻绑定创建成功: agentId={}, agentCode={}, slotKey={}, instanceId={}, podName={}, pool={}",
                 agent.getId(), agent.getAgentCode(), slotKey, instance.getInstanceId(), podName, pool.getPoolCode());
-        return true;
+        return PodCreateResult.CREATED;
     }
 
     /**
@@ -400,25 +414,30 @@ public class SandboxReconcileScheduler {
         // 1. 健康检查
         result.healthChecked = healthCheck(pool);
 
-        // 2. OCCUPIED 超时回收（长时间无心跳的 OCCUPIED 实例强制回收为 IDLE）
+        // 2. 孤儿 Pod 对账（K8s 存在但 DB 无记录 → 删除释放 quota）
+        result.orphanPodsReclaimed = reconcileOrphanPods(pool);
+
+        // 3. OCCUPIED 超时回收（长时间无心跳的 OCCUPIED 实例强制回收为 IDLE）
         result.occupiedRecovered = occupiedTimeoutHandler.handleTimeout(
                 properties.getReconcile().getOccupiedTimeoutMin());
 
-        // 3. 修复 ABNORMAL 实例
+        // 4. 修复 ABNORMAL 实例
         result.repaired = repairAbnormal(pool);
 
-        // 4. 回收脏 IDLE 实例（工作区重初始化）
+        // 5. 回收脏 IDLE 实例（工作区重初始化）
         result.recycled = recycleDirtyIdle(pool);
 
-        // 5. 预热补充（确保 min_instances 个干净 IDLE）
+        // 6. 预热补充（确保 min_instances 个干净 IDLE）
         result.preheated = preheat(pool);
 
-        // 6. 缩容销毁（确保不超过 max_instances）
+        // 7. 缩容销毁（确保不超过 max_instances）
         result.scaledDown = scaleDown(pool);
 
-        if (result.recycled > 0 || result.preheated > 0 || result.scaledDown > 0 || result.repaired > 0 || result.occupiedRecovered > 0) {
-            log.info("[Reconcile] 池 {} 处理完成: OCCUPIED回收={}, 回收={}, 预热={}, 缩容={}, 修复={}",
-                    pool.getPoolCode(), result.occupiedRecovered, result.recycled, result.preheated, result.scaledDown, result.repaired);
+        if (result.recycled > 0 || result.preheated > 0 || result.scaledDown > 0 || result.repaired > 0
+                || result.occupiedRecovered > 0 || result.orphanPodsReclaimed > 0) {
+            log.info("[Reconcile] 池 {} 处理完成: OCCUPIED回收={}, 孤儿Pod清理={}, 回收={}, 预热={}, 缩容={}, 修复={}",
+                    pool.getPoolCode(), result.occupiedRecovered, result.orphanPodsReclaimed,
+                    result.recycled, result.preheated, result.scaledDown, result.repaired);
         }
         return result;
     }
@@ -470,7 +489,81 @@ public class SandboxReconcileScheduler {
     }
 
     // =========================================================================
-    // 2. 修复 ABNORMAL 实例
+    // 2. 孤儿 Pod 对账
+    // =========================================================================
+
+    /** 孤儿 Pod 保护窗（ms）：跳过创建时间 5 分钟内的 Pod，避免误删"已创建但尚未落库"的预热产物 */
+    private static final long ORPHAN_POD_GRACE_MS = 5 * 60 * 1000L;
+
+    /**
+     * K8s-DB Pod 对账：清理 K8s 中存在但 DB 无对应记录的僵尸沙箱 Pod。
+     *
+     * <p>孤儿来源：Pod 创建成功后落库前进程崩溃/DB 写入失败、DB 记录被人工清理、
+     * 修复流程中旧 Pod 删除失败遗留新 Pod 等。僵尸 Pod 持续占用 ResourceQuota 而
+     * DB 视角不可见，最终表现为"quota 满 + 预热全部失败 + 池内无 IDLE 可分配"。
+     *
+     * <p>按 namespace（而非 poolId）对账，覆盖同 namespace 多池场景；
+     * 仅删除超过保护窗的孤儿 Pod，正在创建中的正常产物不受影响。
+     *
+     * @return 清理的孤儿 Pod 数
+     */
+    private int reconcileOrphanPods(SandboxPool pool) {
+        if (!k8sClusterService.isAvailable() || !StringUtils.hasText(pool.getNamespace())) {
+            return 0;
+        }
+        try {
+            List<Pod> pods = k8sClusterService.listSandboxPods(pool.getNamespace());
+            if (pods.isEmpty()) {
+                return 0;
+            }
+            // DB 视角：该 namespace 下所有未销毁实例的 podName
+            List<SandboxInstance> liveInstances = instanceMapper.selectList(
+                    new LambdaQueryWrapper<SandboxInstance>()
+                            .eq(SandboxInstance::getNamespace, pool.getNamespace())
+                            .ne(SandboxInstance::getStatus, SandboxInstanceStatus.DESTROYED));
+            Set<String> knownPodNames = new HashSet<>();
+            for (SandboxInstance inst : liveInstances) {
+                if (StringUtils.hasText(inst.getPodName())) {
+                    knownPodNames.add(inst.getPodName());
+                }
+            }
+
+            Instant now = Instant.now();
+            int reclaimed = 0;
+            for (Pod pod : pods) {
+                String podName = pod.getMetadata() != null ? pod.getMetadata().getName() : null;
+                if (podName == null || knownPodNames.contains(podName)) {
+                    continue;
+                }
+                String creationTs = pod.getMetadata().getCreationTimestamp();
+                if (creationTs == null) {
+                    continue;
+                }
+                Instant createdAt;
+                try {
+                    createdAt = Instant.parse(creationTs);
+                } catch (Exception e) {
+                    continue;
+                }
+                long ageMs = Duration.between(createdAt, now).toMillis();
+                if (ageMs < ORPHAN_POD_GRACE_MS) {
+                    continue;
+                }
+                if (k8sClusterService.deletePod(pool.getNamespace(), podName)) {
+                    reclaimed++;
+                    log.warn("[Reconcile] 清理孤儿 Pod（K8s 存在但 DB 无记录，释放 quota）: namespace={}, podName={}, age={}s",
+                            pool.getNamespace(), podName, ageMs / 1000);
+                }
+            }
+            return reclaimed;
+        } catch (Exception e) {
+            log.error("[Reconcile] 孤儿 Pod 对账异常: pool={}, error={}", pool.getPoolCode(), e.getMessage());
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // 3. 修复 ABNORMAL 实例
     // =========================================================================
 
     /**
@@ -520,11 +613,16 @@ public class SandboxReconcileScheduler {
                 labels.put("tenant", String.valueOf(pool.getTenantId()));
                 labels.put("pool", pool.getPoolCode());
 
-                boolean created = k8sClusterService.createSandboxPod(
+                PodCreateResult created = k8sClusterService.createSandboxPod(
                         pool.getNamespace(), newPodName, imageRef,
                         pool.getCpuLimit(), pool.getMemLimitMb(), labels);
 
-                if (!created) {
+                if (created == PodCreateResult.QUOTA_EXCEEDED) {
+                    log.warn("[Reconcile] 修复中止（ResourceQuota 已满，剩余 {} 个 ABNORMAL 待下轮对账释放后处理）: pool={}",
+                            abnormalInstances.size() - repaired, pool.getPoolCode());
+                    break;
+                }
+                if (created != PodCreateResult.CREATED) {
                     log.warn("[Reconcile] 修复失败（Pod 创建失败）: instanceId={}, pool={}",
                             inst.getInstanceId(), pool.getPoolCode());
                     continue;
@@ -673,10 +771,15 @@ public class SandboxReconcileScheduler {
                 labels.put("pool", pool.getPoolCode());
 
                 // 创建 Pod
-                boolean created = k8sClusterService.createSandboxPod(
+                PodCreateResult created = k8sClusterService.createSandboxPod(
                         pool.getNamespace(), podName, imageRef,
                         pool.getCpuLimit(), pool.getMemLimitMb(), labels);
-                if (!created) {
+                if (created == PodCreateResult.QUOTA_EXCEEDED) {
+                    log.warn("[Reconcile] 预热中止（ResourceQuota 已满，已补 {} 个，剩余 {} 个待下轮对账释放后处理）: pool={}",
+                            pool.getPoolCode(), preheated, capped - i - 1);
+                    break;
+                }
+                if (created != PodCreateResult.CREATED) {
                     log.warn("[Reconcile] 预热失败（Pod 创建失败）: pool={}, podName={}",
                             pool.getPoolCode(), podName);
                     continue;
@@ -837,6 +940,7 @@ public class SandboxReconcileScheduler {
     private static class ReconcileResult {
         int healthChecked = 0;
         int occupiedRecovered = 0;
+        int orphanPodsReclaimed = 0;
         int recycled = 0;
         int preheated = 0;
         int scaledDown = 0;

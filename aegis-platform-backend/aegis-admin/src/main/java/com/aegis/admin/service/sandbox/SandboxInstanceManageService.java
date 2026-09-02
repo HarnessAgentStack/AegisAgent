@@ -174,15 +174,17 @@ public class SandboxInstanceManageService {
         labels.put("tenant", String.valueOf(pool.getTenantId()));
         labels.put("pool", pool.getPoolCode());
 
-        boolean created = k8sClusterService.createSandboxPod(
+        K8sClusterService.PodCreateResult created = k8sClusterService.createSandboxPod(
                 namespace, newPodName, imageRef,
                 pool.getCpuLimit(), pool.getMemLimitMb(), labels);
-        if (!created) {
-            log.error("[SandboxInstance] 硬回收失败（Pod 创建失败）: instanceId={}, pool={}",
-                    instanceId, pool.getPoolCode());
+        if (created != K8sClusterService.PodCreateResult.CREATED) {
+            String reason = created == K8sClusterService.PodCreateResult.QUOTA_EXCEEDED
+                    ? "集群资源配额(ResourceQuota)已满" : "Pod 创建失败";
+            log.error("[SandboxInstance] 硬回收失败（{}）: instanceId={}, pool={}",
+                    reason, instanceId, pool.getPoolCode());
             instanceMapper.updateStatus(instanceId, SandboxInstanceStatus.ABNORMAL.name());
             throw new BusinessException(ResultCode.INTERNAL_ERROR,
-                    "硬回收失败：Pod 创建失败，已标记异常，等待自动修复");
+                    "硬回收失败：" + reason + "，已标记异常，等待自动修复");
         }
 
         // 3. 等待新 Pod Running

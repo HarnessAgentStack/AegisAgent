@@ -482,6 +482,8 @@ public class AegisAgentInstanceManager {
             // T3/T4：从装配期资源上下文加载，替代按 agentId 的 DB 直查
             toolBridge.resolveTools(toolkit, resources);
         }
+        // BUILTIN 基础工具与 loadToolkit 同步加载（所有类型公共能力基座）
+        toolBridge.resolveBuiltinTools(toolkit);
         // UNIVERSAL 分支：异步刷新在 boundedElastic 新线程执行，ThreadLocal 不跨线程传播，
         // res_skill / res_skill_subscription 非租户忽略表 → 查询会 fail-closed 抛异常。
         // 用 TenantContextScope.bound 恢复租户上下文，保证刷新路径与冷启动路径行为一致。
@@ -590,10 +592,12 @@ public class AegisAgentInstanceManager {
      *
      * <h3>分轨规则</h3>
      * <ul>
-     *   <li>UNIVERSAL：绑定工具 + <b>用户订阅 MCP</b>（{@code resolveMcpToolsForSubscriptions}）+ 会话级 MCP</li>
-     *   <li>APPLICATION/SYSTEM：绑定工具 + 会话级 MCP；
-     *       <b>不加载用户订阅 MCP</b>（应用/系统智能体资源仅来自 agent_binding 审核通过项，
-     *       用户订阅资源注入会造成越权）</li>
+     *   <li><b>所有类型</b>：绑定工具 + <b>BUILTIN 平台内置工具</b>（系统内置资源，
+     *       不依赖绑定即可用）+ 会话级 MCP</li>
+     *   <li>UNIVERSAL 额外加载：<b>用户订阅 MCP</b>（{@code resolveMcpToolsForSubscriptions}）、
+     *       GLOBAL 系统技能、订阅技能、自建技能、自建 MCP</li>
+     *   <li>APPLICATION/SYSTEM 不加载用户订阅/自建资源
+     *       （用户订阅资源注入会造成越权，资源仅来自 agent_binding 审核通过项）</li>
      *   <li>会话级 MCP 引用对所有类型保留（用户显式行为，非隐式订阅扩散）</li>
      * </ul>
      *
@@ -622,6 +626,14 @@ public class AegisAgentInstanceManager {
             // 替代 toolBridge.resolveTools(toolkit, agentId) 的 DB 直查
             toolBridge.resolveTools(toolkit, resources);
             log.info("loadToolkit: 从装配期资源上下文加载绑定工具, agentId={}", agentId);
+        }
+
+        // BUILTIN 平台内置工具：所有类型的公共能力基座（"系统内置资源"语义）。
+        // APPLICATION/SYSTEM 未绑定工具时不再裸奔；用户订阅/草稿资源仍仅 UNIVERSAL 加载
+        int builtinToolCount = toolBridge.resolveBuiltinTools(toolkit);
+        if (builtinToolCount > 0) {
+            log.info("loadToolkit: BUILTIN基础工具加载成功: agentId={}, agentType={}, count={}",
+                    agentId, agentType, builtinToolCount);
         }
 
         // 用户订阅 MCP 仅对 UNIVERSAL 开放（应用/系统智能体仅装载审核通过的绑定资源）

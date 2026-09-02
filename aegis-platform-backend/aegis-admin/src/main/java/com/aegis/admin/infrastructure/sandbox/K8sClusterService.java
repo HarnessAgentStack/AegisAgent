@@ -381,6 +381,21 @@ public class K8sClusterService {
     // =========================================================================
 
     /**
+     * Pod 创建结果。
+     *
+     * <p>QUOTA_EXCEEDED 用于上层批量创建流程（预热/修复/常驻保障）快速终止循环：
+     * ResourceQuota 已满时后续创建必然失败，继续重试只会刷日志（重试风暴）。
+     */
+    public enum PodCreateResult {
+        /** 创建成功 */
+        CREATED,
+        /** ResourceQuota 已满（K8s 403 exceeded quota），需先释放资源 */
+        QUOTA_EXCEEDED,
+        /** 其他失败（K8s 不可用、镜像错误、网络异常等） */
+        FAILED
+    }
+
+    /**
      * 创建沙箱 Pod。
      *
      * @param namespace   命名空间
@@ -389,14 +404,14 @@ public class K8sClusterService {
      * @param cpuLimit    CPU 上限（如 "0.5"）
      * @param memLimitMb  内存上限（MB）
      * @param labels      额外 Label
-     * @return true=创建成功
+     * @return 创建结果（见 {@link PodCreateResult}）
      */
-    public boolean createSandboxPod(String namespace, String podName, String imageRef,
-                                    String cpuLimit, int memLimitMb, Map<String, String> labels) {
+    public PodCreateResult createSandboxPod(String namespace, String podName, String imageRef,
+                                            String cpuLimit, int memLimitMb, Map<String, String> labels) {
         KubernetesClient client = getClient();
         if (client == null) {
             log.warn("[K8s] 不可用，跳过 createSandboxPod: {}/{}", namespace, podName);
-            return false;
+            return PodCreateResult.FAILED;
         }
         try {
             ResourceRequirements resources = new ResourceRequirementsBuilder()
@@ -429,10 +444,14 @@ public class K8sClusterService {
 
             client.pods().inNamespace(namespace).resource(pod).create();
             log.info("[K8s] Pod 创建成功: {}/{}", namespace, podName);
-            return true;
+            return PodCreateResult.CREATED;
         } catch (Exception e) {
-            log.error("[K8s] Pod 创建失败 {}/{}: {}", namespace, podName, e.getMessage());
-            return false;
+            String message = e.getMessage() != null ? e.getMessage() : "";
+            log.error("[K8s] Pod 创建失败 {}/{}: {}", namespace, podName, message);
+            if (message.toLowerCase().contains("exceeded quota")) {
+                return PodCreateResult.QUOTA_EXCEEDED;
+            }
+            return PodCreateResult.FAILED;
         }
     }
 

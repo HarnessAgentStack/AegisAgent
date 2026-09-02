@@ -16,6 +16,9 @@ public enum ResourceType {
     /** 智能体：平台核心资源，发布需审核，订阅可能需审批 */
     AGENT("智能体"),
 
+    /** 智能体开放API配置：归属校验时先解析 agent_api → agentId，再按所属智能体校验创建者/订阅者 */
+    AGENT_API("智能体API"),
+
     /** 技能：工具封装资源，用户可发布，发布需审核 */
     SKILL("技能"),
 

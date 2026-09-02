@@ -11,10 +11,12 @@ import com.aegis.core.domain.resource.Skill;
 import com.aegis.core.domain.resource.SkillSubscription;
 import com.aegis.core.domain.resource.Tool;
 import com.aegis.core.enums.agent.AgentLifeStatus;
+import com.aegis.core.enums.common.CommonStatus;
 import com.aegis.core.enums.model.ProviderStatus;
 import com.aegis.core.enums.resource.ResourceType;
 import com.aegis.core.enums.resource.SkillScope;
 import com.aegis.core.enums.resource.SubscriberType;
+import com.aegis.core.enums.resource.ToolSourceType;
 import com.aegis.dal.mapper.agent.AgentBindingMapper;
 import com.aegis.dal.mapper.agent.AgentDefMapper;
 import com.aegis.dal.mapper.resource.RuntimeKbDocumentMapper;
@@ -78,6 +80,15 @@ public class ResourceQueryService {
      */
     private volatile CachedGlobalSkills globalSkillsCache;
     private static final long GLOBAL_SKILL_CACHE_TTL_MS = 60_000L;
+
+    /**
+     * BUILTIN 平台内置工具缓存（对标 GLOBAL 技能模式）。
+     * <p>res_tool 中 source_type=BUILTIN 的平台内置工具近乎静态，
+     * 每次智能体装配全量重查浪费 DB 资源，60s TTL 保证近实时热更新。
+     */
+    private volatile List<Tool> builtinToolsCache;
+    private static final long BUILTIN_TOOL_CACHE_TTL_MS = 60_000L;
+    private volatile long builtinToolsCacheLoadedAt = 0L;
 
     private static class CachedGlobalSkills {
         final List<Skill> skills;
@@ -553,6 +564,33 @@ public class ResourceQueryService {
     public void forceReloadGlobalSkills() {
         globalSkillsCache = null;
         log.info("GLOBAL 技能缓存已清空，下次查询将重新加载 DB");
+    }
+
+    /**
+     * 查询平台内置（BUILTIN）基础工具集合。
+     *
+     * <p>语义：BUILTIN + NORMAL 的 res_tool 是所有智能体的能力基座
+     * （web_search / generate_file / http_request 等），不依赖 agent_binding
+     * 显式绑定即可用——与 GLOBAL 系统技能共同构成"系统内置资源"。
+     * 用户订阅与草稿资源不在此轨（仅 UNIVERSAL 加载）。
+     *
+     * <p>res_tool 在租户忽略表中，平台级共享，无租户过滤问题。
+     * 60s TTL 缓存（对标 GLOBAL 技能），变更最迟一分钟生效。
+     *
+     * @return 内置工具列表（无数据时返回空列表，绝不返回 null）
+     */
+    public List<Tool> listBuiltinTools() {
+        List<Tool> cached = builtinToolsCache;
+        if (cached != null && System.currentTimeMillis() - builtinToolsCacheLoadedAt < BUILTIN_TOOL_CACHE_TTL_MS) {
+            return cached;
+        }
+        List<Tool> tools = toolMapper.selectList(new LambdaQueryWrapper<Tool>()
+                .eq(Tool::getSourceType, ToolSourceType.BUILTIN)
+                .eq(Tool::getStatus, CommonStatus.NORMAL));
+        builtinToolsCache = tools;
+        builtinToolsCacheLoadedAt = System.currentTimeMillis();
+        log.debug("BUILTIN 内置工具缓存已加载: count={}", tools.size());
+        return tools;
     }
 
     /**

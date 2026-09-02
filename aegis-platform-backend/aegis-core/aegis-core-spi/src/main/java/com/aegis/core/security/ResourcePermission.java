@@ -54,7 +54,7 @@ public enum ResourcePermission {
      */
     public static ResourcePermission defaultPermission(ResourceType resourceType) {
         return switch (resourceType) {
-            case AGENT, SKILL, KNOWLEDGE_BASE, MCP_SERVICE -> MANAGE;
+            case AGENT, AGENT_API, SKILL, KNOWLEDGE_BASE, MCP_SERVICE -> MANAGE;
             case TOOL, DATASET -> VIEW;
         };
     }

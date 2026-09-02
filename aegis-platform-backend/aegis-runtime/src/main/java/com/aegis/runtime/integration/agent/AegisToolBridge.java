@@ -344,6 +344,30 @@ public class AegisToolBridge {
     }
 
     /**
+     * 将平台内置（BUILTIN）基础工具注册到 Toolkit（所有智能体类型的公共能力基座）。
+     *
+     * <p>BUILTIN + NORMAL 的 res_tool（web_search / generate_file / http_request 等）
+     * 是"系统内置资源"，不依赖 agent_binding 显式绑定即可用：
+     * APPLICATION/SYSTEM 智能体未绑定任何工具时不再"裸奔"，
+     * 绑定了工具时与绑定集合并（{@link #resolveTools(Toolkit, List)} 按 toolCode
+     * 幂等分派注册，重复注册无副作用）。
+     *
+     * <p>用户订阅 MCP/技能与草稿资源不在此轨（仅 UNIVERSAL 加载，防越权）。
+     *
+     * @param toolkit 目标 Toolkit 实例
+     * @return 本次注册的内置工具数量
+     */
+    public int resolveBuiltinTools(Toolkit toolkit) {
+        List<Tool> builtinTools = resourceQueryService.listBuiltinTools();
+        if (builtinTools.isEmpty()) {
+            return 0;
+        }
+        resolveTools(toolkit, builtinTools);
+        log.info("resolveBuiltinTools: builtinTools={}", builtinTools.size());
+        return builtinTools.size();
+    }
+
+    /**
      * 将 GLOBAL 系统技能（如 skill_creator）注册为 AgentScope Tool。
      *
      * <p>P0 修复：skill_creator 是 scope=GLOBAL 的系统技能，不在任何 agent_binding 中，
