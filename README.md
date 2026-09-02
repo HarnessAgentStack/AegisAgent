@@ -19,51 +19,72 @@
 
 ## 快速开始
 
-**最快的体验方式**——仅需 Docker Desktop，一键拉起全栈：
+### 前置依赖
+
+**运行脚本会自动探测**（Docker → JDK → Maven → Node），无需配置即可跑通。
+探测失败或有多个版本时，可通过两种方式覆盖（优先级：脚本默认 < 环境变量 < `aegis.conf`）：
+
+| 依赖 | 最低版本 | 脚本如何发现 | 可覆盖的配置 |
+|------|---------|-------------|-------------|
+| Docker Desktop / Engine + Compose v2 | 24+ | `docker info` 直连 | — |
+| JDK | 21+ | `$env:JAVA_HOME\bin\java` 或 PATH 中 `java` | `aegis.conf` → `JAVA_HOME` |
+| Maven | 3.9+ | `$env:MVN_CMD` 或 PATH 中 `mvn` | `aegis.conf` → `MVN_CMD` |
+| Node.js | 18+ | PATH 中 `node` / `npm` | — |
+
+> **`aegis.conf`** 位于项目根目录，跨平台通用（bash 风格，Windows PowerShell 也能解析）。留空/注释掉 = 自动探测，取消注释 = 强制覆盖。常见场景：
+> - JDK / Maven 没进 PATH：取消注释 `JAVA_HOME` / `MVN_CMD`
+> - Sandbox 用远程 Docker：取消注释 `SANDBOX_DOCKER_HOST=tcp://127.0.0.1:2375`
+
+### 一键启动
+
+**一个脚本搞定**——基础设施 (Docker Compose) + 应用层 (本机进程) 全自动：
 
 ```powershell
-.\quickstart.ps1 all
-# 执行步骤：
-#   1. 启动 6 个基础设施容器（MySQL/Redis/Nacos/MinIO/etcd/Milvus）
-#   2. 容器内 Maven 编译后端三服务（阿里云镜像加速，无需本地 JDK/Maven）
-#   3. 容器内 npm build 前端 + 构建为 nginx 镜像
-#   4. 启动 4 个应用容器（gateway/admin/runtime/web）
-# 首次约 8~15 分钟（拉依赖），后续增量约 2~3 分钟
+# Windows PowerShell
+.\aegis.ps1 start
+
+# macOS / Linux bash
+./aegis.sh start
 ```
 
-启动完成后访问 http://localhost ，初始账号 `DEFAULT / admin / aegis@123`。
+脚本自动完成：
+1. 探测前置依赖 (Docker / JDK / Maven / Node)，缺失则打印错误并退出
+2. `docker compose up` 启动 MySQL / Redis / Nacos / MinIO / etcd / Milvus / PaddleOCR
+3. **首次启动 MySQL 空数据卷时**，容器自动执行 `infra/ddl/01_schema_init.sql` + `02_seed_data.sql`（后续重启跳过）
+4. `mvn clean package -DskipTests` 构建后端 JAR
+5. 本机启动 gateway (:8080) / admin (:8082) / runtime (:8081) / mcp-demo (:8084)
+6. 本机启动前端 (默认 vite dev :5173，加 `frontend=prod` 切静态 serve)
+7. mcp-demo 启动时自动向 admin 注册自身（REST endpoint=`http://127.0.0.1:8084/api/mcp/tools`），**数据库中不需要预置 MCP 服务种子数据**
 
----
+首次 `mvn package` 约 2-5 min，后续 `restart` 走增量构建。
 
-需要更快迭代或断点调试时，可切换到开发模式。两种模式对比：
+### 常用命令
 
-| 模式 | 启动脚本 | 依赖环境 | 核心参数 | 适用场景 |
-|------|---------|---------|---------|---------|
-| **演示模式**<br>全栈容器化 | `.\quickstart.ps1` | Docker Desktop + Compose v2 | `all` 全栈构建启动　`infra` 仅基础设施　`app` 仅应用(复用已起 infra)　`appdown` 停应用留 infra　`down` 停全部　`logs` 跟踪日志 | 社区体验、演示交付、验收测试；容器内构建，无需本地 JDK/Maven |
-| **开发模式**<br>基础设施容器 + 应用本机进程 | `.\aegis-service.ps1` | Docker + JDK 21 + Maven 3.9 + Node 20 | `start` 起基础设施 + 本机应用　`stop` 停全部　`appstop` 停应用留 infra　`status` 查看状态　`build` 构建 JAR　`restart` 重建并重启 | 日常开发；IDE 断点、DevTools 热重载、vite HMR |
-
-> 两模式共用同一套 `infra/docker-compose.yml`，切换时基础设施不重建、不丢数据，仅应用层切换。
-
-**模式间无缝切换**：
-
-```powershell
-# 演示模式 → 开发模式
-.\quickstart.ps1 appdown        # 停应用容器，保留基础设施
-.\aegis-service.ps1 start       # 复用基础设施，本机起 Java + vite
-
-# 开发模式 → 演示模式
-.\aegis-service.ps1 appstop     # 停本机进程，保留基础设施
-.\quickstart.ps1 app            # 复用基础设施，起应用容器
-```
-
-**访问入口**：
-
-| 入口 | 地址 |
+| 命令 | 说明 |
 |------|------|
-| 前端工作台 | http://localhost |
+| `./aegis.ps1 start` | 全栈启动（后端增量构建 + 前端 dev） |
+| `./aegis.ps1 start -Frontend prod` | 前端 build + serve 静态产物 |
+| `./aegis.sh start frontend=prod` | 同上（bash 版用参数位置传） |
+| `./aegis.ps1 stop` | 停全部（本机应用 + 基础设施容器） |
+| `./aegis.ps1 appstop` | 仅停本机应用，**保留**基础设施容器 |
+| `./aegis.ps1 restart` | appstop → clean build → start |
+| `./aegis.ps1 build` | 仅构建后端 JAR + 前端 dist |
+| `./aegis.ps1 status` | 查看全部容器/进程状态 |
+| `./aegis.ps1 infra` | 仅起/停基础设施 |
+| `./aegis.ps1 help` | 打印帮助 |
+
+### 访问入口
+
+| 入口 | URL |
+|------|-----|
+| **前端工作台** | http://localhost:5173 |
 | 网关 | http://localhost:8080 |
 | 管理后台 | http://localhost:8082 |
 | 运行时 | http://localhost:8081 |
+| MCP-Demo | http://localhost:8084/api/mcp/tools （工具列表）<br>http://localhost:8084/api/mcp/tools/{code}/invoke （执行工具） |
+| Nacos | http://localhost:8848/nacos (nacos/nacos) |
+| MinIO | http://localhost:9001 (aegis/aegis12345) |
+| MySQL | localhost:3306 (root/root123, aegis/aegis123) |
 
 **初始账号**：租户 `DEFAULT` / 用户名 `admin` / 密码 `aegis@123`（首次登录请修改）
 
@@ -144,7 +165,7 @@ Aegis 用两个正交字段描述智能体，二者各司其职：
 | 前端          | React 18 / Zustand / Ant Design 5                                           | Zustand 轻量状态管理，Ant Design 提供企业级表单表格组件                               |
 | 中间件         | MySQL 8 / Redis 7 / Nacos 3 / Milvus 2.5 / MinIO                            | MySQL 58 表主存储，Redis 会话态+分布式锁，Nacos 服务发现（配置中心预留未启用），Milvus 分租户向量索引，MinIO 对象存储  |
 | 可观测         | OTel Collector / Prometheus / Grafana                                       | TraceId 贯穿全链路，TraceStore 落 MySQL 支持会话级聚合查询                          |
-| 部署          | Docker Compose / Maven 3.9 / Node 20                                        | compose 分基础设施和应用两个文件，restart: unless-stopped 自愈首启依赖                 |
+| 部署          | Docker Compose + Maven 3.9 + Node 18 + 跨平台启动脚本 `aegis.ps1` / `aegis.sh` | 基础设施 (MySQL/Redis/Nacos/Milvus/MinIO) 用 Docker Compose，应用层 (gateway/admin/runtime/mcp-demo/web) 本机进程 — 避免沙箱 unix socket 污染和容器网络隔离问题 |
 
 ---
 
@@ -196,14 +217,13 @@ aegis/
 │   └── pages/security/             安全治理
 │
 ├── infra/                          基础设施
-│   ├── docker-compose.yml          MySQL/Redis/Nacos/Milvus/MinIO
-│   ├── docker-compose.app.yml      gateway/admin/runtime/web
+│   ├── docker-compose.yml          MySQL/Redis/Nacos/Milvus/MinIO/PaddleOCR
 │   ├── ddl/                        01_schema_init.sql + 02_seed_data.sql
-│   └── init/docker/                OTel / Prometheus / Nginx 配置
+│   └── init/docker/                OTel / Prometheus 配置
 │
 ├── docs/                           文档
-├── quickstart.sh / .ps1            Docker 全栈一键启动（用户体验）
-├── aegis-service.ps1               本地开发便捷启动（Maven + Node 热更新）
+├── aegis.ps1                       跨平台统一启动脚本 (Windows PowerShell)
+├── aegis.sh                        跨平台统一启动脚本 (macOS/Linux bash)
 └── README.md
 ```
 

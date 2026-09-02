@@ -1,6 +1,7 @@
 package com.aegis.runtime.service.sandbox;
 
 import com.aegis.core.common.error.BusinessException;
+import com.aegis.core.common.tenant.TenantContextHolder;
 import com.aegis.core.common.web.ResultCode;
 import com.aegis.core.domain.sandbox.IsolationContext;
 import com.aegis.core.domain.sandbox.SandboxAllocationContext;
@@ -170,6 +171,11 @@ public class AegisSandboxCoordinator {
         }
 
         try {
+            // ★ AgentScope 在 Reactor boundedElastic 线程上调度，ThreadLocal 不跨线程继承，
+            //   MyBatis-Plus 多租户插件依赖 TenantContextHolder（ThreadLocal）读取 tenant_id，
+            //   必须在进入 DB 操作前显式绑定，退出时清理防止线程池复用泄漏。
+            TenantContextHolder.bind(tenantId);
+
             // A3：RESIDENT 实例不计入租户动态配额（常驻容量与动态容量分离核算）
             if (!residentSlot) {
                 enforceSandboxQuota(tenantId);
@@ -260,6 +266,7 @@ public class AegisSandboxCoordinator {
             return createInPoolInstance(targetPool, scope, slotKey, tenantId,
                     userId, agentId, sessionId, strategy, residentSlot);
         } finally {
+            TenantContextHolder.clear();
             distributedLock.unlock(lockKey);
         }
     }
@@ -501,7 +508,9 @@ public class AegisSandboxCoordinator {
      * @param saveSnapshot 是否保存工作空间快照
      */
     public void releaseSlot(Long tenantId, String instanceId, boolean saveSnapshot) {
-        SandboxInstance instance = sandboxInstanceService.findByInstanceId(instanceId);
+        TenantContextHolder.bind(tenantId);
+        try {
+            SandboxInstance instance = sandboxInstanceService.findByInstanceId(instanceId);
         if (instance == null) {
             log.warn("释放失败：实例不存在: instanceId={}", instanceId);
             return;
@@ -557,6 +566,9 @@ public class AegisSandboxCoordinator {
             lifecycleManager.release(instance);
             markDirtyAfterRelease(instanceId);
             log.info("沙箱已释放(无租约): instanceId={}", instanceId);
+        }
+        } finally {
+            TenantContextHolder.clear();
         }
     }
 

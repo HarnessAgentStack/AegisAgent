@@ -121,7 +121,7 @@ AgentScope 2.0 把执行内核拆成了 `agentscope-core`（抽象层）和 `age
 - **ReAct 循环**：Think → Act → Observe → Think，内置工具调用、多模态输入、并行工具调用
 - **中间件拦截链**：**5 个拦截点**（onAgent / onReasoning / onActing / onModelCall / onSystemPrompt），比 LangChain 2.x 的回调粒度更聚焦
 - **权限引擎**：`PermissionContextState` + `PermissionRule` + `PermissionBehavior`，天然支持 ALLOW / REQUIRE_APPROVAL / DENY 三种策略
-- **沙箱抽象**：`SandboxFilesystemSpec` + `IsolationScope`（GLOBAL / AGENT / USER），自带会话级沙箱生命周期管理
+- **沙箱抽象**：`SandboxFilesystemSpec` + `IsolationScope`（USER / AGENT / GLOBAL / SESSION），自带会话级沙箱生命周期管理（`RESIDENT` 非 IsolationScope 枚举值，而是 SYSTEM 智能体常驻实例的 slotKey 前缀 + 实例状态，见 sandbox-allocation-and-recycling.md §澄清）
 - **SPI 扩展**：ModelProvider / VectorStore / DistributedStore 通过 `META-INF/services` 发现，和 Spring 容器可以桥接
 
 Aegis 没有 fork AgentScope 源码，而是**通过 SPI + Spring Bean 注入**方式深度集成，AgentScope 内核保持原样，所有企业定制化逻辑通过中间件和 SPI 实现挂载。
@@ -195,7 +195,7 @@ HarnessAgent ReAct 循环（AgentScope 2.0.2 内核）
 |---|---|---|---|
 | UNIVERSAL（通用智能体） | `userId` | 每个用户一个独立实例 | USER |
 | APPLICATION（应用智能体） | `agentId` | 同类型智能体多用户共享 | AGENT |
-| SYSTEM（系统智能体） | `agentId` | 每智能体独立实例池 + HEAVY/RESIDENT 沙箱 | AGENT（⚠️ 代码当前错误映射为 GLOBAL，见审计报告 E-04） |
+| SYSTEM（系统智能体） | `agentId`（RESIDENT slotKey `aegis:resident:sys:{agentId}`） | 每智能体独立 RESIDENT 常驻实例，agent_api 预绑定，永不参与动态分配/回收 | `sbx_instance.isolation_scope=GLOBAL` + `status=RESIDENT`（RESIDENT 是实例状态机状态，非 IsolationScope 枚举值；原"E-04 错误映射"论断不成立，落库 GLOBAL 为常驻实例隔离范围设计值） |
 
 **懒刷新机制**：池命中时通过 `bindingFingerprint`（绑定资源的版本指纹）比对，一致 → 直接复用（<50ms），不一致 → 走 `refreshToolkit` 懒刷新 Toolkit 配置。
 

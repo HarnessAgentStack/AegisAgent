@@ -454,11 +454,11 @@ stateDiagram-v2
 ### cost_amount 计算公式
 
 ```
-cost_amount = token_input × model_provider.input_price_per_1k / 1000
-            + token_output × model_provider.output_price_per_1k / 1000
+cost_amount = token_input × model_def.input_cost / 1000
+            + token_output × model_def.output_cost / 1000
 ```
 
-在 agent_end 事件触发时计算，取 `model_provider.cost_per_1k_tokens` 字段。
+在 agent_end 事件触发时计算，单价取自 `model_def.input_cost` / `output_cost`（元/千 token，见 DDL model_def 表）。
 
 ---
 

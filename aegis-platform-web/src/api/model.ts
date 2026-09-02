@@ -33,6 +33,10 @@ export interface ModelDefVO {
   modelType?: string;
   tier?: string;
   providerId?: string;
+  /** 供应商名称（后端关联填充） */
+  providerName?: string;
+  /** 供应商编码（后端关联填充） */
+  providerCode?: string;
   contextWindow?: number;
   status?: string;
   /** 模型能力矩阵（后端 JSON 字符串，含 rag.similarityHint 等） */
@@ -56,19 +60,19 @@ export const modelApi = {
   // ===== 供应商 =====
   /** 供应商列表（分页或数组） */
   listProviders: () => http.get<ProviderVO[] | Page<ProviderVO>>(`${BASE}/providers`),
-  /** 新增供应商 */
-  createProvider: (data: unknown) => http.post<unknown>(`${BASE}/providers`, data),
+  /** 新增供应商，返回新建的供应商ID */
+  createProvider: (data: unknown) => http.post<string>(`${BASE}/providers`, data),
   /** 更新供应商 */
   updateProvider: (id: string, data: unknown) =>
     http.put<unknown>(`${BASE}/providers/${id}`, data),
   /** 测试供应商连接 */
-  testProvider: (id: string) => http.post<void>(`${BASE}/providers/${id}/test`),
+  testProvider: (id: string) => http.post<boolean>(`${BASE}/providers/${id}/test`),
 
   // ===== 模型实例 =====
   /** 模型实例列表 */
   listDefs: () => http.get<ModelDefVO[]>(`${BASE}/defs`),
-  /** 新增模型实例 */
-  createDef: (data: unknown) => http.post<unknown>(`${BASE}/defs`, data),
+  /** 新增模型实例，返回新建的模型ID */
+  createDef: (data: unknown) => http.post<string>(`${BASE}/defs`, data),
   /** 更新模型实例 */
   updateDef: (id: string, data: unknown) => http.put<unknown>(`${BASE}/defs/${id}`, data),
 

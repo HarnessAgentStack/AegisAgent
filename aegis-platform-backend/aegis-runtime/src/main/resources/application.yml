@@ -92,8 +92,9 @@ aegis:
       # T1 空闲释放阈值：末次沙箱工具调用后 N 分钟无使用，主动 saveSnapshot+releaseSlot 回池
       idle-release-minutes: 5
       docker:
-        # Windows Docker Desktop 默认命名管道；Linux/Mac 使用 unix:///var/run/docker.sock
-        host: ${SANDBOX_DOCKER_HOST:npipe://./pipe/docker_engine}
+        # Windows Docker Desktop: npipe:////./pipe/docker_engine  (4 slashes required for docker-java)
+        # Linux/Mac: unix:///var/run/docker.sock
+        host: ${SANDBOX_DOCKER_HOST:npipe:////./pipe/docker_engine}
         # 卷挂载：host_path:container_path（Windows 路径使用正斜杠）
         volumes:
           - ${SANDBOX_USER_FILES_DIR:/workspace/user_files}

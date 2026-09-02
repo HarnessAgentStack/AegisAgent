@@ -71,10 +71,10 @@ const ProviderTab: React.FC<ProviderTabProps> = ({ providers, setProviders, onCo
           ),
         );
       } else {
-        await modelApi.createProvider(values);
+        const newId = await modelApi.createProvider(values);
         message.success('供应商新增成功');
         const newProvider: ProviderRow = {
-          id: String(Date.now()),
+          id: String(newId ?? Date.now()),
           providerCode: values.providerCode,
           providerName: values.providerName,
           endpoint: values.endpoint,

@@ -31,7 +31,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import com.aegis.admin.web.model.ModelAdminController;
 
@@ -290,7 +294,18 @@ public class ModelManageService {
                 .eq(providerId != null, ModelDef::getProviderId, providerId)
                 .eq(modelTier != null, ModelDef::getTier, modelTier)
                 .orderByAsc(ModelDef::getTier));
-        return list.stream().map(this::toModelDefVO).collect(Collectors.toList());
+
+        // 批量查询关联的 Provider，避免 N+1
+        Set<Long> providerIds = list.stream()
+                .map(ModelDef::getProviderId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, ModelProvider> providerMap = providerIds.isEmpty()
+                ? new HashMap<>()
+                : modelProviderMapper.selectBatchIds(providerIds).stream()
+                        .collect(Collectors.toMap(ModelProvider::getId, p -> p, (a, b) -> a));
+
+        return list.stream().map(m -> toModelDefVO(m, providerMap.get(m.getProviderId()))).collect(Collectors.toList());
     }
 
     // ============ 限流策略管理 ============
@@ -445,10 +460,12 @@ public class ModelManageService {
         return com.alibaba.fastjson2.JSON.toJSONString(capabilities);
     }
 
-    private ModelDefVO toModelDefVO(ModelDef entity) {
+    private ModelDefVO toModelDefVO(ModelDef entity, ModelProvider provider) {
         return ModelDefVO.builder()
                 .id(entity.getId())
                 .providerId(entity.getProviderId())
+                .providerName(provider != null ? provider.getProviderName() : null)
+                .providerCode(provider != null ? provider.getProviderCode() : null)
                 .modelCode(entity.getModelCode())
                 .modelName(entity.getModelName())
                 .tier(entity.getTier())

@@ -1,19 +1,22 @@
 # =============================================================================
-# Aegis Platform - Infrastructure Compose
+# Aegis Platform — Infrastructure Compose
 # -----------------------------------------------------------------------------
-# 使用方式:
-#   docker compose up                          # 默认: 核心基础设施 (mysql/redis/nacos/minio/etcd/milvus)
-#   docker compose --profile observability up   # + Prometheus + Grafana + OTel Collector
-#   docker compose --profile ocr up             # + PaddleOCR (首次启动需下载模型)
-#   docker compose up mysql redis               # 也可以单独指定服务
+# 仅包含基础设施层 (MySQL / Redis / Nacos / MinIO / etcd / Milvus / PaddleOCR)
+# 应用层 (gateway / admin / runtime / mcp-demo / web) 由 aegis.ps1 / aegis.sh
+# 以本机进程方式启动 — 避免容器化后的 unix socket / 网络隔离问题
 #
-# 全栈启动（基础设施 + 应用，二选一）:
-#   方式A: docker compose -f docker-compose.yml -f docker-compose.app.yml up --build
-#   方式B: 先 docker compose up（基础设施），再 docker compose -f docker-compose.app.yml up --build
+# 使用方式:
+#   docker compose up                          # 核心基础设施
+#   docker compose --profile ocr up             # + PaddleOCR (首次需下载模型)
+#   docker compose --profile observability up   # + Prometheus + Grafana + OTel
+#
+# 全栈一键启动请用项目根目录的 aegis.ps1 / aegis.sh:
+#   Windows:  .\aegis.ps1 start
+#   macOS/Linux: ./aegis.sh start
 #
 # 数据卷持久化: docker volume ls | docker volume rm <name>
-# ⚠️ 注意: 如需重建 MySQL, 必须先删 volume: docker volume rm infra_aegis-mysql-data
-#          lower-case-table-names 初始化后无法修改
+# ⚠️ 如需重建 MySQL, 必须先删 volume: docker volume rm infra_aegis-mysql-data
+#    lower-case-table-names 初始化后无法修改
 # =============================================================================
 
 services:

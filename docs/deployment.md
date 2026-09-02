@@ -113,7 +113,7 @@ docker compose -f docker-compose.app.yml --profile mcp-demo up -d   # MCP 示例
 
 | 数据 | 来源 | 时机 |
 |---|---|---|
-| 表结构（58 表） | `infra/ddl/01_schema_init.sql` | MySQL 容器**首次启动**自动执行（数据卷为空时） |
+| 表结构（60 表） | `infra/ddl/01_schema_init.sql` | MySQL 容器**首次启动**自动执行（数据卷为空时） |
 | 种子数据（租户/角色/admin/工具/安全策略等 14 表） | `infra/ddl/02_seed_data.sql` | 同上，随 01 一起自动执行 |
 | 通用智能体（universal） | `TenantBootstrapService` | aegis-admin 每次启动幂等注入 |
 | 元技能（skill_creator） | `SkillCreatorInitializer` | aegis-runtime 每次启动幂等注入 |

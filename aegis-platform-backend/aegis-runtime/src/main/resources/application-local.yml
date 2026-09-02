@@ -1,17 +1,23 @@
 # Local profile for aegis-runtime.
 #
-# 用途：纯 Docker 本地部署（无 K8s 集群）时激活，将沙箱后端切换为 docker。
+# 用途：本机 JVM 启动（配合 infra/docker-compose.yml），K8s 集群已就绪时用 k8s 后端。
+#       如果确实没有 K8s 集群（纯 Docker 本地），手动改 sandbox.backend: docker。
 # 激活：spring.profiles.active=local
 #
 # 与 prod 的区别：本地不强制 fail-fast，保留 dev 占位默认值，便于快速体验。
-# 沙箱 backend=docker 时，需挂载宿主 docker.sock（见 docker-compose.app.yml）。
 aegis:
   runtime:
     sandbox:
-      # 纯 Docker 模式：沙箱实例直接在宿主 Docker 上创建，无需 K8s
-      backend: docker
+      # 统一使用 K8s 沙箱后端（DB 里 instance_id 存的是 pod_name + namespace，只有 K8s 能正确管理）
+      # 如果确实没有 K8s 集群：改为 docker，并确保本地有 docker desktop 运行
+      backend: k8s
+      # Docker 配置保留，backend 切为 docker 时生效
       docker:
-        host: ${SANDBOX_DOCKER_HOST:unix:///var/run/docker.sock}
+        host: ${SANDBOX_DOCKER_HOST:npipe:////./pipe/docker_engine}
+      # K8s 配置：留空 kubeconfig 让 fabric8 自动发现（~/.kube/config 或集群内 ServiceAccount）
+      k8s:
+        kubeconfig: ""
+        namespace-prefix: aegis-sbx-t
       # 惰性分配仍启用（纯聊天零沙箱占用）
       lazy-allocation:
         enabled: true

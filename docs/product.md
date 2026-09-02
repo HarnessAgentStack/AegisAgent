@@ -116,7 +116,7 @@ agent_type 的差异在运行时直接体现：同一个对话请求进来，先
 | L1  | 公开级（天气查询、汇率换算等）       | 所有 agent_type       |
 | L2  | 内部级（员工信息查询、请假提交）     | APPLICATION / UNIVERSAL |
 | L3  | 机密级（数据库查询、文件上传、支付） | APPLICATION（同部门）/ SYSTEM |
-| L4  | 绝密级（生产写操作、财务转账）      | SYSTEM（强制 HITL）     |
+| L4  | 绝密级（生产写操作、财务转账）      | SYSTEM（直接拒绝 REJECT，等级直映兜底） |
 
 ### 生命周期
 
@@ -284,7 +284,7 @@ SSE 事件流推送到前端
 | 决策               | 含义    | 场景                |
 | ---------------- | ----- | ----------------- |
 | ALLOW            | 放行    | 普通工具调用、公开知识库检索    |
-| REQUIRE_APPROVAL | 挂起等审批 | 调 L3/L4 工具、出站外部域名 |
+| REQUIRE_APPROVAL | 挂起等审批 | 调 L3 工具、出站外部域名 |
 | BLOCK            | 拦截    | 敏感词命中、IP 不在白名单    |
 
 ![安全策略配置](images/security-policy.png)

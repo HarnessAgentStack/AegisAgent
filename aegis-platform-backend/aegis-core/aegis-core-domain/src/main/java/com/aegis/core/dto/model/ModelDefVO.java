@@ -31,6 +31,12 @@ public class ModelDefVO implements Serializable {
     /** 所属提供商ID */
     private Long providerId;
 
+    /** 所属提供商名称（关联填充） */
+    private String providerName;
+
+    /** 所属提供商编码（关联填充） */
+    private String providerCode;
+
     /** 模型唯一编码 */
     private String modelCode;
 

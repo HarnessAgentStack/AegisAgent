@@ -38,12 +38,14 @@
 
 这是整个沙箱体系的三元组，决定**谁共享一个 Pod**、**key 怎么算**、**回收策略**。
 
-| IsolationScope | slotKey 格式 | 哪些场景 |
+| IsolationScope（枚举） | slotKey 格式 | 适用场景 |
 |---|---|---|
-| **USER** | `aegis:{tenantId}:user:{userId}` | UNIVERSAL 智能体 — 同一用户的不同会话共享同一沙箱 |
-| **AGENT** | `aegis:{tenantId}:agent:{agentId}` | APPLICATION / SYSTEM 智能体 — 同一智能体的不同会话共享 |
+| **USER** | `aegis:{tenantId}:user:{userId}` | UNIVERSAL 智能体 — 同一用户跨会话共享沙箱 |
+| **AGENT** | `aegis:{tenantId}:agent:{agentId}` | APPLICATION / SYSTEM 智能体 — 同一智能体跨会话共享 |
 | **GLOBAL** | `aegis:{tenantId}:global` | 特殊共享场景 — 所有会话复用同一个 Pod |
-| **RESIDENT**（A3 专属） | `aegis:resident:sys:{agentId}` | SYSTEM 智能体的对外 API 部署 — **永不回收**、**永不缩容**、admin 探活失败才重建 |
+| **SESSION** | `aegis:{tenantId}:session:{sessionId}` | 会话级独占隔离，对应 DEDICATED_PER_SESSION 策略 |
+
+> **澄清**：`sbx_instance.isolation_scope` 枚举仅取 `USER / AGENT / GLOBAL / SESSION`。`RESIDENT` **不是** IsolationScope 值，而是 SYSTEM 智能体经 `agent_api` 预绑定时由 `SlotKeyParser.resident()` 合成的 **slotKey 前缀**（`aegis:resident:sys:{agentId}`），并在实例状态机中标记为 `RESIDENT` 状态（永不参与动态回收/缩容）。
 
 **SYSTEM 智能体（对外 API 场景）不参与惰性回收**。它走 RESIDENT slotKey，在 agent_api 创建时就预绑定一个沙箱实例，常驻运行。
 

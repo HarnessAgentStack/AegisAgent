@@ -140,10 +140,10 @@ const ModelInstanceTab: React.FC<ModelInstanceTabProps> = ({ providers, models, 
           ),
         );
       } else {
-        await modelApi.createDef(submitData);
+        const newId = await modelApi.createDef(submitData);
         message.success('模型实例新增成功');
         const newModel: ModelInstanceRow = {
-          id: String(Date.now()),
+          id: String(newId ?? Date.now()),
           ...values,
           providerName,
           status: 'ENABLED',

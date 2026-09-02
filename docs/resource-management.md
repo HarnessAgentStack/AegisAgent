@@ -317,7 +317,7 @@ stateDiagram-v2
 字段:
   chunk_id    BIGINT      ← res_kb_document_chunk.id
   doc_id      BIGINT      ← res_kb_document.id
-  content     VARCHAR     ← 500 token 文本片段
+  content     VARCHAR     ← 500 字符文本片段
   embedding   FLOAT[1536] ← 取决于 Embedding Provider 维度
   tenant_id   BIGINT      ← 冗余字段，双重保险跨租户隔离
 ```

@@ -80,7 +80,7 @@ erDiagram
         bigint id PK
         varchar session_id UK
         bigint agent_id FK
-        bigint agent_version
+        varchar(32) agent_version
         json version_snapshot
     }
     sbx_pool {
@@ -201,7 +201,7 @@ erDiagram
 | tenant_id | bigint | 0=平台共享，>0=租户自定义 |
 | permission_code | varchar(128) | 权限编码，如 `agent:create` / `security:policy:manage` |
 | permission_name | varchar(128) | 权限中文名 |
-| permission_type | varchar(32) | MENU / API |
+| permission_type | varchar(32) | MENU / BUTTON / API |
 | parent_id | bigint | 父权限 ID，0=模块根节点 |
 | sort | int | 同层级排序 |
 | status | varchar(32) | NORMAL / DISABLED |
@@ -324,11 +324,11 @@ erDiagram
         bigint id PK
         varchar session_id UK "UUID 前后端共用"
         bigint agent_id FK
-        bigint agent_version "快照版本号"
+        varchar(32) agent_version "快照版本号"
         varchar agent_state_session_key "Redis Key的组成部分"
         json version_snapshot "创建会话时的agent_config完整JSON"
         varchar status "STARTED/THINKING/TOOL_CALLING/OUTPUTTING/ENDED"
-        bigint sandbox_id FK "→ sbx_instance"
+        varchar(64) sandbox_id FK "→ sbx_instance.instance_id（存 instance_id）"
         int message_count "会话级统计"
         json last_message "快速检索最后一条"
     }
@@ -637,7 +637,7 @@ sequenceDiagram
     MW->>MySQL: INSERT sec_hitl_history (PENDING)
     MW-->>AS: 抛出 HITL 异常 → 会话挂起
 
-    AS-->>FE: SSE 推送 hitl.pending 事件
+    AS-->>FE: SSE 推送 hitl.request 事件
     FE->>User: 弹窗："Agent 想调用工具 X(敏感等级 L3)，参数为...，是否批准？"
 
     alt 审批通过
