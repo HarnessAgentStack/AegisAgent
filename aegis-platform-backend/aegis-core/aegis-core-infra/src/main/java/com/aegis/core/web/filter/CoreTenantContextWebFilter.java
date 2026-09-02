@@ -105,8 +105,12 @@ public class CoreTenantContextWebFilter implements WebFilter {
         }
 
         // 下载接口支持 query param 认证（浏览器 <a href> 直访问不携带 header）
-        // 对 /api/runtime/task/download/ 路径，header 缺失时从 query param 提取
-        if (path.startsWith("/api/runtime/task/download/") && tenantId == null) {
+        // 兼容两种路径：
+        //   - /api/runtime/task/download/xxx  （后端 generate_file 工具返回的标准路径）
+        //   - /api/runtime/download/xxx       （LLM 偶尔会丢 task/ 前缀，也要放行）
+        boolean isDownloadPath = path.startsWith("/api/runtime/task/download/")
+                || path.startsWith("/api/runtime/download/");
+        if (isDownloadPath && tenantId == null) {
             String qpTenant = request.getQueryParams().getFirst(HEADER_TENANT_ID);
             String qpUser = request.getQueryParams().getFirst(HEADER_USER_ID);
             if (qpTenant != null) {
@@ -139,7 +143,6 @@ public class CoreTenantContextWebFilter implements WebFilter {
             // 下载路径放宽 userId 校验
             // generate_file 工具生成的文件 userId 为 null（租户级文件），
             // 浏览器直接访问下载 URL 时无 userId，但 tenantId 通过 query param 提供
-            boolean isDownloadPath = path.startsWith("/api/runtime/task/download/");
             if (!isDownloadPath && (userId == null || userId <= 0)) {
                 log.warn("TenantContextWebFilter 拒绝请求（缺 X-User-Id）: path={}, ip={}",
                         path, request.getRemoteAddress() != null

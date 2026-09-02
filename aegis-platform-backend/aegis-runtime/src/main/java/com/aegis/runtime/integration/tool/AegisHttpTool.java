@@ -64,6 +64,7 @@ public class AegisHttpTool extends ToolBase {
     /** HTTP 客户端 */
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
+            .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
     /**

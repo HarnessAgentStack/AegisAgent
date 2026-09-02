@@ -19,7 +19,6 @@ import {
 } from '@ant-design/icons';
 import type { ThinkingEvent } from '@/types/turn';
 import type { ThinkingStyle } from '@/types/collapsePolicy';
-import { PREVIEW_TEXT_MAX } from '@/types/turn';
 import { formatDuration } from '@/utils/format';
 
 interface ThinkingItemProps {
@@ -27,20 +26,9 @@ interface ThinkingItemProps {
   /** 序号（流中位置） */
   index: number;
   thinkingStyle: ThinkingStyle;
-  /** 精简模式（隐藏图标/缩进，仅摘要） */
+  /** 精简模式（隐藏图标/缩进） */
   compact?: boolean;
 }
-
-/** 取 preview 文本：优先 summary，其次首句，再截断 */
-const getPreviewText = (e: ThinkingEvent): string => {
-  const p = e.payload;
-  const src = p.summary ?? p.detail ?? '';
-  const t = src.trim();
-  if (!t) return '';
-  const firstLine = t.split('\n')[0]?.trim();
-  if (firstLine && firstLine.length <= PREVIEW_TEXT_MAX) return firstLine;
-  return t.length > PREVIEW_TEXT_MAX ? t.substring(0, PREVIEW_TEXT_MAX) + '...' : t;
-};
 
 export const ThinkingItem: React.FC<ThinkingItemProps> = ({ event, index, thinkingStyle, compact }) => {
   const p = event.payload;
@@ -140,13 +128,6 @@ export const ThinkingItem: React.FC<ThinkingItemProps> = ({ event, index, thinki
                 <RightOutlined style={{ fontSize: 8, color: '#999', marginLeft: 'auto' }} />
               ))}
           </div>
-
-          {/* preview 行（折叠态且 collapsedPreview 时展示） */}
-          {!showBody && thinkingStyle === 'collapsedPreview' && hasDetail && (
-            <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 460 }}>
-              {getPreviewText(event)}
-            </div>
-          )}
 
           {/* 展开详情 */}
           {showBody && (

@@ -9,7 +9,7 @@
  * @since 4.0.0
  */
 import React, { useMemo, useState } from 'react';
-import { Button, Modal, App, Tag } from 'antd';
+import { Button, Modal, App } from 'antd';
 import {
   CopyOutlined,
   CloseOutlined,
@@ -26,7 +26,8 @@ import TurnHeader from './TurnHeader';
 import TurnStream from './TurnStream';
 import AnswerChunk from './AnswerChunk';
 import TurnGantt from './TurnGantt';
-import { formatPercent, formatDuration } from '@/utils/format';
+import KbReferencesInline from './KbReferencesInline';
+import { formatDuration } from '@/utils/format';
 
 interface AssistantTurnProps {
   message: Message;
@@ -124,8 +125,6 @@ export const AssistantTurn: React.FC<AssistantTurnProps> = ({
   // HITL
   const hitl = message.hitl && message.hitl.status === HitlStatus.PENDING ? message.hitl : null;
 
-  // KB 引用展开态
-  const [kbExpanded, setKbExpanded] = useState<Set<string>>(new Set());
   // 甘特概览弹层
   const [ganttOpen, setGanttOpen] = useState(false);
 
@@ -229,43 +228,9 @@ export const AssistantTurn: React.FC<AssistantTurnProps> = ({
           </div>
         )}
 
-        {/* 知识库引用 */}
+        {/* 知识库引用（紧凑 References 表） */}
         {message.kbReferences && message.kbReferences.length > 0 && (
-          <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--color-bg-tag-blue)', border: '1px solid var(--color-primary)', borderRadius: 8, fontSize: 12 }}>
-            <div style={{ fontWeight: 600, color: 'var(--color-primary)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span>📚 知识库引用 ({message.kbReferences.length} 个片段)</span>
-              {message.kbReferences.length > 3 && (
-                <Button type="link" size="small" style={{ fontSize: 11, padding: 0, height: 'auto' }} onClick={() => setKbExpanded(new Set())}>
-                  收起
-                </Button>
-              )}
-            </div>
-            {message.kbReferences.slice(0, 3).map((ref, i) => {
-              const refKey = `${message.id}-${i}`;
-              const expanded = kbExpanded.has(refKey);
-              return (
-                <div key={i} style={{ marginBottom: 6, paddingBottom: 6, borderBottom: i < Math.min(3, message.kbReferences!.length) - 1 ? '1px dashed #d6e4ff' : 'none' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                    {ref.knowledgeBaseName && <Tag style={{ fontSize: 10, margin: 0 }} color="blue">{ref.knowledgeBaseName}</Tag>}
-                    <span style={{ color: '#374151', fontWeight: 500 }}>{ref.documentName ?? `文档${i + 1}`}</span>
-                    {ref.score !== undefined && <span style={{ color: '#9ca3af' }}>(相似度: {formatPercent(ref.score, 1)})</span>}
-                  </div>
-                  {ref.snippet && (
-                    <div
-                      style={{ color: '#6b7280', marginTop: 4, whiteSpace: 'pre-wrap', lineHeight: 1.6, maxHeight: expanded ? 'none' : 40, overflow: 'hidden', textOverflow: 'ellipsis', background: expanded ? '#fff' : 'transparent', padding: expanded ? '6px 8px' : 0, borderRadius: expanded ? 4 : 0, border: expanded ? '1px solid #e6f0ff' : 'none' }}
-                    >
-                      {expanded ? ref.snippet : `${ref.snippet.slice(0, 100)}${ref.snippet.length > 100 ? '...' : ''}`}
-                    </div>
-                  )}
-                  {ref.snippet && ref.snippet.length > 100 && (
-                    <Button type="link" size="small" style={{ fontSize: 11, padding: 0, height: 'auto' }} onClick={() => setKbExpanded((prev) => { const next = new Set(prev); if (next.has(refKey)) { next.delete(refKey); } else { next.add(refKey); } return next; })}>
-                      {expanded ? '收起原文' : '查看原文'}
-                    </Button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <KbReferencesInline references={message.kbReferences} />
         )}
 
         {/* HITL 审批 */}

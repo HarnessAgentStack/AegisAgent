@@ -53,6 +53,7 @@ public class AegisBuiltinTools {
     /** HTTP 客户端（用于 web_search/image_search/http_request 等） */
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
+            .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
     // ============ web_search ============

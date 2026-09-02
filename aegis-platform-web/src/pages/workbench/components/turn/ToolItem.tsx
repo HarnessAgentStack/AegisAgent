@@ -155,25 +155,6 @@ export const ToolItem: React.FC<ToolItemProps> = ({ event, index, policy }) => {
             </span>
           </div>
 
-          {/* 完成动作摘要（折叠态优先展示 summary） */}
-          {!expanded && p.summary && (
-            <div
-              style={{
-                fontSize: 10,
-                color: p.status === 'FAILED' ? '#cf1322' : '#666',
-                marginTop: 2,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                maxWidth: 420,
-                opacity: 0.85,
-              }}
-            >
-              {p.status === 'FAILED' ? '❌ ' : '📤 '}
-              {p.summary}
-            </div>
-          )}
-
           {/* 展开详情 */}
           {expanded && (
             <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 5, transition: 'all 0.3s ease' }}>

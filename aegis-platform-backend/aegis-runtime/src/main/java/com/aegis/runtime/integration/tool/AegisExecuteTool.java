@@ -274,8 +274,13 @@ public class AegisExecuteTool extends ToolBase {
 
         try {
             // 2. 创建 Python 脚本文件
+            // 注意：不能用 heredoc（<< 'AEGIS_CODE_EOF'），因为 KubernetesSandboxBackend.exec 会在
+            // 命令末尾追加 "; echo \"__EXIT_CODE:$?\""，污染 heredoc 结束定界符行（定界符必须独占一行），
+            // 导致 heredoc 悬空产生 Python 语法错误。改用 base64 传输，单行命令与追加机制天然兼容。
             String pythonScript = wrapPythonCode(code);
-            String uploadCmd = "cat > /tmp/aegis_execute.py << 'AEGIS_CODE_EOF'\n" + pythonScript + "\nAEGIS_CODE_EOF";
+            String b64Script = java.util.Base64.getEncoder()
+                    .encodeToString(pythonScript.getBytes(StandardCharsets.UTF_8));
+            String uploadCmd = "printf '%s' '" + b64Script + "' | base64 -d > /tmp/aegis_execute.py";
             sandboxBackend.exec(tenantId, k8sResourceId, uploadCmd, 10);
 
             // 3. 执行 Python 脚本
