@@ -2,6 +2,7 @@ package com.aegis.admin.web.agent;
 
 import com.aegis.admin.infrastructure.audit.Auditable;
 import com.aegis.admin.service.agent.AgentPublishService;
+import com.aegis.admin.service.agent.AgentVersionService;
 import com.aegis.core.common.tenant.TenantContextHolder;
 import com.aegis.core.common.web.Result;
 import com.aegis.core.domain.agent.AgentConfig;
@@ -34,6 +35,7 @@ import java.util.Map;
 public class AgentReviewController {
 
     private final AgentPublishService agentPublishService;
+    private final AgentVersionService agentVersionService;
 
     /**
      * 提交审核（DRAFT/ACTIVE/REJECTED -> REVIEWING）。
@@ -93,7 +95,7 @@ public class AgentReviewController {
     public Result<List<AgentConfig>> listVersions(@PathVariable Long id,
                                                    @RequestHeader("X-Tenant-Id") Long tenantId) {
         TenantContextHolder.bind(tenantId);
-        return Result.success(agentPublishService.getVersionHistory(tenantId, id));
+        return Result.success(agentVersionService.getVersionHistory(tenantId, id));
     }
 
     /**
@@ -116,6 +118,6 @@ public class AgentReviewController {
                                                           @PathVariable String v2,
                                                           @RequestHeader("X-Tenant-Id") Long tenantId) {
         TenantContextHolder.bind(tenantId);
-        return Result.success(agentPublishService.versionDiff(id, v1, v2));
+        return Result.success(agentVersionService.versionDiff(id, v1, v2));
     }
 }

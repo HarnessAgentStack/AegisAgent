@@ -681,15 +681,8 @@ public class SessionManageService {
      */
     @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public void deleteSession(String sessionId, Long tenantId) {
-        Session session = getSession(sessionId, tenantId);
-        if (session == null) {
-            return;
-        }
-        // 级联删除消息
-        sessionMessageMapper.delete(new LambdaQueryWrapper<SessionMessage>()
-                .eq(SessionMessage::getSessionId, sessionId));
-        sessionMapper.deleteById(session.getId());
-        log.info("Session and messages deleted: sessionId={}", sessionId);
+        // Phase 3: 统一委托三参数版本（强制清 Redis agent_state，消除孤儿 key 风险）
+        deleteSession(sessionId, tenantId, null);
     }
 
     /**

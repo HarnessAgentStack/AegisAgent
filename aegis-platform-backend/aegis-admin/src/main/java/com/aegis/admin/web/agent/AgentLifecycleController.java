@@ -2,6 +2,7 @@ package com.aegis.admin.web.agent;
 
 import com.aegis.admin.infrastructure.audit.Auditable;
 import com.aegis.admin.service.agent.AgentPublishService;
+import com.aegis.admin.service.agent.AgentSubscriptionService;
 import com.aegis.core.common.tenant.TenantContextHolder;
 import com.aegis.core.common.web.Result;
 import com.aegis.core.enums.resource.ResourceType;
@@ -30,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentLifecycleController {
 
     private final AgentPublishService agentPublishService;
+    private final AgentSubscriptionService agentSubscriptionService;
 
     /**
      * 归档下线智能体（PUBLISHED -> ARCHIVED）。
@@ -53,7 +55,7 @@ public class AgentLifecycleController {
                                   @RequestHeader("X-Tenant-Id") Long tenantId,
                                   @RequestHeader("X-User-Id") Long userId) {
         TenantContextHolder.bind(tenantId);
-        agentPublishService.subscribe(tenantId, id, userId);
+        agentSubscriptionService.subscribe(tenantId, id, userId);
         return Result.success(null);
     }
 
@@ -66,7 +68,7 @@ public class AgentLifecycleController {
                                    @RequestHeader("X-Tenant-Id") Long tenantId,
                                    @RequestHeader("X-User-Id") Long userId) {
         TenantContextHolder.bind(tenantId);
-        agentPublishService.unsubscribe(tenantId, id, userId);
+        agentSubscriptionService.unsubscribe(tenantId, id, userId);
         return Result.success(null);
     }
 }

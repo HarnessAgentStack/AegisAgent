@@ -408,7 +408,8 @@ public class AgentAssemblyService {
                 null,
                 modelTier, isolationStrategy,
                 sessionMcpServiceIds,
-                resources != null ? resources : AssemblyResourceContext.EMPTY);
+                resources != null ? resources : AssemblyResourceContext.EMPTY,
+                cfg);
     }
 
     /**

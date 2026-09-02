@@ -87,6 +87,7 @@ public class AgentPublishService {
     private final ResourceReviewMapper resourceReviewMapper;
     private final ReviewProcessEngine reviewProcessEngine;
     private final SandboxPoolMatcher sandboxPoolMatcher;
+    private final AgentSubscriptionService subscriptionService;
 
     /** Runtime 服务地址，用于通知模板缓存失效（须在 application.yml 或 Nacos 显式配置 aegis.runtime.base-url） */
     @org.springframework.beans.factory.annotation.Value("${aegis.runtime.base-url}")
@@ -554,47 +555,6 @@ public class AgentPublishService {
     }
 
     /**
-     * 新增资源绑定。
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public void addBinding(AgentBinding binding) {
-        AgentDef existing = requireAgent(binding.getAgentId(), binding.getTenantId());
-        if (existing.getLifeStatus() == AgentLifeStatus.ARCHIVED) {
-            throw new BusinessException(ResultCode.CONFLICT, "智能体已归档，不可新增绑定");
-        }
-        Long exists = agentBindingMapper.selectCount(new LambdaQueryWrapper<AgentBinding>()
-                .eq(AgentBinding::getAgentId, binding.getAgentId())
-                .eq(AgentBinding::getResourceType, binding.getResourceType())
-                .eq(AgentBinding::getResourceId, binding.getResourceId()));
-        if (exists != null && exists > 0) {
-            throw new BusinessException(ResultCode.CONFLICT, "资源已绑定: " + binding.getResourceType() + "/" + binding.getResourceId());
-        }
-        binding.setAgentVersion(existing.getVersion());
-        if (binding.getEnabled() == null) binding.setEnabled(true);
-        agentBindingMapper.insert(binding);
-        log.info("AgentBinding added: agentId={}, resourceType={}, resourceId={}",
-                binding.getAgentId(), binding.getResourceType(), binding.getResourceId());
-        notifyTemplateInvalidation(binding.getAgentId(), null, binding.getTenantId());
-    }
-
-    /**
-     * 移除资源绑定。
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public void removeBinding(Long tenantId, Long agentId, Long bindingId) {
-        AgentBinding b = agentBindingMapper.selectById(bindingId);
-        if (b == null || !agentId.equals(b.getAgentId())) {
-            throw new BusinessException(ResultCode.NOT_FOUND, "绑定不存在");
-        }
-        if (tenantId != null && !tenantId.equals(b.getTenantId())) {
-            throw new BusinessException(ResultCode.FORBIDDEN, "无权操作该智能体");
-        }
-        agentBindingMapper.deleteById(bindingId);
-        log.info("AgentBinding removed: agentId={}, bindingId={}", agentId, bindingId);
-        notifyTemplateInvalidation(agentId, null, b.getTenantId());
-    }
-
-    /**
      * 归档下线智能体（PUBLISHED → ARCHIVED）。
      */
     @Transactional(rollbackFor = Exception.class)
@@ -688,7 +648,7 @@ public class AgentPublishService {
 
         // 填充订阅状态（仅当传入 userId 时）
         if (userId != null) {
-            voBuilder.subscribed(isSubscribed(tenantId, agentId, userId));
+            voBuilder.subscribed(subscriptionService.isSubscribed(tenantId, agentId, userId));
         }
 
         return voBuilder.build();
@@ -704,25 +664,6 @@ public class AgentPublishService {
                 .eq(version != null, AgentConfig::getVersion, version)
                 .orderByDesc(AgentConfig::getVersion)
                 .last("LIMIT 1"));
-    }
-
-    /**
-     * 查询智能体版本历史（所有版本配置列表，按版本降序）。
-     */
-    public List<AgentConfig> getVersionHistory(Long tenantId, Long agentId) {
-        requireAgent(agentId, tenantId);
-        return agentConfigMapper.selectList(new LambdaQueryWrapper<AgentConfig>()
-                .eq(AgentConfig::getAgentId, agentId)
-                .orderByDesc(AgentConfig::getVersion));
-    }
-
-    /**
-     * 查询资源绑定列表。
-     */
-    public List<AgentBinding> listBindings(Long tenantId, Long agentId) {
-        requireAgent(agentId, tenantId);
-        return agentBindingMapper.selectList(new LambdaQueryWrapper<AgentBinding>()
-                .eq(AgentBinding::getAgentId, agentId));
     }
 
     /**
@@ -765,76 +706,6 @@ public class AgentPublishService {
     }
 
     /**
-     * 查询可订阅的智能体（仅已发布的应用智能体，通用智能体默认内置不在市场展示）。
-     * 返回 AgentVO 列表，包含当前用户订阅状态。
-     */
-    public List<AgentVO> listSubscribable(Long tenantId, Long userId) {
-        List<AgentDef> defs = agentDefMapper.selectList(new LambdaQueryWrapper<AgentDef>()
-                .eq(AgentDef::getLifeStatus, AgentLifeStatus.PUBLISHED)
-                .eq(AgentDef::getAgentType, AgentType.APPLICATION)
-                .eq(AgentDef::getTenantId, tenantId)
-                .orderByDesc(AgentDef::getSubsCount)
-                .orderByDesc(AgentDef::getCreateTime));
-
-        // 批量查询当前用户的订阅状态
-        Set<Long> subscribedAgentIds = Set.of();
-        if (userId != null && !defs.isEmpty()) {
-            List<AgentSubscription> subs = agentSubscriptionMapper.selectList(
-                    new LambdaQueryWrapper<AgentSubscription>()
-                            .eq(AgentSubscription::getTenantId, tenantId)
-                            .eq(AgentSubscription::getUserId, userId)
-                            .eq(AgentSubscription::getStatus, SubscriptionStatus.ACTIVE));
-            subscribedAgentIds = subs.stream()
-                    .map(AgentSubscription::getAgentId)
-                    .collect(java.util.stream.Collectors.toSet());
-        }
-
-        final Set<Long> finalSubscribedIds = subscribedAgentIds;
-        return defs.stream().map(d -> AgentVO.builder()
-                .id(d.getId())
-                .tenantId(d.getTenantId())
-                .agentCode(d.getAgentCode())
-                .agentName(d.getAgentName())
-                .agentType(d.getAgentType())
-                .icon(d.getIcon())
-                .color(d.getColor())
-                .description(d.getDescription())
-                .category(d.getCategory())
-                .governanceTier(d.getGovernanceTier())
-                .lifeStatus(d.getLifeStatus())
-                .version(d.getVersion())
-                .authorUserId(d.getAuthorUserId())
-                .subsCount(d.getSubsCount())
-                .subscribed(finalSubscribedIds.contains(d.getId()))
-                .publishedTime(d.getPublishedTime())
-                .createTime(d.getCreateTime())
-                .build()).toList();
-    }
-
-    /**
-     * 查询当前用户创建的智能体。
-     */
-    public List<AgentVO> listMyAgents(Long tenantId, Long userId) {
-        List<AgentDef> defs = agentDefMapper.selectList(new LambdaQueryWrapper<AgentDef>()
-                .eq(AgentDef::getTenantId, tenantId)
-                .eq(AgentDef::getAuthorUserId, userId)
-                .ne(AgentDef::getAgentType, AgentType.UNIVERSAL)
-                // 所有本人创建的智能体都在"我的智能体"展示，包括 SYSTEM 类型的 PUBLISHED 态
-                // （注释中的"SYSTEM 发布后从工作台移除"是市场/订阅侧的策略，
-                //   listSubscribable 已有过滤，此处不应再二次过滤作者视角）
-                .orderByDesc(AgentDef::getCreateTime));
-        return defs.stream().map(d -> AgentVO.builder()
-                .id(d.getId()).tenantId(d.getTenantId()).agentCode(d.getAgentCode())
-                .agentName(d.getAgentName()).agentType(d.getAgentType())
-                .icon(d.getIcon()).color(d.getColor()).description(d.getDescription())
-                .category(d.getCategory()).governanceTier(d.getGovernanceTier())
-                .lifeStatus(d.getLifeStatus()).version(d.getVersion())
-                .authorUserId(d.getAuthorUserId()).subsCount(d.getSubsCount())
-                .publishedTime(d.getPublishedTime()).createTime(d.getCreateTime())
-                .build()).toList();
-    }
-
-    /**
      * 查询当前租户的通用智能体（平台预置，每租户唯一）。
      *
      * <p>通用智能体由 {@link com.aegis.admin.infrastructure.startup.TenantBootstrapService}
@@ -861,86 +732,6 @@ public class AgentPublishService {
                 .authorUserId(def.getAuthorUserId()).subsCount(def.getSubsCount())
                 .publishedTime(def.getPublishedTime()).createTime(def.getCreateTime())
                 .build();
-    }
-
-    // ============ 订阅（落库） ============
-
-    /**
-     * 订阅智能体（仅已发布可订阅）。
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public void subscribe(Long tenantId, Long agentId, Long userId) {
-        AgentDef def = requireAgent(agentId, tenantId);
-        if (def.getLifeStatus() != AgentLifeStatus.PUBLISHED) {
-            throw new BusinessException(ResultCode.CONFLICT, "仅已发布智能体可订阅，当前状态: " + def.getLifeStatus());
-        }
-        // 类型校验——仅 APPLICATION 可订阅；SYSTEM 面向业务系统调用，UNIVERSAL 默认可用无需订阅
-        if (def.getAgentType() == AgentType.SYSTEM) {
-            throw new BusinessException(ResultCode.CONFLICT,
-                    "系统智能体面向业务系统调用，不支持订阅。请通过 API 接口使用。");
-        }
-        if (def.getAgentType() == AgentType.UNIVERSAL) {
-            throw new BusinessException(ResultCode.CONFLICT,
-                    "通用智能体为平台预置，默认可用，无需订阅。");
-        }
-        Long count = agentSubscriptionMapper.selectCount(new LambdaQueryWrapper<AgentSubscription>()
-                .eq(AgentSubscription::getTenantId, tenantId)
-                .eq(AgentSubscription::getAgentId, agentId)
-                .eq(AgentSubscription::getUserId, userId));
-        if (count != null && count > 0) {
-            // 幂等：已订阅则恢复为 ACTIVE
-            agentSubscriptionMapper.update(null, new LambdaUpdateWrapper<AgentSubscription>()
-                    .eq(AgentSubscription::getTenantId, tenantId)
-                    .eq(AgentSubscription::getAgentId, agentId)
-                    .eq(AgentSubscription::getUserId, userId)
-                    .set(AgentSubscription::getStatus, SubscriptionStatus.ACTIVE)
-                    .set(AgentSubscription::getUnsubscribeTime, (LocalDateTime) null));
-            return;
-        }
-        AgentSubscription sub = AgentSubscription.builder()
-                .agentId(agentId).userId(userId).status(SubscriptionStatus.ACTIVE)
-                .subscribeTime(LocalDateTime.now()).build();
-        sub.setTenantId(tenantId);
-        agentSubscriptionMapper.insert(sub);
-        agentDefMapper.update(null, new LambdaUpdateWrapper<AgentDef>()
-                .eq(AgentDef::getId, agentId)
-                .setSql("subs_count = subs_count + 1"));
-        log.info("Agent subscribed: agentId={}, userId={}", agentId, userId);
-    }
-
-    /**
-     * 退订智能体。
-     */
-    @Transactional(rollbackFor = Exception.class)
-    public void unsubscribe(Long tenantId, Long agentId, Long userId) {
-        AgentSubscription sub = agentSubscriptionMapper.selectOne(new LambdaQueryWrapper<AgentSubscription>()
-                .eq(AgentSubscription::getTenantId, tenantId)
-                .eq(AgentSubscription::getAgentId, agentId)
-                .eq(AgentSubscription::getUserId, userId)
-                .last("LIMIT 1"));
-        if (sub == null) {
-            return;
-        }
-        agentSubscriptionMapper.update(null, new LambdaUpdateWrapper<AgentSubscription>()
-                .eq(AgentSubscription::getId, sub.getId())
-                .set(AgentSubscription::getStatus, SubscriptionStatus.UNSUBSCRIBED)
-                .set(AgentSubscription::getUnsubscribeTime, LocalDateTime.now()));
-        agentDefMapper.update(null, new LambdaUpdateWrapper<AgentDef>()
-                .eq(AgentDef::getId, agentId)
-                .setSql("subs_count = GREATEST(subs_count - 1, 0)"));
-        log.info("Agent unsubscribed: agentId={}, userId={}", agentId, userId);
-    }
-
-    /**
-     * 查询当前用户是否已订阅某智能体。
-     */
-    public boolean isSubscribed(Long tenantId, Long agentId, Long userId) {
-        Long count = agentSubscriptionMapper.selectCount(new LambdaQueryWrapper<AgentSubscription>()
-                .eq(AgentSubscription::getTenantId, tenantId)
-                .eq(AgentSubscription::getAgentId, agentId)
-                .eq(AgentSubscription::getUserId, userId)
-                .eq(AgentSubscription::getStatus, SubscriptionStatus.ACTIVE));
-        return count != null && count > 0;
     }
 
     // ============ 审核流程 ============
@@ -1182,41 +973,6 @@ public class AgentPublishService {
             throw new BusinessException(ResultCode.NOT_FOUND, "未找到待审核的审核单");
         }
         return review;
-    }
-
-    // ============ 版本 Diff ============
-
-    /**
-     * 比较两个版本配置差异。
-     */
-    public List<Map<String, Object>> versionDiff(Long agentId, String v1, String v2) {
-        AgentConfig c1 = agentConfigMapper.selectOne(new LambdaQueryWrapper<AgentConfig>()
-                .eq(AgentConfig::getAgentId, agentId)
-                .eq(AgentConfig::getVersion, v1));
-        AgentConfig c2 = agentConfigMapper.selectOne(new LambdaQueryWrapper<AgentConfig>()
-                .eq(AgentConfig::getAgentId, agentId)
-                .eq(AgentConfig::getVersion, v2));
-        if (c1 == null || c2 == null) {
-            throw new BusinessException(ResultCode.NOT_FOUND, "版本配置不存在");
-        }
-        List<Map<String, Object>> diffs = new ArrayList<>();
-        addDiff(diffs, "systemPrompt", c1.getSystemPrompt(), c2.getSystemPrompt());
-        addDiff(diffs, "modelTier", c1.getModelTier() != null ? c1.getModelTier().name() : null,
-                c2.getModelTier() != null ? c2.getModelTier().name() : null);
-        addDiff(diffs, "temperature", c1.getTemperature(), c2.getTemperature());
-        addDiff(diffs, "maxTurns", c1.getMaxTurns(), c2.getMaxTurns());
-        addDiff(diffs, "enabledTools", c1.getEnabledTools(), c2.getEnabledTools());
-        return diffs;
-    }
-
-    private void addDiff(List<Map<String, Object>> diffs, String field, Object oldVal, Object newVal) {
-        if (!Objects.equals(oldVal, newVal)) {
-            Map<String, Object> diff = new LinkedHashMap<>();
-            diff.put("field", field);
-            diff.put("oldValue", oldVal);
-            diff.put("newValue", newVal);
-            diffs.add(diff);
-        }
     }
 
     // ============ 内部方法 ============

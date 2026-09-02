@@ -10,6 +10,7 @@ import io.agentscope.harness.agent.memory.compaction.ToolResultEvictionConfig;
 import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import com.aegis.core.domain.agent.AgentBinding;
+import com.aegis.core.domain.agent.AgentConfig;
 import com.aegis.core.domain.resource.Tool;
 import com.aegis.core.dto.security.BuiltinToolRiskConfig;
 import com.aegis.core.dto.security.ToolRiskInfo;
@@ -198,7 +199,8 @@ public class AegisAgentInstanceManager {
                                        String modelTier,
                                        IsolationStrategy isolationStrategy,
                                        List<Long> sessionMcpServiceIds,
-                                       com.aegis.runtime.service.agent.AssemblyResourceContext resources) {
+                                       com.aegis.runtime.service.agent.AssemblyResourceContext resources,
+                                       AgentConfig agentConfig) {
         // P1-7：会话级 MCP 资源不得进入共享池实例——使用会话专属池键，
         // 使其天然与会话绑定、不与其他会话/用户共享（框架无 per-request toolkit overlay，
         // 唯一完全正确的并发隔离方案）。
@@ -267,7 +269,7 @@ public class AegisAgentInstanceManager {
 
             AgentEntry newEntry = buildAgent(poolKey, sessionId, tenantId, userId, agentType, agentId,
                     sysPrompt, bindings, preloadedTools, modelTier, isolationStrategy, sessionMcpServiceIds,
-                    currentBindingFp, resources);
+                    currentBindingFp, resources, agentConfig);
             pool.put(poolKey, newEntry);
             log.info("构建 Agent 实例: poolKey={}, agentType={}, agentId={}, tenantId={}, sessionMcp={}, poolSize={}",
                     poolKey, agentType, agentId, tenantId, hasSessionMcp, pool.size());
@@ -498,7 +500,8 @@ public class AegisAgentInstanceManager {
                                     IsolationStrategy isolationStrategy,
                                     List<Long> sessionMcpServiceIds,
                                     String bindingFingerprint,
-                                    com.aegis.runtime.service.agent.AssemblyResourceContext resources) {
+                                    com.aegis.runtime.service.agent.AssemblyResourceContext resources,
+                                    AgentConfig agentConfig) {
         // 1. 物化工作区（RedisStore）
         materializeWorkspace(agentType, agentId, userId, bindings);
 
@@ -508,11 +511,11 @@ public class AegisAgentInstanceManager {
 
         // 3. 构建权限上下文（必须在 loadToolkit 之后构建，才能扫描 Toolkit 中的动态工具
         //    注册 ALLOW 规则，避免 DONT_ASK 模式下 PermissionEngine 对无规则工具默认 DENY）
-        PermissionContextState permissionContext = buildPermissionContext(agentId, tenantId, toolkit);
+        PermissionContextState permissionContext = buildPermissionContext(agentId, tenantId, toolkit, agentConfig);
 
         // 4. 装配 Builder 基础属性
         IsolationScope isolationScope = resolveIsolationScope(agentType);
-        HarnessAgent.Builder builder = configureAgentBuilder(agentId, sysPrompt, toolkit, isolationScope, tenantId, modelTier, permissionContext);
+        HarnessAgent.Builder builder = configureAgentBuilder(agentId, sysPrompt, toolkit, isolationScope, tenantId, modelTier, permissionContext, agentConfig);
 
         // 4. 配置文件系统（沙箱 or Remote）：传递 sessionId 派生命名空间、agentType 供池路由
         FilesystemConfig fsConfig = configureFilesystem(builder, isolationScope, tenantId, userId, agentId,
@@ -658,7 +661,8 @@ public class AegisAgentInstanceManager {
     private HarnessAgent.Builder configureAgentBuilder(long agentId, String sysPrompt,
                                                         Toolkit toolkit, IsolationScope isolationScope,
                                                         long tenantId, String modelTier,
-                                                        PermissionContextState permissionContext) {
+                                                        PermissionContextState permissionContext,
+                                                        AgentConfig agentConfig) {
         String effectiveSysPrompt = (sysPrompt != null && !sysPrompt.isEmpty())
                 ? sysPrompt : defaultSysPrompt;
 
@@ -666,7 +670,7 @@ public class AegisAgentInstanceManager {
         String effectiveTier = (modelTier != null && !modelTier.isEmpty()) ? modelTier : "STANDARD";
         String modelId = "aegis:" + effectiveTier.toLowerCase() + ":" + tenantId;
 
-        return HarnessAgent.builder()
+        HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name("AegisAgent-" + agentId)
                 .sysPrompt(effectiveSysPrompt)
                 .model(modelId)
@@ -682,30 +686,66 @@ public class AegisAgentInstanceManager {
                 // HarnessSkillMiddleware 会自动把可见技能注入系统提示词的 <available_skills> 段落。
                 .skillRepository(skillRepository)
                 .skillsEnabled(true)
-                .maxIters(maxIters)
+                // Phase 3：maxIters 优先取 AgentConfig.maxTurns，null 回退全局 @Value 默认
+                .maxIters(agentConfig != null && agentConfig.getMaxTurns() != null
+                        ? agentConfig.getMaxTurns() : maxIters)
                 .agentId(String.valueOf(agentId))
                 // 中间件链由 AgentScope 内核按 order 降序驱动（Phase 2 精简后直接注入 List）
                 .middlewares(standaloneMiddlewares)
-                // 启用 AS 压缩链路 + 工具结果驱逐 + 溢出兜底；禁用 LLM 驱动的 flushBeforeCompact，
-                // 跨会话记忆持久化已由 AegisMemoryMiddleware 在应用层异步处理。
-                .compaction(CompactionConfig.builder()
-                        .triggerMessages(100)
-                        .keepMessages(15)
-                        .triggerTokens(120_000)
-                        .flushBeforeCompact(false)
-                        .offloadBeforeCompact(true)
-                        .truncateArgs(CompactionConfig.TruncateArgsConfig.builder()
-                                .maxArgLength(2000)
-                                .truncationText("... [truncated] ...")
-                                .build())
-                        .build())
+                // Phase 3：压缩配置由 AgentConfig.compactionThreshold / memoryFlushStrategy 驱动
+                .compaction(buildCompactionConfig(agentConfig))
                 .toolResultEviction(ToolResultEvictionConfig.defaults())
-                // 禁用 AS 内置记忆中间件（MemoryFlushMiddleware + MemoryMaintenanceMiddleware），
-                // 跨会话记忆已由 AegisMemoryMiddleware 在应用层异步处理。
-                .disableMemoryHooks()
                 .maxRetries(3)
                 .maxContextTokens(100_000)
                 .permissionContext(permissionContext);
+        // Phase 3：memoryFlushStrategy != NONE 时启用 AS 内置记忆钩子；
+        // 否则禁用（跨会话记忆由 AegisMemoryMiddleware 在应用层异步处理）
+        if (!shouldEnableMemory(agentConfig)) {
+            builder.disableMemoryHooks();
+        }
+        // Phase 3：enablePlanMode 由 AgentConfig 驱动（默认关闭）
+        if (agentConfig != null && Boolean.TRUE.equals(agentConfig.getEnablePlanMode())) {
+            builder.enablePlanMode();
+        }
+        return builder;
+    }
+
+    /** Phase 3：根据 AgentConfig 构建上下文压缩配置。 */
+    private CompactionConfig buildCompactionConfig(AgentConfig agentConfig) {
+        Integer threshold = (agentConfig != null) ? agentConfig.getCompactionThreshold() : null;
+        if (threshold == null || threshold <= 0) {
+            return CompactionConfig.builder()
+                    .triggerMessages(Integer.MAX_VALUE)
+                    .keepMessages(Integer.MAX_VALUE)
+                    .triggerTokens(Integer.MAX_VALUE)
+                    .flushBeforeCompact(false)
+                    .offloadBeforeCompact(true)
+                    .truncateArgs(CompactionConfig.TruncateArgsConfig.builder()
+                            .maxArgLength(2000)
+                            .truncationText("... [truncated] ...")
+                            .build())
+                    .build();
+        }
+        return CompactionConfig.builder()
+                .triggerMessages(threshold)
+                .keepMessages(Math.max(5, threshold / 4))
+                .triggerTokens(120_000)
+                .flushBeforeCompact("PROGRESSIVE".equalsIgnoreCase(agentConfig.getMemoryFlushStrategy()))
+                .offloadBeforeCompact(true)
+                .truncateArgs(CompactionConfig.TruncateArgsConfig.builder()
+                        .maxArgLength(2000)
+                        .truncationText("... [truncated] ...")
+                        .build())
+                .build();
+    }
+
+    /** Phase 3：判断是否启用 AS 内置记忆钩子（memoryFlushStrategy 非 NONE 即启用）。 */
+    private boolean shouldEnableMemory(AgentConfig agentConfig) {
+        if (agentConfig == null) {
+            return false;
+        }
+        String strategy = agentConfig.getMemoryFlushStrategy();
+        return strategy != null && !"NONE".equalsIgnoreCase(strategy);
     }
 
     /** 文件系统配置结果（供 buildAgent 组装 AgentEntry） */
@@ -783,14 +823,18 @@ public class AegisAgentInstanceManager {
      * @param toolkit 已加载工具的 Toolkit，用于扫描动态工具注册 ALLOW 规则
      * @return 动态构建的 PermissionContextState
      */
-    private PermissionContextState buildPermissionContext(long agentId, long tenantId, Toolkit toolkit) {
+    private PermissionContextState buildPermissionContext(long agentId, long tenantId, Toolkit toolkit,
+                                                           AgentConfig agentConfig) {
+        PermissionMode mode = (agentConfig != null && "DONT_ASK".equalsIgnoreCase(agentConfig.getPermissionMode()))
+                ? PermissionMode.DONT_ASK
+                : PermissionMode.DEFAULT;
         // PermissionMode.DONT_ASK：对已注册规则的工具按规则评估；对无规则工具默认 DENY
         // （因为无人回答审批请求）。此模式下必须确保 Toolkit 中每个工具都有对应规则，
         // 否则动态工具（skill_creator、订阅技能、MCP 工具）会被 PermissionEngine 默认拒绝。
         // 与 BYPASS 的区别：DONT_ASK 保留显式注册的 ASK/DENY 规则对高风险工具的管控能力，
         // 而 BYPASS 会让所有无规则工具自动 ALLOW（包括 http_request POST 这类需审批的操作）。
         PermissionContextState.Builder permBuilder = PermissionContextState.builder()
-                .mode(PermissionMode.DONT_ASK)
+                .mode(mode)
                 // SSRF DENY 规则：阻止 http_request 访问内网地址
                 .addDenyRule("http_request", new PermissionRule(
                         "http_request", ".*\\.internal\\..*",

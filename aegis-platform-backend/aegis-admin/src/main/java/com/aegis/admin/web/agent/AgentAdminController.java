@@ -2,6 +2,8 @@ package com.aegis.admin.web.agent;
 
 import com.aegis.admin.infrastructure.audit.Auditable;
 import com.aegis.admin.service.agent.AgentPublishService;
+import com.aegis.admin.service.agent.AgentSubscriptionService;
+import com.aegis.admin.service.agent.AgentBindingCommandService;
 import com.aegis.core.common.tenant.TenantContextHolder;
 import com.aegis.core.security.ResourceOwner;
 import com.aegis.core.security.ResourcePermission;
@@ -47,6 +49,8 @@ import java.util.Map;
 public class AgentAdminController {
 
     private final AgentPublishService agentPublishService;
+    private final AgentSubscriptionService agentSubscriptionService;
+    private final AgentBindingCommandService agentBindingCommandService;
 
     /**
      * 创建智能体（草稿态）。
@@ -145,7 +149,7 @@ public class AgentAdminController {
     public Result<List<AgentVO>> subscribable(@RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
                                                @RequestHeader(value = "X-User-Id", required = false) Long userId) {
         TenantContextHolder.bind(tenantId);
-        return Result.success(agentPublishService.listSubscribable(tenantId, userId));
+        return Result.success(agentSubscriptionService.listSubscribable(tenantId, userId));
     }
 
     /**
@@ -187,7 +191,7 @@ public class AgentAdminController {
         TenantContextHolder.bind(tenantId);
         binding.setAgentId(id);
         if (binding.getTenantId() == null) binding.setTenantId(tenantId);
-        agentPublishService.addBinding(binding);
+        agentBindingCommandService.addBinding(binding);
         return Result.success(null);
     }
 
@@ -201,7 +205,7 @@ public class AgentAdminController {
                                        @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
                                        @RequestHeader(value = "X-User-Id", required = false) Long userId) {
         TenantContextHolder.bind(tenantId);
-        agentPublishService.removeBinding(tenantId, id, bindingId);
+        agentBindingCommandService.removeBinding(tenantId, id, bindingId);
         return Result.success(null);
     }
 
@@ -212,7 +216,7 @@ public class AgentAdminController {
     public Result<List<AgentBinding>> listBindings(@PathVariable Long id,
                                                     @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
         TenantContextHolder.bind(tenantId);
-        return Result.success(agentPublishService.listBindings(tenantId, id));
+        return Result.success(agentBindingCommandService.listBindings(tenantId, id));
     }
 
     /**
@@ -222,7 +226,7 @@ public class AgentAdminController {
     public Result<List<AgentVO>> myAgents(@RequestHeader("X-Tenant-Id") Long tenantId,
                                           @RequestHeader("X-User-Id") Long userId) {
         TenantContextHolder.bind(tenantId);
-        return Result.success(agentPublishService.listMyAgents(tenantId, userId));
+        return Result.success(agentSubscriptionService.listMyAgents(tenantId, userId));
     }
 
     /**
