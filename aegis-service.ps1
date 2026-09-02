@@ -103,6 +103,10 @@ function Ensure-LogDir {
 # Docker / Infra
 # ============================================================================
 function Start-Infra {
+    param(
+        [switch]$SkipHealthyCheck   # start 默认检查；restart 时跳过，由外层判断
+    )
+
     Write-Info "Starting Docker containers..."
 
     docker info 2>&1 | Out-Null
@@ -110,9 +114,21 @@ function Start-Infra {
         Write-Warn2 "Docker Desktop not running. Starting it..."
         $dockerExe = $env:DOCKER_EXE
         if (-not $dockerExe) {
-            @("${env:ProgramFiles}\Docker\Docker\Docker Desktop.exe",
-              "${env:ProgramFiles(x86)}\Docker\Docker\Docker Desktop.exe") | ForEach-Object {
-                if (-not $dockerExe -and $_ -and (Test-Path $_)) { $dockerExe = $_ }
+            # 候选路径：标准安装 + 从 docker.exe 位置反推
+            $candidates = @(
+                "${env:ProgramFiles}\Docker\Docker\Docker Desktop.exe",
+                "${env:ProgramFiles(x86)}\Docker\Docker\Docker Desktop.exe"
+            )
+            # 从 PATH 中 docker.exe 反推（docker.exe 通常在 <root>\resources\bin\docker.exe）
+            $dockerCli = Get-Command docker -ErrorAction SilentlyContinue
+            if ($dockerCli -and $dockerCli.Source) {
+                $cliDir = Split-Path $dockerCli.Source -Parent                     # <root>\resources\bin
+                $rootDir = Split-Path $cliDir -Parent                             # <root>
+                $candidates += (Join-Path $rootDir "Docker Desktop.exe")          # <root>\Docker Desktop.exe
+                $candidates += (Join-Path $rootDir "Docker\Docker Desktop.exe")
+            }
+            foreach ($c in $candidates) {
+                if ($c -and (Test-Path $c)) { $dockerExe = $c; break }
             }
         }
         if ($dockerExe -and (Test-Path $dockerExe)) {
@@ -132,18 +148,38 @@ function Start-Infra {
         }
     }
 
-    Push-Location $INFRA_ROOT
-    docker compose up -d mysql redis nacos minio etcd milvus 2>&1 | Out-Null
-
-    # PaddleOCR 兜底 OCR 服务（首次需要 build，之后可直接 up）
-    $paddleocrBuilt = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null | Where-Object { $_ -match "aegis-paddleocr" }
-    if (-not $paddleocrBuilt) {
-        Write-Info "PaddleOCR image not found, building first time (~2-3 min)..."
-        docker compose build paddleocr 2>&1 | Out-Null
-        Write-Ok "PaddleOCR image built"
+    # 快速检查：核心基础设施是否已经 healthy（restart 场景复用已运行容器，零重启零耗时）
+    $coreReady = $true
+    foreach ($p in @(3306, 6379, 8848)) {
+        if (-not (Test-Port $p)) { $coreReady = $false; break }
     }
-    docker compose up -d paddleocr 2>&1 | Out-Null
-    Pop-Location
+    if ($coreReady -and -not $SkipHealthyCheck) {
+        Write-Ok "Core infra already running (MySQL/Redis/Nacos), skip docker compose up"
+    } else {
+        Push-Location $INFRA_ROOT
+        docker compose up -d mysql redis nacos minio etcd milvus 2>&1 | Out-Null
+        Pop-Location
+    }
+
+    # PaddleOCR 兜底 OCR 服务
+    $paddleocrRunning = Test-Port 8098
+    if (-not $paddleocrRunning) {
+        $paddleocrBuilt = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null | Where-Object { $_ -match "aegis-paddleocr" }
+        if (-not $paddleocrBuilt) {
+            Write-Info "PaddleOCR image not found, building first time (清华源 + host 网络, ~1-2 min)..."
+            Push-Location $INFRA_ROOT
+            docker compose --profile ocr build --network host paddleocr 2>&1 | ForEach-Object {
+                if ($_ -match "ERROR|failed") { Write-Err2 $_ }
+            }
+            Pop-Location
+            Write-Ok "PaddleOCR image built"
+        }
+        Push-Location $INFRA_ROOT
+        docker compose --profile ocr up -d paddleocr 2>&1 | Out-Null
+        Pop-Location
+    } else {
+        Write-Ok "PaddleOCR already running (port 8098)"
+    }
 
     Write-Info "Waiting for infra services..."
     $svcList = @(
@@ -318,12 +354,20 @@ function Show-FrontendStatus {
 # Build
 # ============================================================================
 function Build-Backend {
-    Write-Info "Building backend..."
+    param([switch]$Incremental)
+    Write-Info "Building backend $(if($Incremental){'(incremental)'}else{'(clean)'})..."
     $env:JAVA_HOME = $JAVA_HOME
     Push-Location $BACKEND_ROOT
-    & $MVN_CMD clean package -DskipTests -q 2>&1 | ForEach-Object {
-        if ($_ -match "ERROR|BUILD FAILURE") { Write-Err2 $_ }
-        elseif ($_ -match "BUILD SUCCESS")   { Write-Ok "Build success" }
+    if ($Incremental) {
+        & $MVN_CMD package -DskipTests -q 2>&1 | ForEach-Object {
+            if ($_ -match "ERROR|BUILD FAILURE") { Write-Err2 $_ }
+            elseif ($_ -match "BUILD SUCCESS")   { Write-Ok "Build success" }
+        }
+    } else {
+        & $MVN_CMD clean package -DskipTests -q 2>&1 | ForEach-Object {
+            if ($_ -match "ERROR|BUILD FAILURE") { Write-Err2 $_ }
+            elseif ($_ -match "BUILD SUCCESS")   { Write-Ok "Build success" }
+        }
     }
     Pop-Location
     Write-Ok "Backend build complete"
@@ -400,14 +444,13 @@ switch ($Action) {
         Write-Ok "本机应用已停止，基础设施容器保留运行；可用 quickstart.ps1 切换到全 Docker 模式"
     }
     "restart" {
-        Write-Info "Restarting all services (stop -> clear logs -> build -> start)..."
+        Write-Info "Restarting all services (stop -> incremental build -> start)..."
         Stop-Frontend
         Stop-Backend
-        Clear-Logs
-        Build-Backend
-        Build-Frontend
-        Start-Sleep -Seconds 3
-        $infraOk = Start-Infra
+        Start-Sleep -Seconds 2
+        Build-Backend -Incremental
+        Start-Sleep -Seconds 2
+        $infraOk = Start-Infra -SkipHealthyCheck
         if ($infraOk) {
             Start-Backend
             Start-Frontend

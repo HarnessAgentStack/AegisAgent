@@ -8,6 +8,7 @@ import com.aegis.core.domain.resource.KnowledgeBase;
 import com.aegis.core.domain.resource.McpService;
 import com.aegis.core.domain.resource.McpSubscription;
 import com.aegis.core.domain.resource.Skill;
+import com.aegis.core.domain.resource.SkillSubscription;
 import com.aegis.core.domain.resource.Tool;
 import com.aegis.core.enums.agent.AgentLifeStatus;
 import com.aegis.core.enums.model.ProviderStatus;
@@ -22,6 +23,7 @@ import com.aegis.dal.mapper.resource.KnowledgeBaseMapper;
 import com.aegis.dal.mapper.resource.McpServiceMapper;
 import com.aegis.dal.mapper.resource.McpSubscriptionMapper;
 import com.aegis.dal.mapper.resource.SkillMapper;
+import com.aegis.dal.mapper.resource.SkillSubscriptionMapper;
 import com.aegis.dal.mapper.resource.ToolMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
@@ -63,6 +65,7 @@ public class ResourceQueryService {
     private final McpServiceMapper mcpServiceMapper;
     private final McpSubscriptionMapper mcpSubscriptionMapper;
     private final SkillMapper skillMapper;
+    private final SkillSubscriptionMapper skillSubscriptionMapper;
     private final AgentDefMapper agentDefMapper;
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KbSubscriptionMapper kbSubscriptionMapper;
@@ -296,6 +299,105 @@ public class ResourceQueryService {
         return all.stream()
                 .filter(mcp -> mcp.getLifeStatus() == AgentLifeStatus.PUBLISHED
                         && mcp.getStatus() == ProviderStatus.ACTIVE)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 查询用户订阅的 MCP 服务 ID 列表（UNIVERSAL 动态资源签名输入之一）。
+     *
+     * <p>res_mcp_subscription 携带 tenant_id 列且不在租户忽略表，
+     * MyBatis-Plus 租户插件自动追加租户过滤（与 ToolBridge 现有订阅查询同模式）。
+     *
+     * @param tenantId 租户ID
+     * @param userId   用户ID
+     * @return 订阅的 MCP 服务 ID 列表（去重，含任何生命周期状态的订阅记录）
+     */
+    public List<Long> findSubscribedMcpServiceIds(Long tenantId, Long userId) {
+        if (tenantId == null || userId == null) {
+            return Collections.emptyList();
+        }
+        return mcpSubscriptionMapper.selectList(
+                        new LambdaQueryWrapper<McpSubscription>()
+                                .eq(McpSubscription::getTenantId, tenantId)
+                                .eq(McpSubscription::getSubscriberType, SubscriberType.USER)
+                                .eq(McpSubscription::getSubscriberId, userId)
+                                .select(McpSubscription::getMcpServiceId))
+                .stream()
+                .map(McpSubscription::getMcpServiceId)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 查询用户订阅的技能 ID 列表（UNIVERSAL 动态资源签名输入之一）。
+     *
+     * @param tenantId 租户ID
+     * @param userId   用户ID
+     * @return 订阅的技能 ID 列表（去重，含任何生命周期状态的订阅记录）
+     */
+    public List<Long> findSubscribedSkillIds(Long tenantId, Long userId) {
+        if (tenantId == null || userId == null) {
+            return Collections.emptyList();
+        }
+        return skillSubscriptionMapper.selectList(
+                        new LambdaQueryWrapper<SkillSubscription>()
+                                .eq(SkillSubscription::getTenantId, tenantId)
+                                .eq(SkillSubscription::getSubscriberType, SubscriberType.USER)
+                                .eq(SkillSubscription::getSubscriberId, userId)
+                                .select(SkillSubscription::getSkillId))
+                .stream()
+                .map(SkillSubscription::getSkillId)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 查询用户自建的技能实体列表（UNIVERSAL 自建分轨，含 DRAFT/REVIEWING/PUBLISHED）。
+     *
+     * <p>与 {@code AegisSkillRepository#queryUserSkills} 的"自建含草稿"语义对齐：
+     * 自建自测场景下草稿技能需可被工具化调用；ARCHIVED 排除。
+     * 供工具注册轨（{@code AegisToolBridge#resolveOwnedSkillAsTools}）与
+     * 动态资源签名（指纹）共用同一份数据，保证两轨同源。
+     *
+     * @param tenantId 租户ID
+     * @param userId   用户ID（作者）
+     * @return 自建技能实体列表（DRAFT/REVIEWING/PUBLISHED）
+     */
+    public List<Skill> findOwnedSkills(Long tenantId, Long userId) {
+        if (tenantId == null || userId == null) {
+            return Collections.emptyList();
+        }
+        return skillMapper.selectList(
+                new LambdaQueryWrapper<Skill>()
+                        .eq(Skill::getTenantId, tenantId)
+                        .eq(Skill::getAuthorUserId, userId)
+                        .eq(Skill::getDeleted, 0)
+                        .in(Skill::getLifeStatus,
+                                AgentLifeStatus.DRAFT,
+                                AgentLifeStatus.REVIEWING,
+                                AgentLifeStatus.PUBLISHED));
+    }
+
+    /**
+     * 查询用户自建且已发布激活的 MCP 服务列表（UNIVERSAL 自建分轨）。
+     *
+     * <p>res_mcp_service 为平台级表（无租户列），按 BaseEntity.createBy（INSERT
+     * 自动填充的创建者）识别归属；仅 PUBLISHED + ACTIVE 进入加载集，
+     * 与订阅轨治理语义一致（未审核草稿不工具化，防绕过审核调用）。
+     *
+     * @param userId 用户ID（创建者）
+     * @return 自建且已发布激活的 MCP 服务实体列表
+     */
+    public List<McpService> findOwnedActiveMcpServices(Long userId) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        return mcpServiceMapper.selectList(
+                        new LambdaQueryWrapper<McpService>()
+                                .eq(McpService::getCreateBy, userId)
+                                .eq(McpService::getLifeStatus, AgentLifeStatus.PUBLISHED)
+                                .eq(McpService::getStatus, ProviderStatus.ACTIVE))
+                .stream()
                 .collect(Collectors.toList());
     }
 

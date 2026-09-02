@@ -433,6 +433,65 @@ public class AegisToolBridge {
     }
 
     /**
+     * 将用户自建技能注册为 AgentScope Tool（UNIVERSAL 自建分轨）。
+     *
+     * <p>与技能指令轨（{@code AegisSkillRepository#queryUserSkills}）的"自建含草稿"语义对齐：
+     * DRAFT/REVIEWING/PUBLISHED 均装载（草稿仅创建者可见，天然满足安全约束）。
+     * 与 {@link #resolveSubscribedSkillAsTools} 互补——防自订阅机制使作者无法订阅自己的技能，
+     * 自建分轨确保作者仍可工具化调用自建技能（自测场景）。
+     *
+     * <p>仅对 UNIVERSAL 开放；APPLICATION/SYSTEM 智能体不开放自建技能工具化。
+     *
+     * @param toolkit  目标 Toolkit 实例
+     * @param tenantId 租户ID
+     * @param userId   用户ID（作者）
+     * @return 本次注册的技能工具数量
+     */
+    public int resolveOwnedSkillAsTools(Toolkit toolkit, Long tenantId, Long userId) {
+        if (tenantId == null || userId == null) {
+            return 0;
+        }
+        List<Skill> ownedSkills = resourceQueryService.findOwnedSkills(tenantId, userId);
+        int registered = 0;
+        for (Skill skill : ownedSkills) {
+            registerSkillAsTool(toolkit, skill);
+            registered++;
+        }
+        log.info("resolveOwnedSkillAsTools: ownedSkills={}, registered={}, tenantId={}, userId={}",
+                ownedSkills.size(), registered, tenantId, userId);
+        return registered;
+    }
+
+    /**
+     * 从用户自建 MCP 服务动态加载工具到 Toolkit（UNIVERSAL 自建分轨）。
+     *
+     * <p>res_mcp_service 为平台级表，按 BaseEntity.createBy 识别归属；
+     * 仅 PUBLISHED + ACTIVE 进入加载集（未审核草稿不工具化，防绕过审核调用）。
+     * 与 {@link #resolveMcpToolsForSubscriptions} 互补——订阅需用户主动操作，
+     * 自建分轨确保作者创建的 MCP 服务无需手动订阅即可在 UNIVERSAL 中使用。
+     *
+     * @param toolkit 目标 Toolkit 实例
+     * @param userId  用户ID（创建者）
+     * @return 本次动态加载的工具数量
+     */
+    public int resolveOwnedMcpTools(Toolkit toolkit, Long userId) {
+        if (userId == null) {
+            return 0;
+        }
+        var ownedServices = resourceQueryService.findOwnedActiveMcpServices(userId);
+        if (ownedServices.isEmpty()) {
+            return 0;
+        }
+        int totalRegistered = 0;
+        for (McpService service : ownedServices) {
+            totalRegistered += registerToolsFromMcpService(toolkit, service);
+        }
+        log.info("resolveOwnedMcpTools: ownedServices={}, toolCount={}, userId={}",
+                ownedServices.size(), totalRegistered, userId);
+        return totalRegistered;
+    }
+
+    /**
      * 从用户订阅的 MCP 服务动态加载工具到 Toolkit。
      *
      * <p>查询当前用户在指定租户下订阅的所有 MCP 服务，
@@ -484,12 +543,12 @@ public class AegisToolBridge {
             return 0;
         }
 
-        // 3. 动态加载每个服务的工具
+        // 3. 动态加载每个服务的工具（传入预载 McpService 实体，消除 listTools 内部冗余重查）
         int totalRegistered = 0;
         for (McpService service : activeServices) {
             log.info("resolveMcpToolsForSubscriptions: 加载服务工具, serviceId={}, mcpCode={}, endpoint={}",
                     service.getId(), service.getMcpCode(), service.getEndpoint());
-            int registered = registerToolsFromMcpService(toolkit, service.getId(), service.getEndpoint());
+            int registered = registerToolsFromMcpService(toolkit, service);
             totalRegistered += registered;
         }
 
@@ -521,7 +580,7 @@ public class AegisToolBridge {
         List<McpService> activeServices = resourceQueryService.findActiveMcpServicesByIds(
                 mcpServiceIds.stream().filter(java.util.Objects::nonNull).collect(Collectors.toSet()));
         for (McpService service : activeServices) {
-            totalRegistered += registerToolsFromMcpService(toolkit, service.getId(), service.getEndpoint());
+            totalRegistered += registerToolsFromMcpService(toolkit, service);
         }
 
         log.info("resolveMcpToolsForServiceIds: 完成加载, serviceCount={}, toolCount={}",
@@ -530,24 +589,26 @@ public class AegisToolBridge {
     }
 
     /**
-     * 从指定 MCP 服务动态加载工具。
+     * 从指定 MCP 服务动态加载工具（接受预载 McpService 实体，消除冗余重查）。
      *
-     * <p>通过 McpInvoker.listTools() 调用 MCP 服务的 tools/list 端点，
+     * <p>通过 {@link McpInvoker#listTools(McpService)} 调用 MCP 服务的 tools/list 端点，
      * 将返回的每个工具包装为 AegisMcpTool 注册到 Toolkit。
+     * 传入已加载的 McpService 实体，避免 {@code listTools(String)} 内部再次查 DB。
      *
-     * @param toolkit     目标 Toolkit 实例
-     * @param mcpServiceId MCP 服务ID
-     * @param endpoint    MCP 服务接入端点URL
+     * @param toolkit  目标 Toolkit 实例
+     * @param service  预加载的 MCP 服务实体
      * @return 注册的工具数量
      */
-    private int registerToolsFromMcpService(Toolkit toolkit, Long mcpServiceId, String endpoint) {
-        if (mcpServiceId == null) {
+    private int registerToolsFromMcpService(Toolkit toolkit, McpService service) {
+        if (service == null || service.getId() == null) {
             return 0;
         }
+        Long mcpServiceId = service.getId();
+        String endpoint = service.getEndpoint();
 
         try {
             log.info("registerToolsFromMcpService: 开始加载, serviceId={}, endpoint={}", mcpServiceId, endpoint);
-            List<McpSchema.Tool> mcpTools = mcpInvoker.listTools(mcpServiceId.toString());
+            List<McpSchema.Tool> mcpTools = mcpInvoker.listTools(service);
             if (mcpTools == null || mcpTools.isEmpty()) {
                 log.warn("registerToolsFromMcpService: MCP服务无可用工具, serviceId={}", mcpServiceId);
                 return 0;

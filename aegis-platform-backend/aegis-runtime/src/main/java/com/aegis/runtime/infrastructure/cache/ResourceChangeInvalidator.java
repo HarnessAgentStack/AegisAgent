@@ -67,14 +67,28 @@ public class ResourceChangeInvalidator implements MessageListener {
 
             switch (resourceType) {
                 case "MCP_SUBSCRIPTION", "SKILL_SUBSCRIPTION" -> {
-                    // 订阅变更：驱逐空闲实例，使新会话 buildAgent 时重新加载订阅资源
-                    // tenantId 可能为 null（activate/deactivate 平台级操作），此时全量驱逐
-                    log.info("资源订阅变更，驱逐空闲实例: resourceType={}, tenantId={}, eventType={}",
-                            resourceType, tenantId, eventType);
-                    try {
-                        agentInstanceManager.evictIdleInstances();
-                    } catch (Exception e) {
-                        log.warn("订阅变更后空闲实例驱逐异常: tenantId={}", tenantId, e);
+                    // 订阅变更：精准驱逐该用户的 UNIVERSAL 实例（无视空闲阈值）。
+                    // payload 中 userId 由 admin 侧 Publisher 写入（subscribe/unsubscribe 事件），
+                    // 读取后直接驱逐该用户实例——下次请求走 buildAgent 重建 Toolkit 加载最新订阅。
+                    // userId 为 null 时（activate/deactivate 平台级操作），退化为全量空闲驱逐。
+                    Long userId = json.has("userId") && !json.get("userId").isNull()
+                            ? json.get("userId").asLong() : null;
+                    if (userId != null && userId > 0) {
+                        log.info("资源订阅变更，精准驱逐用户UNIVERSAL实例: resourceType={}, tenantId={}, userId={}, eventType={}",
+                                resourceType, tenantId, userId, eventType);
+                        try {
+                            agentInstanceManager.evictUniversalForUser(userId);
+                        } catch (Exception e) {
+                            log.warn("精准驱逐用户实例异常: userId={}", userId, e);
+                        }
+                    } else {
+                        log.info("资源订阅变更(平台级)，驱逐空闲实例: resourceType={}, eventType={}",
+                                resourceType, eventType);
+                        try {
+                            agentInstanceManager.evictIdleInstances();
+                        } catch (Exception e) {
+                            log.warn("订阅变更后空闲实例驱逐异常: tenantId={}", tenantId, e);
+                        }
                     }
                 }
                 case "AGENT_PUBLISH", "AGENT_BINDING" -> {

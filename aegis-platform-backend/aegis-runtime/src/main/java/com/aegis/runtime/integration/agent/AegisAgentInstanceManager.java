@@ -256,7 +256,10 @@ public class AegisAgentInstanceManager {
 
         // 2. 计算当前绑定指纹，用于池命中后判定是否需要懒刷新
         //    （P1-8：版本参与哈希，与池键共同保证版本语义的一致性判定）
-        String currentBindingFp = BindingFingerprinter.fingerprint(agentVersion, bindings);
+        //    UNIVERSAL 订阅盲区修复：指纹纳入订阅/自建资源签名 + 会话级 MCP，
+        //    使订阅变化即指纹变化 → 触发懒刷新 → Toolkit 重建加载新订阅工具
+        List<String> dynamicParts = computeDynamicResourceParts(agentType, tenantId, userId, sessionMcpServiceIds);
+        String currentBindingFp = BindingFingerprinter.fingerprint(agentVersion, bindings, dynamicParts);
 
         // 读路径持有读锁，防止驱逐/清理在 get 与 return 之间关闭 Agent
         rwLock.readLock().lock();
@@ -404,6 +407,55 @@ public class AegisAgentInstanceManager {
     // 绑定指纹计算已抽至 BindingFingerprinter，与工作区物化器共享同一实现
 
     /**
+     * 计算 UNIVERSAL 动态资源签名部件（订阅/自建 MCP + Skill + 会话级 MCP）。
+     *
+     * <p>这些资源不在 agent_binding 中（UNIVERSAL 模板绑定通常为空），但实际加载到 Toolkit。
+     * 纳入指纹后，订阅/自建变化即指纹变化 → 池命中时指纹不一致 → 触发 P1-5 懒刷新。
+     * 非 UNIVERSAL 类型仅纳入会话级 MCP（sessionMcpServiceIds），因为订阅/自建仅对 UNIVERSAL 开放。
+     *
+     * <p>查询发生在请求线程（TenantContextScope.bound 已在位），租户上下文安全。
+     * 如果 ThreadLocal 丢失（异步刷新路径），查询非忽略表会抛 IllegalStateException，
+     * 此处 catch 后返回空列表——指纹退化为仅 agentVersion+bindings，
+     * 与修复前行为一致，不会比原来更差（异步刷新路径已由 refreshToolkit 内的 TenantContextScope 修复保护）。
+     */
+    private List<String> computeDynamicResourceParts(String agentType, long tenantId, long userId,
+                                                      List<Long> sessionMcpServiceIds) {
+        List<String> parts = new ArrayList<>();
+        try {
+            if ("UNIVERSAL".equals(agentType)) {
+                // 订阅 MCP
+                for (Long id : resourceQueryService.findSubscribedMcpServiceIds(tenantId, userId)) {
+                    parts.add("SUBMCP:" + id);
+                }
+                // 订阅 Skill
+                for (Long id : resourceQueryService.findSubscribedSkillIds(tenantId, userId)) {
+                    parts.add("SUBSKILL:" + id);
+                }
+                // 自建 Skill（含 DRAFT，对齐技能指令轨语义）
+                for (var s : resourceQueryService.findOwnedSkills(tenantId, userId)) {
+                    parts.add("OWNSKILL:" + s.getId() + ":" + s.getLifeStatus());
+                }
+                // 自建 MCP（PUBLISHED+ACTIVE）
+                for (var m : resourceQueryService.findOwnedActiveMcpServices(userId)) {
+                    parts.add("OWNMCP:" + m.getId());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("computeDynamicResourceParts: 查询动态资源异常（可能租户上下文缺失），指纹退化为仅绑定: agentType={}, error={}",
+                    agentType, e.getMessage());
+        }
+        // 会话级 MCP（所有类型）
+        if (sessionMcpServiceIds != null) {
+            List<Long> sorted = new ArrayList<>(sessionMcpServiceIds);
+            java.util.Collections.sort(sorted);
+            for (Long id : sorted) {
+                parts.add("SESMCP:" + id);
+            }
+        }
+        return parts;
+    }
+
+    /**
      * 懒刷新工具链。
      *
      * <p>当池命中但绑定指纹不一致（管理员修改了绑定配置）时，不走重建整个 Agent 的开销，
@@ -430,11 +482,18 @@ public class AegisAgentInstanceManager {
             // T3/T4：从装配期资源上下文加载，替代按 agentId 的 DB 直查
             toolBridge.resolveTools(toolkit, resources);
         }
+        // UNIVERSAL 分支：异步刷新在 boundedElastic 新线程执行，ThreadLocal 不跨线程传播，
+        // res_skill / res_skill_subscription 非租户忽略表 → 查询会 fail-closed 抛异常。
+        // 用 TenantContextScope.bound 恢复租户上下文，保证刷新路径与冷启动路径行为一致。
         if ("UNIVERSAL".equals(agentType)) {
-            toolBridge.resolveMcpToolsForSubscriptions(toolkit, tenantId, userId);
-            // 与 loadToolkit 保持一致：GLOBAL 系统技能（skill_creator）+ 用户订阅技能同步重新注册
-            toolBridge.resolveGlobalSkillAsTools(toolkit);
-            toolBridge.resolveSubscribedSkillAsTools(toolkit, tenantId, userId);
+            try (var scope = com.aegis.core.common.tenant.TenantContextScope.bound(tenantId)) {
+                toolBridge.resolveMcpToolsForSubscriptions(toolkit, tenantId, userId);
+                toolBridge.resolveGlobalSkillAsTools(toolkit);
+                toolBridge.resolveSubscribedSkillAsTools(toolkit, tenantId, userId);
+                // 与 loadToolkit 保持一致：自建技能 + 自建 MCP 同步加载
+                toolBridge.resolveOwnedSkillAsTools(toolkit, tenantId, userId);
+                toolBridge.resolveOwnedMcpTools(toolkit, userId);
+            }
         }
         if (sessionMcpServiceIds != null && !sessionMcpServiceIds.isEmpty()) {
             toolBridge.resolveMcpToolsForServiceIds(toolkit, sessionMcpServiceIds, tenantId);
@@ -505,7 +564,7 @@ public class AegisAgentInstanceManager {
         HarnessAgent agent = builder.build();
         // ★ Phase 1.2: AgentEntry 携带 poolKey + bindingFingerprint，用于池命中后的懒刷新判定
         return new AgentEntry(agent, poolKey, sessionId, agentType, agentId, fsConfig.sandboxRequired,
-                tenantId, fsConfig.slotKey, isolationScope, bindingFingerprint);
+                tenantId, userId, fsConfig.slotKey, isolationScope, bindingFingerprint);
     }
 
     /**
@@ -589,6 +648,18 @@ public class AegisAgentInstanceManager {
             int subscribedSkillToolCount = toolBridge.resolveSubscribedSkillAsTools(toolkit, tenantId, userId);
             if (subscribedSkillToolCount > 0) {
                 log.info("loadToolkit: 用户订阅技能工具注册成功: agentId={}, count={}", agentId, subscribedSkillToolCount);
+            }
+            // 自建技能注册为 Tool（含 DRAFT，对齐技能指令轨"自建自测"语义）：
+            // 防自订阅机制使作者无法订阅自己的技能 → 订阅轨不覆盖自建 → 需独立分轨
+            int ownedSkillToolCount = toolBridge.resolveOwnedSkillAsTools(toolkit, tenantId, userId);
+            if (ownedSkillToolCount > 0) {
+                log.info("loadToolkit: 自建技能工具注册成功: agentId={}, count={}", agentId, ownedSkillToolCount);
+            }
+            // 自建 MCP 加载（PUBLISHED+ACTIVE，按 createBy 识别归属）：
+            // 作者创建的 MCP 服务无需手动订阅即可在 UNIVERSAL 中使用
+            int ownedMcpToolCount = toolBridge.resolveOwnedMcpTools(toolkit, userId);
+            if (ownedMcpToolCount > 0) {
+                log.info("loadToolkit: 自建MCP工具加载成功: agentId={}, count={}", agentId, ownedMcpToolCount);
             }
         } else {
             log.info("loadToolkit: A6 分轨跳过用户订阅MCP加载(仅UNIVERSAL允许): agentId={}, agentType={}",
@@ -1031,6 +1102,47 @@ public class AegisAgentInstanceManager {
     }
 
     /**
+     * 精准驱逐指定用户的 UNIVERSAL 实例（无视空闲阈值）。
+     *
+     * <p>订阅变更事件（MCP/Skill subscribe/unsubscribe）触发时，
+     * 该用户的 UNIVERSAL 实例需立即失效——下次请求走 buildAgent 重建 Toolkit，
+     * 加载最新订阅资源。与 {@link #evictIdleInstances()}（仅驱逐空闲 >30min）互补：
+     * 用户"订阅后马上回来用"场景下实例非空闲，evictIdle 不驱逐，导致旧工具集复用。
+     *
+     * <p>仅驱逐 UNIVERSAL 类型 + userId 匹配的条目；APPLICATION/SYSTEM 实例不受影响。
+     *
+     * @param userId 用户ID
+     */
+    public void evictUniversalForUser(long userId) {
+        List<AgentEntry> toClose = new ArrayList<>();
+        rwLock.writeLock().lock();
+        try {
+            List<String> toEvict = new ArrayList<>();
+            for (var e : pool.entrySet()) {
+                AgentEntry entry = e.getValue();
+                if ("UNIVERSAL".equals(entry.agentType) && entry.userId == userId) {
+                    toEvict.add(e.getKey());
+                }
+            }
+            for (String key : toEvict) {
+                AgentEntry entry = pool.remove(key);
+                if (entry != null) {
+                    toClose.add(entry);
+                }
+            }
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+        for (AgentEntry entry : toClose) {
+            closeAgent(entry);
+        }
+        if (!toClose.isEmpty()) {
+            log.info("精准驱逐用户 UNIVERSAL 实例: userId={}, evicted={}, poolSize={}",
+                    userId, toClose.size(), pool.size());
+        }
+    }
+
+    /**
      * 关闭 Agent 实例（触发沙箱回收 + AgentState 落盘）。
      *
      * <p>当 AgentEntry 标记 sandboxRequired 时，通过 sandboxCoordinator
@@ -1129,14 +1241,15 @@ public class AegisAgentInstanceManager {
         // 沙箱上下文
         final boolean sandboxRequired;
         final long tenantId;
+        final long userId;          // 订阅事件精准驱逐用
         final String slotKey;
         final IsolationScope isolationScope;
-        // P1-5：per-entry 刷新锁，保证同一实例的异步刷新串行化（避免重复 MCP 网络 I/O）
+        // P1-5：per-entry 锁，保证同一实例的异步刷新串行化（避免重复 MCP 网络 I/O）
         final Object refreshLock = new Object();
 
         AgentEntry(HarnessAgent agent, String poolKey, String sessionId,
                    String agentType, long agentId,
-                   boolean sandboxRequired, long tenantId,
+                   boolean sandboxRequired, long tenantId, long userId,
                    String slotKey, IsolationScope isolationScope,
                    String bindingFingerprint) {
             this.agent = agent;
@@ -1148,6 +1261,7 @@ public class AegisAgentInstanceManager {
             this.bindingFingerprint = bindingFingerprint;
             this.sandboxRequired = sandboxRequired;
             this.tenantId = tenantId;
+            this.userId = userId;
             this.slotKey = slotKey;
             this.isolationScope = isolationScope;
         }
