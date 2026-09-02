@@ -1,18 +1,24 @@
+﻿# -*- coding: utf-8 -*-
 """
 PaddleOCR HTTP Service for Aegis Platform.
 
 提供 /ocr 端点，接受 Base64 编码的图片，返回结构化 OCR 结果。
-基于 PaddleOCR PP-OCRv5（中文/英文数字高精度识别）。
+基于 PaddleOCR 2.8.1 + PP-OCRv5（中文/英文数字高精度识别）。
 
 启动：uvicorn app:app --host 0.0.0.0 --port 8000
+
+API 版本说明：
+  paddlepaddle==2.6.2 + paddleocr==2.8.1 是稳定组合。
+  - PaddleOCR(use_angle_cls=True, lang='ch')  ✅ 有效
+  - ocr.ocr(img_bytes, cls=True)               ✅ cls 参数有效
 
 @author wang.zhen (Aegis Platform)
 """
 import base64
-import io
 import time
 from typing import List, Optional
 
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -23,7 +29,7 @@ app = FastAPI(title="PaddleOCR Service", version="1.0.0")
 # 全局 OCR 实例（CPU 模式）
 # use_angle_cls=True: 启用方向分类（0/90/180/270），提升旋转文字识别率
 # lang='ch': 中文（含英文数字符号），如需纯英文改 lang='en'
-ocr = PaddleOCR(use_angle_cls=True, lang='ch')
+ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)
 
 
 class OcrRequest(BaseModel):
@@ -64,16 +70,20 @@ def do_ocr(req: OcrRequest):
     """
     start = time.time()
 
-    # 1. Base64 解码为 PIL Image
+    # 1. Base64 解码为 numpy 数组（PaddleOCR 接受 np.ndarray 或 PIL.Image）
     try:
         img_bytes = base64.b64decode(req.image_base64)
+        # 转成 numpy (PIL 读一下 → np.array，兼容 jpg/png/webp 所有格式)
+        from PIL import Image
+        import io as _io
+        pil_img = Image.open(_io.BytesIO(img_bytes))
+        img_array = np.array(pil_img)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Base64 解码失败: {e}")
+        raise HTTPException(status_code=400, detail=f"图片解码失败: {e}")
 
-    # 2. PaddleOCR 推理
-    # ocr.ocr() 返回 [[ [box, (text, conf)], ... ]] 格式
+    # 2. PaddleOCR 推理（2.8.1 API: cls=True 表示在推理阶段做方向分类）
     try:
-        result = ocr.ocr(img_bytes, cls=True)
+        result = ocr.ocr(img_array, cls=True)
     except Exception as e:
         elapsed = int((time.time() - start) * 1000)
         return JSONResponse(status_code=500, content={
@@ -84,16 +94,20 @@ def do_ocr(req: OcrRequest):
         })
 
     # 3. 解析结果
+    # 2.8.1 返回格式: [[ [box, (text, conf)], [box, (text, conf)], ... ]]
     text_lines: List[TextLine] = []
     full_text_parts: List[str] = []
 
-    if result and result[0]:
+    if result and len(result) > 0 and result[0]:
         for line in result[0]:
-            box, (text, conf) = line
-            # box 格式 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] → 转成 int
-            bbox = [[int(p[0]), int(p[1])] for p in box]
-            text_lines.append(TextLine(text=text, confidence=float(conf), bbox=bbox))
-            full_text_parts.append(text)
+            try:
+                box, (text, conf) = line
+                bbox = [[int(p[0]), int(p[1])] for p in box]
+                text_lines.append(TextLine(text=str(text), confidence=float(conf), bbox=bbox))
+                full_text_parts.append(str(text))
+            except Exception:
+                # 跳过格式异常的行
+                continue
 
     elapsed = int((time.time() - start) * 1000)
 
@@ -102,7 +116,7 @@ def do_ocr(req: OcrRequest):
         text_lines=text_lines,
         full_text="\n".join(full_text_parts),
         elapsed_ms=elapsed,
-        table_markdown=None,  # 暂不做表格结构化（检测耗时且需额外依赖）
+        table_markdown=None,
     )
 
 

@@ -82,7 +82,7 @@ VALUES
 INSERT IGNORE INTO `sbx_pool`
   (`id`, `tenant_id`, `pool_code`, `namespace`, `min_instances`, `max_instances`, `idle_timeout_min`, `base_image_id`, `pool_name`, `pool_type`, `applicable_scene`, `network_policy`, `cpu_limit`, `mem_limit_mb`, `disk_limit_gb`, `status`, `last_reconcile_time`, `create_by`, `create_time`, `update_time`, `deleted`)
 VALUES
-  (1, 1, 'STANDARD', 'aegis-sbx-t1-standard', 1, 5, 30, 1, '标准执行池', 'STANDARD', '通用代码执行与文件处理场景', 'RESTRICTED', '1', 256, 5, 'ENABLED', NULL, NULL, NOW(), NOW(), 0);
+  (1, 1, 'STANDARD', 'aegis-sbx-t1-standard', 1, 5, 15, 1, '标准执行池', 'STANDARD', '通用代码执行与文件处理场景', 'RESTRICTED', '1', 256, 5, 'ENABLED', NULL, NULL, NOW(), NOW(), 0);
 
 -- -----------------------------------------------------------------------------
 -- 6. 内置工具 res_tool：16 个 BUILTIN 工具

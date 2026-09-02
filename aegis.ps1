@@ -554,13 +554,23 @@ if ($Action -eq "restart") {
     Start-Sleep -Seconds 2
     Resolve-Env | Out-Null
     Build-Backend
-    $infraOk = Start-Infra -SkipHealthyCheck
-    if ($infraOk) {
-        Start-Backend
-        Start-Frontend -Mode $Frontend
-        Write-Host ""
-        Write-Ok "Restart done"
+
+    # restart 只确保 infra 容器在跑，不重建镜像（避免每次都触发 PaddleOCR build）
+    Push-Location $INFRA_ROOT
+    docker compose up -d mysql redis nacos minio etcd milvus 2>&1 | Out-Null
+    # PaddleOCR 仅当镜像已存在时才启动；镜像不存在留给首次 start 或手动 infra
+    $paddleExists = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null | Where-Object { $_ -match "aegis-paddleocr" }
+    if ($paddleExists) {
+        docker compose --profile ocr up -d paddleocr 2>&1 | Out-Null
+    } else {
+        Write-Warn "PaddleOCR image not built yet, skipping. Run '.\aegis.ps1 start' to build it."
     }
+    Pop-Location
+
+    Start-Backend
+    Start-Frontend -Mode $Frontend
+    Write-Host ""
+    Write-Ok "Restart done"
     exit 0
 }
 

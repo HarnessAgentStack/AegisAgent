@@ -36,7 +36,11 @@ public interface SandboxInstanceMapper extends BaseMapper<SandboxInstance> {
      *
      * <p>{@code initialized=1}（干净 IDLE）无需回收，直接由分配器选取。
      *
-     * <p>空闲判定：last_recycle_time 早于阈值（回退 recycled_time，再回退 allocated_time）。
+     * <p>空闲判定：脏 IDLE 的空闲起点 = 最后一次心跳时间（回退到分配时间）。
+     * 使用 last_heartbeat_time 而非 last_recycle_time 的原因：
+     * OCCUPIED → IDLE 时 markIdleDirtyByInstanceId 会刷新 last_recycle_time 为 NOW()，
+     * 若用它判断空闲起点，每次释放都会重置回收计时器，导致实例无法按时回收。
+     * last_heartbeat_time 在 OCCUPIED 期间持续刷新，是真正的"最后活跃时间"。
      *
      * @param poolId        池 ID
      * @param idleThreshold 空闲超时时间点
@@ -45,19 +49,21 @@ public interface SandboxInstanceMapper extends BaseMapper<SandboxInstance> {
     @Select("SELECT * FROM sbx_instance " +
             "WHERE deleted = 0 AND pool_id = #{poolId} " +
             "AND status = 'IDLE' AND initialized IN (0, 2) " +
-            "AND COALESCE(last_recycle_time, recycled_time, allocated_time) < #{idleThreshold}")
+            "AND COALESCE(last_heartbeat_time, allocated_time) < #{idleThreshold}")
     List<SandboxInstance> selectDirtyIdleTimeout(@Param("poolId") Long poolId,
                                                   @Param("idleThreshold") LocalDateTime idleThreshold);
 
     /**
      * 扫描所有池的待回收 IDLE 实例（initialized ∈ {0, 2}）且空闲超时（跨池回收扫描）。
      *
+     * <p>空闲判定同 {@link #selectDirtyIdleTimeout}：COALESCE(last_heartbeat_time, allocated_time)。
+     *
      * @param idleThreshold 空闲超时时间点
      * @return 待回收实例列表
      */
     @Select("SELECT * FROM sbx_instance " +
             "WHERE deleted = 0 AND status = 'IDLE' AND initialized IN (0, 2) " +
-            "AND COALESCE(last_recycle_time, recycled_time, allocated_time) < #{idleThreshold}")
+            "AND COALESCE(last_heartbeat_time, allocated_time) < #{idleThreshold}")
     List<SandboxInstance> selectAllDirtyIdleTimeout(@Param("idleThreshold") LocalDateTime idleThreshold);
 
     // =========================================================================
@@ -91,20 +97,21 @@ public interface SandboxInstanceMapper extends BaseMapper<SandboxInstance> {
     // =========================================================================
 
     /**
-     * 按池查询 IDLE 实例（按 last_recycle_time 升序），用于缩容时优先销毁最旧的。
+     * 按池查询 IDLE 实例（按最后活跃时间升序），用于缩容时优先销毁最久没被使用的。
      *
      * <p>增加最小空闲时长校验，确保实例空闲超过阈值后才能被缩容销毁。
+     * 同回收逻辑，使用 COALESCE(last_heartbeat_time, allocated_time) 判断空闲起点。
      *
      * @param poolId          池 ID
      * @param limit           最多返回的实例数
-     * @param minIdleMinutes  最小空闲时长（分钟），实例的 last_recycle_time 须早于该阈值
-     * @return IDLE 实例列表（按回收时间升序）
+     * @param minIdleMinutes  最小空闲时长（分钟），实例的最后活跃时间须早于该阈值
+     * @return IDLE 实例列表（按最后活跃时间升序）
      */
     @Select("SELECT * FROM sbx_instance " +
             "WHERE deleted = 0 AND pool_id = #{poolId} AND status = 'IDLE' " +
-            "AND COALESCE(last_recycle_time, recycled_time, allocated_time) <= " +
+            "AND COALESCE(last_heartbeat_time, allocated_time) <= " +
             "DATE_SUB(NOW(), INTERVAL #{minIdleMinutes} MINUTE) " +
-            "ORDER BY COALESCE(last_recycle_time, recycled_time, allocated_time) ASC " +
+            "ORDER BY COALESCE(last_heartbeat_time, allocated_time) ASC " +
             "LIMIT #{limit}")
     List<SandboxInstance> selectIdleForScaleDown(@Param("poolId") Long poolId,
                                                   @Param("limit") int limit,

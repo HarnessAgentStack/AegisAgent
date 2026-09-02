@@ -3,6 +3,14 @@
 # 基于 python:3.10-slim 构建，pip install paddlepaddle + paddleocr + FastAPI。
 # CPU-only 模式，适合 OCR 文字识别（不依赖 GPU）。
 #
+# 稳定组合（2026-09-02 验证通过）：
+#   paddlepaddle==2.6.2  +  paddleocr==2.8.1
+#
+# WARNING: 不要用 >= 范围安装！paddlepaddle 3.x + paddleocr 3.x 在某些平台
+#          （尤其是 Windows Docker Desktop + WSL2）有 oneDNN / PIR 算子兼容 bug
+#          （ConvertPirAttribute2RuntimeAttribute not support），导致推理直接崩溃。
+#          钉死 2.6.2 + 2.8.1 是经过生产验证的稳定组合。
+#
 # 首次启动会自动下载 PP-OCRv5 模型权重（~10MB），之后缓存到 /root/.paddleocr。
 #
 # 使用: docker run -p 8000:8000 aegis-paddleocr:latest
@@ -27,15 +35,17 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# pip 换清华镜像（容器内默认网络限速时 --network host 同样生效）
-ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+# pip 换清华镜像
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 
-RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --upgrade pip
+RUN pip install --no-cache-dir --upgrade pip
 
-RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} \
-    paddlepaddle>=2.6.2 \
-    paddleocr>=2.8.0 \
+# ============ 版本必须钉死，不能用 >= ============
+# paddlepaddle 2.6.2 + paddleocr 2.8.1 是 CPU-only 稳定组合
+RUN pip install --no-cache-dir \
+    paddlepaddle==2.6.2 \
+    paddleocr==2.8.1 \
     fastapi>=0.110.0 \
     "uvicorn[standard]>=0.29.0" \
     Pillow>=9.0.0 \
