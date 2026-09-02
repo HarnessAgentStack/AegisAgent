@@ -1,9 +1,6 @@
 package com.aegis.runtime.integration.tool;
 
 import com.alibaba.fastjson2.JSON;
-import com.aegis.core.dto.security.PolicyDecision;
-import com.aegis.core.dto.security.SecurityPolicyContext;
-import com.aegis.runtime.service.policy.AegisSecurityPolicyEngine;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolResultState;
@@ -12,7 +9,6 @@ import io.agentscope.core.permission.PermissionDecision;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.ToolCallParam;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -48,10 +44,6 @@ import java.util.Map;
 @Slf4j
 @Component
 public class AegisHttpTool extends ToolBase {
-
-    /** v4.0 新增：统一安全策略引擎（出站策略联动） */
-    @Autowired
-    private AegisSecurityPolicyEngine securityPolicyEngine;
 
     /** http_request 的 inputSchema（JSON Schema） */
     private static final Map<String, Object> INPUT_SCHEMA = JSON.parseObject(
@@ -135,26 +127,6 @@ public class AegisHttpTool extends ToolBase {
         if (violation != null) {
             log.warn("http_request SSRF 拦截: url={}, reason={}", url, violation);
             return Mono.just(PermissionDecision.deny("URL blocked: " + violation));
-        }
-
-        // 2. v4.0 新增：出站策略联动（白名单域名/黑名单 IP/CIDR）
-        if (securityPolicyEngine != null) {
-            try {
-                PolicyDecision decision = securityPolicyEngine.evaluateOutboundPolicy(
-                        SecurityPolicyContext.builder()
-                                .action(SecurityPolicyContext.Action.NETWORK_ACCESS)
-                                .content(url)
-                                .build());
-                if (decision.isReject()) {
-                    log.warn("http_request 出站策略拦截: url={}, reason={}", url, decision.getReason());
-                    return Mono.just(PermissionDecision.deny("出站策略拒绝: " + decision.getReason()));
-                }
-                if (decision.isAuditOnly()) {
-                    log.debug("http_request 出站策略审计放行: url={}", url);
-                }
-            } catch (Exception e) {
-                log.error("http_request 出站策略评估异常，透传: url={}", url, e);
-            }
         }
 
         return Mono.just(PermissionDecision.passthrough("url passed all checks"));

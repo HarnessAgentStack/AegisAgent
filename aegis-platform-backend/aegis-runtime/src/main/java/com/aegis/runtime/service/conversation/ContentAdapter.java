@@ -35,8 +35,7 @@ public class ContentAdapter {
     /**
      * 附件区起始标记（用户手输文本与附件解析内容的分界）。
      *
-     * <p>{@link com.aegis.runtime.integration.middleware.AegisSecurityMiddleware}
-     * 依据本标记拆分检测：手输部分命中 BLOCK 词拦截，附件部分降级脱敏放行。
+     * <p>安全中间件依据本标记拆分检测：手输部分命中 BLOCK 词拦截，附件部分降级脱敏放行。
      * 标记变更须两处同步（本常量为单一事实来源）。</p>
      */
     public static final String ATTACHMENT_SECTION_MARKER = "\n\n---\n📎 用户上传了以下附件：\n";

@@ -24,7 +24,7 @@ import org.springframework.stereotype.Component;
  *   <li>智能体发布/版本变更 → 失效模板缓存（AgentPoolManager.invalidateTemplate）+ 驱逐空闲实例</li>
  * </ul>
  *
- * <p>复用 {@link SecurityPolicyCacheInvalidator} 已验证的 Redis pub/sub 模式，
+ * <p>采用已验证的 Redis pub/sub 模式，
  * 与安全策略事件总线并行运行，各自独立频道，互不干扰。
  *
  * <p>语义保证：运行中会话沿用旧资源至会话结束，新会话即刻生效。

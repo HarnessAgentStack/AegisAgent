@@ -26,7 +26,7 @@ import org.springframework.security.web.server.authentication.AuthenticationWebF
  * <ul>
  *   <li>接口级：JWT + RBAC 路径授权，按角色控制接口访问</li>
  *   <li>资源级：@ResourceOwner 注解 + AOP 切面，校验资源所有权</li>
- *   <li>运行时：AegisSecurityPolicyEngine，工具调用安全策略</li>
+ *   <li>运行时：AgentScope PermissionSystem，工具调用安全策略（Phase 1: delegated to AgentScope PermissionSystem）</li>
  * </ul>
  *
  * <h3>路径权限矩阵</h3>

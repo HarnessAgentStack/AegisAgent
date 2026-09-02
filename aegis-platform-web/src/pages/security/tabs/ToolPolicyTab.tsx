@@ -31,6 +31,7 @@ import {
   updateToolPolicy,
 } from '@/api/security';
 import {
+  GOVERNANCE_TIER_OPTIONS,
   LEVEL_LABEL,
   LEVEL_POLICY_DETAILS,
   MATRIX_LEVEL_COLUMNS,
@@ -112,7 +113,7 @@ const ToolPolicyTab: React.FC = () => {
   /** 打开新增策略弹窗 */
   const openToolModal = () => {
     toolForm.resetFields();
-    toolForm.setFieldsValue({ toolType: 'READONLY', securityLevel: 1, action: 'ALLOW', enabled: true });
+    toolForm.setFieldsValue({ toolType: 'READONLY', securityLevel: 1, action: 'ALLOW', governanceTierMin: '', enabled: true });
     setToolModalVisible(true);
   };
 
@@ -406,6 +407,15 @@ const ToolPolicyTab: React.FC = () => {
                 rules={[{ required: true, message: '请选择处置动作' }]}
               >
                 <Select options={TOOL_ACTION_OPTIONS} placeholder="请选择" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="governanceTierMin"
+                label="最低治理档位"
+                tooltip="指定后仅该档位及以上生效；空值=所有档位生效"
+              >
+                <Select options={GOVERNANCE_TIER_OPTIONS} placeholder="所有档位" allowClear />
               </Form.Item>
             </Col>
             <Col span={12}>

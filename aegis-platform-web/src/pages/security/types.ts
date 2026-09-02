@@ -34,6 +34,7 @@ export interface ToolPolicyDTO {
   toolType?: string;
   securityLevel?: number;
   action?: string;
+  governanceTierMin?: string;
   description?: string;
   enabled?: boolean;
   [key: string]: unknown;
@@ -44,6 +45,7 @@ export interface ToolPolicyFormValues {
   toolType: string;
   securityLevel: number;
   action: string;
+  governanceTierMin?: string;
   description?: string;
   enabled: boolean;
 }

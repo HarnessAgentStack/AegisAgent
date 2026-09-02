@@ -79,8 +79,6 @@ public class AegisToolBridge {
     private final ToolResultCache toolResultCache;
     private final SkillExecutor skillExecutor;
     private final SkillCreatorOrchestrator skillCreatorOrchestrator;
-    /** v4.1: 统一安全策略引擎（MCP 工具出站联动） */
-    private final com.aegis.runtime.service.policy.AegisSecurityPolicyEngine securityPolicyEngine;
     /** MCP 订阅 Mapper，用于查询用户订阅的 MCP 服务 */
     private final McpSubscriptionMapper mcpSubscriptionMapper;
     /** 技能订阅 Mapper，用于查询用户订阅的技能 */
@@ -250,14 +248,6 @@ public class AegisToolBridge {
             if ("network_request".equals(toolCode)) {
                 if (!networkRegistered) {
                     AegisHttpTool networkRequestTool = new AegisHttpTool("network_request");
-                    // 手动注入 securityPolicyEngine（因为不是 Spring 管理的 Bean）
-                    try {
-                        var field = AegisHttpTool.class.getDeclaredField("securityPolicyEngine");
-                        field.setAccessible(true);
-                        field.set(networkRequestTool, securityPolicyEngine);
-                    } catch (Exception e) {
-                        log.warn("设置 network_request securityPolicyEngine 失败: {}", e.getMessage());
-                    }
                     toolkit.registerAgentTool(networkRequestTool);
                     networkRegistered = true;
                     log.debug("注册 AegisHttpTool（network_request 别名）: toolCode={}", toolCode);
@@ -310,7 +300,7 @@ public class AegisToolBridge {
             }
             int registered = 0;
             for (McpSchema.Tool mcpTool : mcpTools) {
-                AegisMcpTool asTool = AegisMcpTool.of(mcpInvoker, toolResultCache, mcpServiceId, mcpTool, endpoint, securityPolicyEngine);
+                AegisMcpTool asTool = AegisMcpTool.of(mcpInvoker, toolResultCache, mcpServiceId, mcpTool, endpoint);
                 toolkit.registerAgentTool(asTool);
                 registered++;
                 log.debug("注册 MCP 工具: serviceId={}, toolName={}, endpoint={}", mcpServiceId, mcpTool.name(), endpoint);
@@ -641,7 +631,7 @@ public class AegisToolBridge {
             int registered = 0;
             for (McpSchema.Tool mcpTool : mcpTools) {
                 AegisMcpTool asTool = AegisMcpTool.of(
-                        mcpInvoker, toolResultCache, mcpServiceId.toString(), mcpTool, endpoint, securityPolicyEngine);
+                        mcpInvoker, toolResultCache, mcpServiceId.toString(), mcpTool, endpoint);
                 toolkit.registerAgentTool(asTool);
                 registered++;
                 log.info("registerToolsFromMcpService: 注册工具, serviceId={}, toolName={}, endpoint={}, description={}",

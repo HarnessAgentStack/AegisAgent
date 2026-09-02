@@ -28,7 +28,7 @@ const SecurityPage: React.FC = () => {
     <div>
       <PageHeader
         title="安全策略管理"
-        desc="工具管控、敏感词、脱敏、出站"
+        desc="权限规则、敏感词、脱敏、出站"
         extra={
           <Space>
             <SafetyCertificateOutlined style={{ color: COLOR.primary, fontSize: 18 }} />

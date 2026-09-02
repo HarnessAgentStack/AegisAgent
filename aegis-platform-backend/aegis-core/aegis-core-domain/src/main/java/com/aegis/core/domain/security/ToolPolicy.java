@@ -51,4 +51,6 @@ public class ToolPolicy extends TenantEntity {
     private String description;
     /** 是否启用，true 生效，false 暂停策略 */
     private Boolean enabled;
+    /** 最低生效治理档位 STANDARD/ENHANCED/STRICT，NULL=所有档位生效 */
+    private String governanceTierMin;
 }

@@ -6,7 +6,6 @@ import com.aegis.core.domain.agent.AgentConfig;
 import com.aegis.core.dto.agent.AgentEvent;
 import com.aegis.core.dto.chat.ChatRequest;
 import com.aegis.core.dto.chat.SkillRef;
-import com.aegis.core.dto.security.PolicyDecision;
 import com.aegis.core.common.error.BusinessException;
 import com.aegis.core.common.web.ResultCode;
 import com.aegis.core.enums.session.SessionStatus;
@@ -290,19 +289,6 @@ public class TaskExecutionService {
         List<Msg> resumeMsgs = hitlFlowService.buildResumeMessages(ctx.getSessionId());
         if (!resumeMsgs.isEmpty()) {
             msgs.addAll(resumeMsgs);
-            // 双审批修复：将已审批工具名标记到 ctx.approvedTools，
-            // 使第二轮 onActing 中间件通过 isToolApproved() 直接放行。
-            // 背景：AS ConfirmResult 规则学习只覆盖精确 toolName 的 ASK 规则，
-            //       不覆盖 onActing 中的通配符 HITL 规则，故需在此补充标记避免重复触发 ASK。
-            List<String> approvedToolNames = hitlFlowService.listApprovedToolNames(ctx.getSessionId());
-            for (String tn : approvedToolNames) {
-                ctx.markToolApproved(tn,
-                        PolicyDecision.allow(null, "hitl-resume-approved", null, null));
-            }
-            if (!approvedToolNames.isEmpty()) {
-                log.info("HITL 恢复：标记已审批工具免重复审批: sessionId={}, tools={}",
-                        ctx.getSessionId(), approvedToolNames);
-            }
             log.info("HITL 恢复：注入 ConfirmResult: sessionId={}, count={}, hasUserMsg={}",
                     ctx.getSessionId(), resumeMsgs.size(), userMessage != null && !userMessage.isEmpty());
         }

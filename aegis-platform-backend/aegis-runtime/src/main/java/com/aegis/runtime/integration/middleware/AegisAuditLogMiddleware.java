@@ -20,11 +20,8 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
-
-import com.aegis.core.dto.security.PolicyDecision;
 
 /**
  * 审计日志中间件（AgentScope onAgent 触发点实现）。
@@ -32,21 +29,13 @@ import com.aegis.core.dto.security.PolicyDecision;
  * <h3>职责</h3>
  * <ul>
  *   <li>preCall（next 之前）：异步记录 SESSION 类型 CHAT_START（RECORDED，保留90天）</li>
- *   <li>事件流 doOnNext：实时消费 {@link AegisTaskContext#drainPendingAuditDecisions()}，
- *       将每次策略决策即时写入 POLICY_DECISION 审计日志（不等待会话结束）</li>
  *   <li>postCall（doFinally）：
  *     <ul>
  *       <li>SESSION 类型 CHAT_COMPLETE（SUCCESS/ALERT，保留90天）</li>
  *       <li>若 context.isBlocked()：SECURITY 类型 SECURITY_BLOCK（BLOCKED，保留365天）</li>
- *       <li>兜底 drain：异常/中断路径下未消费的决策在此补记，确保零遗漏</li>
  *     </ul>
  *   </li>
  * </ul>
- *
- * <p><b>POLICY_DECISION 实时写入</b>：2026-08 修复——原实现在 doFinally 中一次性遍历
- * {@code policyDecisions}（Map 按 toolCode 去重），存在两个缺陷：① 同一工具被多次
- * 决策（如 DENY→APPROVE 升级）时仅保留最后一条；② 决策发生在会话中途却要等会话
- * 结束才落库。现改为 doOnNext 实时消费待审计队列，每次决策独立成一条审计记录。
  *
  * <p>审计写入失败不阻塞主流程，仅记录错误日志。
  *
@@ -90,25 +79,11 @@ public class AegisAuditLogMiddleware implements MiddlewareBase, OrderedMiddlewar
 
         // P0 MW-02 修复：移除 doOnError，仅保留 doFinally（避免 error 时 writePostCall 双触发）
         return next.apply(input)
-                .doOnNext(event -> drainAndWritePolicyDecisions(taskCtx))
                 .doFinally(signalType -> writePostCall(taskCtx));
     }
 
     /**
-     * 消费待审计策略决策队列，实时写入 POLICY_DECISION 审计日志。
-     *
-     * <p>在事件流 doOnNext 中调用：策略决策由安全中间件在 onActing 阶段产生
-     * （事件流的内部环节），决策产生的下一帧事件流经此处时即被消费写入。
-     */
-    private void drainAndWritePolicyDecisions(AegisTaskContext ctx) {
-        List<Map.Entry<String, PolicyDecision>> pending = ctx.drainPendingAuditDecisions();
-        for (Map.Entry<String, PolicyDecision> entry : pending) {
-            writePolicyDecisionLog(ctx, entry.getKey(), entry.getValue());
-        }
-    }
-
-    /**
-     * postCall：记录 CHAT_COMPLETE + SECURITY_BLOCK（若被拦截）+ 决策兜底补记。
+     * postCall：记录 CHAT_COMPLETE + SECURITY_BLOCK（若被拦截）。
      */
     private void writePostCall(AegisTaskContext ctx) {
         // CHAT_COMPLETE
@@ -127,29 +102,6 @@ public class AegisAuditLogMiddleware implements MiddlewareBase, OrderedMiddlewar
                     AuditResult.BLOCKED, 365,
                     toJson(blockDetail));
         }
-
-        // 兜底：异常/中断路径下事件流提前终止，未消费的决策在此补记
-        drainAndWritePolicyDecisions(ctx);
-    }
-
-    /**
-     * 写入单条 POLICY_DECISION 审计日志。
-     */
-    private void writePolicyDecisionLog(AegisTaskContext ctx, String toolCode, PolicyDecision decision) {
-        if (decision == null) {
-            return;
-        }
-        Map<String, Object> decisionDetail = new LinkedHashMap<>(6);
-        decisionDetail.put("toolCode", toolCode);
-        decisionDetail.put("decision", decision.getDecision() != null ? decision.getDecision().name() : "UNKNOWN");
-        decisionDetail.put("reason", decision.getReason());
-        decisionDetail.put("policyId", decision.getPolicyId());
-        decisionDetail.put("ruleId", decision.getRuleId());
-        decisionDetail.put("resourceId", decision.getResourceId());
-        writeAuditLog(ctx, AuditLogType.POLICY_DECISION, "POLICY_DECISION",
-                "TOOL", toolCode,
-                AuditResult.RECORDED, 90,
-                toJson(decisionDetail));
     }
 
     /**

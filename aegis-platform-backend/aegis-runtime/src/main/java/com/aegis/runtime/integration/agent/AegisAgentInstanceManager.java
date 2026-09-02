@@ -54,9 +54,7 @@ import com.aegis.runtime.integration.middleware.AegisHitlRuleLoader;
 import com.aegis.core.enums.sandbox.IsolationStrategy;
 import com.aegis.core.enums.agent.GovernanceTier;
 import com.aegis.core.enums.common.SecurityLevel;
-import com.aegis.core.dto.security.PolicyDecision;
-import com.aegis.core.dto.security.SecurityPolicyContext;
-import com.aegis.runtime.service.policy.AegisSecurityPolicyEngine;
+import com.aegis.runtime.integration.security.AegisPermissionRuleLoader;
 import com.aegis.runtime.service.agent.ResourceQueryService;
 
 /**
@@ -113,9 +111,9 @@ public class AegisAgentInstanceManager {
     /** HITL 规则加载器，将数据库审批配置转为权限规则注入权限上下文，运行时由框架权限引擎自动触发审批 */
     private final AegisHitlRuleLoader hitlRuleLoader;
 
-    /** 安全策略引擎，根据资源安全等级生成工具访问决策 */
+    /** AgentScope PermissionRule 加载器，从 sec_tool_policy 表加载策略矩阵映射为 PermissionBehavior */
     @Autowired
-    private AegisSecurityPolicyEngine securityPolicyEngine;
+    private AegisPermissionRuleLoader permissionRuleLoader;
 
     /** 资源查询服务，加载智能体定义获取治理档位 */
     @Autowired
@@ -553,7 +551,7 @@ public class AegisAgentInstanceManager {
 
         // 3. 构建权限上下文（必须在 loadToolkit 之后构建，才能扫描 Toolkit 中的动态工具
         //    注册 ALLOW 规则，避免 DONT_ASK 模式下 PermissionEngine 对无规则工具默认 DENY）
-        PermissionContextState permissionContext = buildPermissionContext(agentId, toolkit);
+        PermissionContextState permissionContext = buildPermissionContext(agentId, tenantId, toolkit);
 
         // 4. 装配 Builder 基础属性
         IsolationScope isolationScope = resolveIsolationScope(agentType);
@@ -888,7 +886,7 @@ public class AegisAgentInstanceManager {
      * @param toolkit 已加载工具的 Toolkit，用于扫描动态工具注册 ALLOW 规则
      * @return 动态构建的 PermissionContextState
      */
-    private PermissionContextState buildPermissionContext(long agentId, Toolkit toolkit) {
+    private PermissionContextState buildPermissionContext(long agentId, long tenantId, Toolkit toolkit) {
         // PermissionMode.DONT_ASK：对已注册规则的工具按规则评估；对无规则工具默认 DENY
         // （因为无人回答审批请求）。此模式下必须确保 Toolkit 中每个工具都有对应规则，
         // 否则动态工具（skill_creator、订阅技能、MCP 工具）会被 PermissionEngine 默认拒绝。
@@ -936,18 +934,27 @@ public class AegisAgentInstanceManager {
             }
 
             SecurityLevel toolLevel = mapToolLevel(risk);
+            int levelNum = toolLevel == SecurityLevel.L1 ? 1 : toolLevel == SecurityLevel.L2 ? 2 : toolLevel == SecurityLevel.L3 ? 3 : 4;
 
-            PolicyDecision decision = securityPolicyEngine.evaluateToolPolicy(
-                    SecurityPolicyContext.builder()
-                            .action(SecurityPolicyContext.Action.TOOL_CALL)
-                            .resourceCode(toolName)
-                            .resourceLevel(toolLevel)
-                            .build());
-            applyDecision(permBuilder, toolName, decision);
-            if (decision == null || decision.isAllow()) {
-                allowCount++;
-            } else {
-                askCount++;
+            PermissionBehavior behavior = permissionRuleLoader.evaluateBehavior(
+                    tenantId, tier.name(), risk.getToolType(), levelNum);
+            switch (behavior) {
+                case ALLOW -> {
+                    permBuilder.addAllowRule(toolName, new PermissionRule(toolName, null, PermissionBehavior.ALLOW, "aegis-db-policy"));
+                    allowCount++;
+                }
+                case ASK -> {
+                    permBuilder.addAskRule(toolName, new PermissionRule(toolName, null, PermissionBehavior.ASK, "aegis-db-policy"));
+                    askCount++;
+                }
+                case DENY -> {
+                    permBuilder.addDenyRule(toolName, new PermissionRule(toolName, null, PermissionBehavior.DENY, "aegis-db-policy"));
+                    askCount++;
+                }
+                default -> {
+                    permBuilder.addAllowRule(toolName, new PermissionRule(toolName, null, PermissionBehavior.ALLOW, "aegis-db-policy-default"));
+                    allowCount++;
+                }
             }
         }
 
@@ -1011,28 +1018,6 @@ public class AegisAgentInstanceManager {
             case MEDIUM -> SecurityLevel.L2;
             default -> SecurityLevel.L1;
         };
-    }
-
-    /**
-     * 将策略决策应用到 PermissionContextState.Builder。
-     */
-    private void applyDecision(PermissionContextState.Builder permBuilder,
-                               String toolCode, PolicyDecision decision) {
-        if (decision == null || decision.isAllow()) {
-            permBuilder.addAllowRule(toolCode, new PermissionRule(
-                    toolCode, null, PermissionBehavior.ALLOW, "aegis-policy-engine"));
-        } else if (decision.isAsk()) {
-            permBuilder.addAskRule(toolCode, new PermissionRule(
-                    toolCode, null, PermissionBehavior.ASK,
-                    decision.getReason() != null ? decision.getReason() : "aegis-policy-ask"));
-        } else if (decision.isReject()) {
-            permBuilder.addDenyRule(toolCode, new PermissionRule(
-                    toolCode, null, PermissionBehavior.DENY,
-                    decision.getReason() != null ? decision.getReason() : "aegis-policy-reject"));
-        } else if (decision.isMask()) {
-            permBuilder.addAllowRule(toolCode, new PermissionRule(
-                    toolCode, null, PermissionBehavior.ALLOW, "aegis-policy-masked"));
-        }
     }
 
     /**
@@ -1102,7 +1087,7 @@ public class AegisAgentInstanceManager {
     }
 
     /**
-     * P0-2：触发空闲实例驱逐（HITL/安全策略变更后由 SecurityPolicyCacheInvalidator 调用）。
+     * P0-2：触发空闲实例驱逐（HITL/安全策略变更后调用）。
      *
      * <p>复用 TTL 驱逐通道（idleTimeoutMinutes 阈值 + 优雅 closeAgent 落盘 + 沙箱释放），
      * 仅驱逐空闲超阈值的实例——运行中实例（lastUsedAt 近期）不被驱逐，

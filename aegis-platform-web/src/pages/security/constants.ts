@@ -23,7 +23,7 @@ export const COLOR = {
 
 /** 子标签定义（已移除独立的"安全级别"TAB，安全级别详情嵌入工具管控决策矩阵） */
 export const SECURITY_TABS = [
-  { key: 'tool', label: '🔧 工具管控' },
+  { key: 'tool', label: '🛡️ 权限规则' },
   { key: 'word', label: '📝 敏感词库' },
   { key: 'mask', label: '🎭 脱敏规则' },
   { key: 'out', label: '🌐 出站策略' },
@@ -106,6 +106,21 @@ export const TOOL_ACTION_OPTIONS = [
   { value: 'APPROVE', label: '审批' },
   { value: 'REJECT', label: '拒绝' },
 ];
+
+/** 治理档位选项（NULL=所有档位生效；指定后仅 >= 该档位生效） */
+export const GOVERNANCE_TIER_OPTIONS = [
+  { value: '', label: '所有档位' },
+  { value: 'STANDARD', label: 'STANDARD 标准' },
+  { value: 'ENHANCED', label: 'ENHANCED 增强' },
+  { value: 'STRICT', label: 'STRICT 严格' },
+];
+
+export const GOVERNANCE_TIER_MAP: Record<string, { text: string; color: string }> = {
+  '': { text: '所有', color: '#6b7280' },
+  STANDARD: { text: '标准', color: COLOR.success },
+  ENHANCED: { text: '增强', color: COLOR.warning },
+  STRICT: { text: '严格', color: COLOR.danger },
+};
 
 export const TOOL_ACTION_MAP: Record<string, { text: string; color: string }> = {
   ALLOW: { text: '放行', color: COLOR.success },

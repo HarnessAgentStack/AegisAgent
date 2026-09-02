@@ -9,14 +9,9 @@ import com.aegis.core.dto.chat.SessionResourcesRef;
 import com.aegis.core.domain.agent.AgentDef;
 import com.aegis.core.domain.resource.KnowledgeBase;
 import com.aegis.core.domain.resource.McpService;
-import com.aegis.core.dto.security.PolicyDecision;
-import com.aegis.core.dto.security.SecurityPolicyContext;
 import com.aegis.core.enums.agent.AgentLifeStatus;
 import com.aegis.core.enums.agent.GovernanceTier;
-import com.aegis.core.enums.common.SecurityLevel;
 import com.aegis.core.enums.model.ProviderStatus;
-import com.aegis.core.enums.resource.ResourceType;
-import com.aegis.runtime.service.policy.AegisSecurityPolicyEngine;
 import com.aegis.runtime.service.agent.ResourceQueryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -49,63 +44,25 @@ import java.util.stream.Stream;
 public class AgentResourceController {
 
     private final ResourceQueryService resourceQueryService;
-    private final AegisSecurityPolicyEngine securityPolicyEngine;
 
     /**
-     * 按资源安全等级标记知识库资源项的可选性。
+     * 标记知识库资源项的可选性。
      *
-     * <p>治理档位仅决定沙箱隔离强度，不参与资源访问决策；
-     * 资源安全等级直映访问行为（L1/L2 放行，L3 需审批，L4 拒绝）。
-     * L3/L4 的知识库标记 {@code selectable=false} 并附原因，与 {@code AegisRagMiddleware}
-     * 的 KB gate 共用同一策略引擎与评估入口。
+     * <p>原基于策略引擎的等级门控已随策略引擎下线，当前所有知识库默认可选，
+     * 返回与输入等量的资源项列表（不修改 selectable 标记）。入参 agentId/tenantId
+     * 保留以兼容调用方签名。
      *
      * @param kbItems  候选知识库资源项
-     * @param agentId  智能体 ID（日志用）
-     * @param tenantId 租户 ID
-     * @return 标记后的资源项列表（数量不变，仅标记 selectable/blockReason）
+     * @param agentId  智能体 ID（保留以兼容调用方签名）
+     * @param tenantId 租户 ID（保留以兼容调用方签名）
+     * @return 资源项列表（数量不变，全部可选）
      */
     private List<KbResourceItem> markKbItemsByResourceLevel(List<KbResourceItem> kbItems,
                                                             Long agentId, Long tenantId) {
         if (kbItems == null || kbItems.isEmpty()) {
             return Collections.emptyList();
         }
-        List<KbResourceItem> marked = new ArrayList<>(kbItems.size());
-        for (KbResourceItem item : kbItems) {
-            try {
-                SecurityLevel kbLevel;
-                try {
-                    kbLevel = item.getSecurityLevel() != null
-                            ? SecurityLevel.valueOf(item.getSecurityLevel()) : SecurityLevel.L1;
-                } catch (IllegalArgumentException e) {
-                    kbLevel = SecurityLevel.L1;
-                }
-                SecurityPolicyContext gateCtx = SecurityPolicyContext.builder()
-                        .tenantId(tenantId)
-                        .agentId(agentId)
-                        .resourceType(ResourceType.KNOWLEDGE_BASE)
-                        .resourceLevel(kbLevel)
-                        .action(SecurityPolicyContext.Action.KB_RETRIEVE)
-                        .build();
-                PolicyDecision decision = securityPolicyEngine.evaluateKbRetrievePolicy(gateCtx);
-                if (decision != null && !decision.isAllow()) {
-                    String reason = decision.getReason() != null ? decision.getReason()
-                            : "知识库安全等级不允许直接检索";
-                    log.info("资源面板标记知识库不可选(等级限制): agentId={}, kbId={}, kbLevel={}, reason={}",
-                            agentId, item.getId(), item.getSecurityLevel(), reason);
-                    marked.add(item.toBuilder()
-                            .selectable(false)
-                            .blockReason(String.format("%s（库等级 %s）", reason, item.getSecurityLevel()))
-                            .build());
-                } else {
-                    marked.add(item);
-                }
-            } catch (Exception e) {
-                // 策略引擎异常时保守放行（运行时 KB gate 仍会拦截），避免面板整体不可用
-                log.warn("知识库等级评估异常，保守保留可选: kbId={}", item.getId(), e);
-                marked.add(item);
-            }
-        }
-        return marked;
+        return new ArrayList<>(kbItems);
     }
 
     /**

@@ -25,13 +25,14 @@ export interface PageQuery {
 
 const SECURITY_BASE = '/admin/security';
 
-/** 工具策略（对齐后端 ToolPolicyVO） */
+/** 工具策略（对齐后端 ToolPolicyVO，含 governanceTierMin 维度） */
 export interface ToolPolicy {
   id?: string;
   tenantId?: string;
   toolType?: string;
   securityLevel?: number;
   action?: string;
+  governanceTierMin?: string;
   description?: string;
   enabled?: boolean;
   createTime?: string;

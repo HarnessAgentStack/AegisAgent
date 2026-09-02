@@ -3,7 +3,6 @@ package com.aegis.runtime.service.conversation;
 import com.aegis.core.domain.agent.AgentConfig;
 import com.aegis.core.domain.agent.AgentDef;
 import com.aegis.core.domain.agent.AgentBinding;
-import com.aegis.core.dto.security.PolicyDecision;
 import com.aegis.core.enums.agent.GovernanceTier;
 import com.aegis.core.enums.common.SecurityLevel;
 import com.aegis.runtime.integration.pool.AgentRuntimeTemplate;
@@ -16,12 +15,8 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentLinkedQueue;
 
 import com.aegis.core.enums.sandbox.IsolationStrategy;
 import com.aegis.core.dto.chat.SessionResourcesRef;
@@ -174,12 +169,6 @@ public class AegisTaskContext implements Serializable {
     /** 工具安全等级元数据（toolCode → SecurityLevel，由 AegisToolBridge 注入） */
     private Map<String, SecurityLevel> toolSecurityLevels;
 
-    /** 策略决策记录（toolCode → PolicyDecision，供审计使用） */
-    private Map<String, PolicyDecision> policyDecisions;
-
-    /** 待审计的策略决策队列（toolCode → PolicyDecision），供审计中间件实时消费 */
-    private transient ConcurrentLinkedQueue<Map.Entry<String, PolicyDecision>> pendingAuditDecisions;
-
     /**
      * 获取治理档位，安全获取（兼容 null）。
      */
@@ -201,49 +190,6 @@ public class AegisTaskContext implements Serializable {
         if (toolSecurityLevels == null || toolCode == null) return null;
         return toolSecurityLevels.get(toolCode);
     }
-
-    /**
-     * 记录策略决策。
-     *
-     * <p>同时入待审计队列：审计中间件在事件流的 doOnNext 中调用
-     * {@link #drainPendingAuditDecisions()} 实时消费，确保每次策略决策
-     * （含同一工具被多次决策的升级场景）均有独立审计记录。
-     */
-    public void recordPolicyDecision(String toolCode, PolicyDecision decision) {
-        if (policyDecisions == null) {
-            policyDecisions = new HashMap<>();
-        }
-        policyDecisions.put(toolCode, decision);
-        if (pendingAuditDecisions == null) {
-            pendingAuditDecisions = new ConcurrentLinkedQueue<>();
-        }
-        pendingAuditDecisions.add(new AbstractMap.SimpleEntry<>(toolCode, decision));
-    }
-
-    /**
-     * 取出并清空待审计的策略决策。
-     *
-     * @return 待审计决策列表（toolCode → PolicyDecision），无待审计项时返回空列表
-     */
-    public List<Map.Entry<String, PolicyDecision>> drainPendingAuditDecisions() {
-        if (pendingAuditDecisions == null || pendingAuditDecisions.isEmpty()) {
-            return List.of();
-        }
-        List<Map.Entry<String, PolicyDecision>> drained = new ArrayList<>(pendingAuditDecisions);
-        pendingAuditDecisions.clear();
-        return drained;
-    }
-
-    /**
-     * 获取指定工具的策略决策。
-     */
-    public PolicyDecision getPolicyDecision(String toolCode) {
-        if (policyDecisions == null || toolCode == null) return null;
-        return policyDecisions.get(toolCode);
-    }
-
-    /** 已审批通过的工具集合（防止重复审批） */
-    private Map<String, PolicyDecision> approvedTools;
 
     /**
      * onActing 直接发起的 HITL 审批请求（兜底落库用）。
@@ -271,32 +217,5 @@ public class AegisTaskContext implements Serializable {
         Map<String, Object> r = this.pendingHitlRequest;
         this.pendingHitlRequest = null;
         return r;
-    }
-
-    /**
-     * 标记工具已审批通过（防止重复审批同一工具）。
-     */
-    public void markToolApproved(String toolName, PolicyDecision decision) {
-        if (approvedTools == null) {
-            approvedTools = new HashMap<>();
-        }
-        approvedTools.put(toolName, decision);
-        // 清除阻塞状态，允许后续工具调用继续执行
-        setBlocked(false);
-        setBlockReason(null);
-    }
-
-    /**
-     * 检查工具是否已审批通过。
-     */
-    public boolean isToolApproved(String toolName) {
-        return approvedTools != null && approvedTools.containsKey(toolName);
-    }
-
-    /**
-     * 获取已审批工具的决策。
-     */
-    public PolicyDecision getApprovedDecision(String toolName) {
-        return approvedTools != null ? approvedTools.get(toolName) : null;
     }
 }

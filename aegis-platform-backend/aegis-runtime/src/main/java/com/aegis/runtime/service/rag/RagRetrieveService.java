@@ -111,7 +111,7 @@ public class RagRetrieveService {
     public List<Map<String, Object>> retrieve(Long tenantId, Long kbId, String query,
                                               int topK, List<String> recentHistory) {
         // 设置租户上下文（供 MyBatis-Plus 多租户插件读取）。
-        // 保存调用方已绑定的上下文（如 AegisTenantIsolationMiddleware 在 onAgent 入口绑定的租户），
+        // 保存调用方已绑定的上下文（如租户隔离中间件在 onAgent 入口绑定的租户），
         // 检索结束后恢复——finally 直接 clear() 会清空调用方的租户上下文，
         // 导致同一对话链路后续 DB 操作在 fail-closed 插件下抛"租户上下文缺失"
         TenantContext previousContext = TenantContextHolder.get();

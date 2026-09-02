@@ -32,7 +32,6 @@ import reactor.core.publisher.Mono;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -40,9 +39,6 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import com.aegis.core.dto.security.PolicyDecision;
-import com.aegis.core.dto.security.SecurityPolicyContext;
-import com.aegis.core.enums.common.SecurityLevel;
 import com.aegis.core.dto.chat.SessionResourcesRef;
 import com.aegis.core.common.tenant.TenantContextScope;
 
@@ -91,9 +87,6 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
     private final RagRetrieveService ragRetrieveService;
     private final ResourceQueryService resourceQueryService;
     private final QueryRewriteService queryRewriteService;
-
-    @org.springframework.beans.factory.annotation.Autowired
-    private com.aegis.runtime.service.policy.AegisSecurityPolicyEngine securityPolicyEngine;
 
     /** RAG 中间件开关，默认开启。设为 false 可全局禁用 RAG 检索 */
     @Value("${aegis.runtime.rag.enabled:true}")
@@ -237,51 +230,13 @@ public class AegisRagMiddleware implements MiddlewareBase, OrderedMiddleware {
             return next.apply(input);
         }
 
-        // v4.2: KB 安全等级 gate（覆盖绑定与会话引用的全部知识库）
-        // P2-2②：一次 selectBatchIds 装载本轮全部 KB 实体——gate 安全等级与后续
-        // 名称补全共享同一结果集，消除 per-KB getKnowledgeBase 的 N 次同行重查（原 3N→1）
+        // P2-2②：一次 selectBatchIds 装载本轮全部 KB 实体，后续名称补全复用同一结果集，
+        // 消除 per-KB getKnowledgeBase 的 N 次同行重查（原 3N→1）
         Map<Long, KnowledgeBase> kbEntityMap = new HashMap<>();
-        Map<Long, SecurityLevel> kbLevels = new HashMap<>();
         for (KnowledgeBase kb : resourceQueryService.findKnowledgeBasesByIds(Set.copyOf(kbIds))) {
             kbEntityMap.put(kb.getId(), kb);
-            if (kb.getSecurityLevel() != null) {
-                kbLevels.put(kb.getId(), kb.getSecurityLevel());
-            }
         }
-        // 过滤掉安全等级超标/需审批未决的知识库，并记录跳过原因（前端可见）
         List<Map<String, Object>> skippedKbs = new ArrayList<>();
-        Iterator<Long> kbIterator = kbIds.iterator();
-        while (kbIterator.hasNext()) {
-            Long kbId = kbIterator.next();
-            SecurityLevel kbLevel = kbLevels.get(kbId);
-            if (kbLevel != null && securityPolicyEngine != null) {
-                SecurityPolicyContext gateCtx = SecurityPolicyContext.builder()
-                        .tenantId(tenantId)
-                        .agentId(agentId)
-                        .resourceType(ResourceType.KNOWLEDGE_BASE)
-                        .resourceLevel(kbLevel)
-                        .action(SecurityPolicyContext.Action.KB_RETRIEVE)
-                        .build();
-                PolicyDecision decision = securityPolicyEngine.evaluateKbRetrievePolicy(gateCtx);
-                if (decision.isReject()) {
-                    log.info("RAG KB gate REJECT: kbId={}, reason={}", kbId, decision.getReason());
-                    kbIterator.remove();
-                    skippedKbs.add(Map.of(
-                            "kbId", kbId,
-                            "action", "REJECT",
-                            "reason", decision.getReason() != null ? decision.getReason() : "绝密知识库(L4)禁止访问"));
-                } else if (decision.isAsk()) {
-                    // v4.3：L3 机密知识库检索前需审批。知识库检索没有工具级 HITL 审批流，
-                    // 未审批前检索等同绕过治理——跳过检索并通知前端
-                    log.info("RAG KB gate ASK(跳过检索): kbId={}, reason={}", kbId, decision.getReason());
-                    kbIterator.remove();
-                    skippedKbs.add(Map.of(
-                            "kbId", kbId,
-                            "action", "ASK",
-                            "reason", decision.getReason() != null ? decision.getReason() : "机密知识库(L3)检索需审批，请联系管理员开通"));
-                }
-            }
-        }
 
         // 5. 执行 RAG 检索（P2-2②：KB 名复用 gate 预载的 kbEntityMap，doc 名收集后批量查询）
         List<Map<String, Object>> allRefs = new ArrayList<>();

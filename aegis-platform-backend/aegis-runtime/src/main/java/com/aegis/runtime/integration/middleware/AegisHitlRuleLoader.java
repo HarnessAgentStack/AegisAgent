@@ -128,7 +128,7 @@ public class AegisHitlRuleLoader {
      *
      * <p>这些规则在 {@link #loadHitlRules} 中被跳过（不注入 AS PermissionEngine），
      * 因为 AS PermissionRule 无法通配匹配。本方法将它们提取出来，
-     * 供 {@code AegisSecurityMiddleware.onActing} 在工具执行前逐一检查：
+     * 供安全中间件 onActing 在工具执行前逐一检查：
      * 若工具命中通配规则的条件（rule 字段），则触发 ASK 审批。
      *
      * @param agentId 智能体 ID

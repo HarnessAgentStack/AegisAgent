@@ -27,10 +27,8 @@ import java.util.regex.Pattern;
  * </ul>
  *
  * <h3>P0-4 接入运行时消费链</h3>
- * <p>此前本服务为孤儿配置（Admin CRUD 完整、运行时 0 调用点）。现为
- * {@link AegisSecurityPolicyEngine#evaluateContentPolicy} 的脱敏规则消费入口——
- * 敏感词 REPLACE 处理后追加本服务二次正则脱敏，并在无敏感词命中时单独生效
- * （身份证/手机号等结构化敏感数据按规则遮蔽）。
+ * <p>脱敏规则消费入口——对文本中的结构化敏感数据（身份证/手机号等）
+ * 按规则遮蔽。Phase 1: delegated to AgentScope PermissionSystem。
  *
  * <h3>P0-5 显式租户条件</h3>
  * <p>sec_mask_rule 已加入 TENANT_IGNORE_TABLES，不再依赖 ThreadLocal 拦截器，
@@ -47,8 +45,6 @@ import java.util.regex.Pattern;
 public class DataMaskService {
 
     private final MaskRuleMapper maskRuleMapper;
-    /** P1-1：脱敏规则二级缓存（与安全策略缓存同模式，Caffeine+Redis 300s） */
-    private final SecurityPolicyCache policyCache;
 
     /** 预编译正则缓存：ruleId+regex → Pattern（P2-3，避免每次 Pattern.compile） */
     private final Map<String, Pattern> compiledCache = new ConcurrentHashMap<>();
@@ -98,26 +94,19 @@ public class DataMaskService {
     }
 
     /**
-     * P1-1：按租户整表缓存 sec_mask_rule（仅 enabled），miss 查 DB 回填。
+     * 按租户加载启用的脱敏规则（直接查 DB）。
+     * Phase 1: delegated to AgentScope PermissionSystem（原二级缓存依赖已移除）。
      */
     private List<MaskRule> loadCachedMaskRules(Long tenantId) {
         if (tenantId == null) {
             return java.util.Collections.emptyList();
         }
-        String cached = policyCache.get(tenantId, "MASK");
-        if (cached != null) {
-            List<MaskRule> parsed = com.alibaba.fastjson2.JSON.parseArray(cached, MaskRule.class);
-            if (parsed != null) {
-                return parsed;
-            }
-        }
         List<MaskRule> fromDb = maskRuleMapper.selectList(new LambdaQueryWrapper<MaskRule>()
                 .eq(MaskRule::getTenantId, tenantId)
                 .eq(MaskRule::getEnabled, true));
         if (fromDb == null) {
-            fromDb = java.util.Collections.emptyList();
+            return java.util.Collections.emptyList();
         }
-        policyCache.set(tenantId, "MASK", com.alibaba.fastjson2.JSON.toJSONString(fromDb));
         return fromDb;
     }
 

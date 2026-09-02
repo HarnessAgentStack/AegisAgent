@@ -3,9 +3,6 @@ package com.aegis.runtime.integration.tool;
 import com.aegis.runtime.integration.agent.ToolResultCache;
 import com.aegis.runtime.integration.mcp.McpInvoker;
 import com.alibaba.fastjson2.JSON;
-import com.aegis.core.dto.security.PolicyDecision;
-import com.aegis.core.dto.security.SecurityPolicyContext;
-import com.aegis.runtime.service.policy.AegisSecurityPolicyEngine;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolResultState;
@@ -59,9 +56,6 @@ public class AegisMcpTool extends ToolBase {
     private final String mcpToolName;
     private final String mcpEndpoint;
 
-    /** v4.1: 统一安全策略引擎（出站策略联动） */
-    private final AegisSecurityPolicyEngine securityPolicyEngine;
-
     /**
      * 工厂方法：从 MCP schema 创建 AegisMcpTool 实例。
      *
@@ -76,14 +70,13 @@ public class AegisMcpTool extends ToolBase {
                                   ToolResultCache toolResultCache,
                                   String mcpServiceId,
                                   McpSchema.Tool mcpTool,
-                                  String mcpEndpoint,
-                                  AegisSecurityPolicyEngine securityPolicyEngine) {
+                                  String mcpEndpoint) {
         String toolName = mcpTool.name();
         String description = buildDescription(mcpTool);
         Map<String, Object> inputSchema = mcpTool.inputSchema() != null
                 ? McpTool.convertMcpSchemaToParameters(mcpTool.inputSchema(), null)
                 : Map.of("type", "object");
-        return new AegisMcpTool(mcpInvoker, toolResultCache, mcpServiceId, toolName, description, inputSchema, mcpEndpoint, securityPolicyEngine);
+        return new AegisMcpTool(mcpInvoker, toolResultCache, mcpServiceId, toolName, description, inputSchema, mcpEndpoint);
     }
 
     private AegisMcpTool(McpInvoker mcpInvoker,
@@ -92,8 +85,7 @@ public class AegisMcpTool extends ToolBase {
                          String toolName,
                          String description,
                          Map<String, Object> inputSchema,
-                         String mcpEndpoint,
-                         AegisSecurityPolicyEngine securityPolicyEngine) {
+                         String mcpEndpoint) {
         super(ToolBase.builder()
                 .name(toolName)
                 .description(description)
@@ -103,15 +95,13 @@ public class AegisMcpTool extends ToolBase {
         this.mcpServiceId = mcpServiceId;
         this.mcpToolName = toolName;
         this.mcpEndpoint = mcpEndpoint;
-        this.securityPolicyEngine = securityPolicyEngine;
     }
 
     /**
      * 覆盖权限检查：MCP工具默认为低风险工具，工具自检返回 ALLOW（不"跳过"审批——
      * AS PermissionEngine 中 ask/deny 规则先于工具自检评估，命中即生效）。
      *
-     * <p>MCP工具的风险评估由上层的AegisSecurityPolicyEngine和ToolRiskService负责，
-     * AgentScope的内置PermissionEngine不需要再对MCP工具进行HITL审批。
+     * <p>MCP工具的风险评估由上层风险服务负责，AgentScope的内置PermissionEngine不需要再对MCP工具进行HITL审批。
      */
     @Override
     public Mono<PermissionDecision> checkPermissions(Map<String, Object> toolInput, PermissionContextState context) {
@@ -139,30 +129,6 @@ public class AegisMcpTool extends ToolBase {
         final String callId = toolCallId;
 
         return Mono.fromCallable(() -> {
-            // v4.1: 出站策略联动检查（使用MCP服务endpoint URL而非serviceId）
-            if (securityPolicyEngine != null && mcpEndpoint != null && !mcpEndpoint.isEmpty()) {
-                try {
-                    PolicyDecision decision = securityPolicyEngine.evaluateOutboundPolicy(
-                            SecurityPolicyContext.builder()
-                                    .action(SecurityPolicyContext.Action.NETWORK_ACCESS)
-                                    .resourceType(com.aegis.core.enums.resource.ResourceType.MCP_SERVICE)
-                                    .resourceCode(mcpToolName)
-                                    .content(mcpEndpoint)
-                                    .build());
-                    if (decision.isReject()) {
-                        log.warn("AegisMcpTool OUTBOUND REJECT: serviceId={}, tool={}, reason={}",
-                                mcpServiceId, mcpToolName, decision.getReason());
-                        String rejectJson = "{\"success\":false,\"error\":\"MCP tool blocked by security policy: " + decision.getReason() + "\"}";
-                        if (callId != null) {
-                            toolResultCache.put(callId, rejectJson);
-                        }
-                        return buildResult(callId, toolNm, rejectJson, true);
-                    }
-                } catch (Exception e) {
-                    log.error("AegisMcpTool 出站策略检查异常", e);
-                }
-            }
-
             String rawResult = mcpInvoker.invoke(svcId, toolNm, argsJson);
             if (callId != null) {
                 toolResultCache.put(callId, rawResult);

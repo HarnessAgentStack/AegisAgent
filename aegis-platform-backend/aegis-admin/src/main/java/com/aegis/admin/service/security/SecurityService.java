@@ -363,9 +363,8 @@ public class SecurityService {
      * 统一发布策略变更事件（触发集群内缓存失效）。
      *
      * <p>所有安全策略的 Create / Update / Delete 写操作完成后调用，
-     * 使 {@link com.aegis.runtime.service.SecurityConfigPublisher} 向 Redis 发布
-     * 策略变更频道，驱动 {@link com.aegis.runtime.service.SecurityPolicyCacheInvalidator}
-     * 在全集群节点同步刷新本地缓存，实现 5s 内策略生效。
+     * 使 {@link com.aegis.core.dto.security.SecurityConfigPublisher} 向 Redis 发布
+     * 策略变更频道。Phase 1: delegated to AgentScope PermissionSystem。
      *
      * @param tenantId    租户 ID（null 表示全局）
      * @param policyType  策略类型（TOOL / SENSITIVE_WORD / MASK_RULE / OUTBOUND）
