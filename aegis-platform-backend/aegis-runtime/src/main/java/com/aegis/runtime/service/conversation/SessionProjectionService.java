@@ -121,12 +121,26 @@ public class SessionProjectionService {
      * @param sessionId 会话ID
      */
     public void onForceTerminate(String sessionId) {
+        onForceTerminate(sessionId, SessionStatus.INTERRUPTED);
+    }
+
+    /**
+     * 强制终态投影（外层 doFinally 兜底调用，指定终态）。
+     *
+     * <p>与 {@link #onForceTerminate(String)} 同义，但允许调用方区分错误分支（EXCEPTION）
+     * 与取消分支（INTERRUPTED）。仅当会话当前为活跃态时才写入终态，避免覆盖内层已正确设置的
+     * ENDED/PAUSED/EXCEPTION/INTERRUPTED（C4 修复：确保异常分支会话必然进入终态，不卡死）。
+     *
+     * @param sessionId     会话ID
+     * @param terminalStatus 终态（EXCEPTION / INTERRUPTED）
+     */
+    public void onForceTerminate(String sessionId, SessionStatus terminalStatus) {
         try {
-            if (sessionManageService.terminateIfActive(sessionId, SessionStatus.INTERRUPTED)) {
-                log.warn("僵尸会话已强制中断（外层兜底）: sessionId={}", sessionId);
+            if (sessionManageService.terminateIfActive(sessionId, terminalStatus)) {
+                log.warn("僵尸会话已强制终态（外层兜底）: sessionId={}, status={}", sessionId, terminalStatus);
             }
         } catch (Exception e) {
-            log.warn("onForceTerminate 终态更新失败: sessionId={}", sessionId, e);
+            log.warn("onForceTerminate 终态更新失败: sessionId={}, status={}", sessionId, terminalStatus, e);
         }
         statusCache.remove(sessionId);
     }

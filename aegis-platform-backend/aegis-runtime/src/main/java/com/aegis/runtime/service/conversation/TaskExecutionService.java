@@ -9,6 +9,7 @@ import com.aegis.core.dto.chat.SkillRef;
 import com.aegis.core.dto.security.PolicyDecision;
 import com.aegis.core.common.error.BusinessException;
 import com.aegis.core.common.web.ResultCode;
+import com.aegis.core.enums.session.SessionStatus;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
 import com.aegis.runtime.service.agent.AgentAssemblyService;
 import com.aegis.runtime.service.policy.HitlFlowService;
@@ -157,6 +158,8 @@ public class TaskExecutionService {
         String taskId = UUID.randomUUID().toString().replace("-", "");
         // 捕获 sessionId 供外层 doFinally 兜底使用（assemble 后才有值）
         final String[] sessionHolder = new String[1];
+        // 标记执行过程是否发生过错误（用于外层 doFinally 决定终态为 EXCEPTION 还是 INTERRUPTED）
+        final boolean[] errored = {false};
         // 捕获租户上下文，在 Reactor 线程切换后手动恢复（ThreadLocal 不跨线程）
         final Long tenantId = request.getTenantId();
 
@@ -190,23 +193,31 @@ public class TaskExecutionService {
                 })
                 .onErrorResume(e -> {
                     log.error("TaskExecution error: taskId={}", taskId, e);
+                    errored[0] = true;
                     Map<String, Object> errorData = buildErrorData(e);
                     return Flux.just(
                             AgentEvent.of("error", errorData),
                             AgentEvent.of("done", Map.of()));
                 })
-                // ★ 外层兜底：当 CANCEL 信号未传播到内层 doFinally 时（如客户端断连），
-                // 强制清理中断 sink + 设置 INTERRUPTED 状态，防止僵尸会话
+                // ★ 外层兜底：确保会话始终进入终态，杜绝"异常分支会话永久卡在 THINKING/STARTED"。
+                // 旧实现仅在 signal != ON_COMPLETE 时清理，但 onErrorResume 已将任意错误转成
+                // ON_COMPLETE，使该守卫失效（C4：assemble/buildSkillEvents 抛错时会话永不终态）。
+                // 改为始终按"会话是否仍活跃"兜底——terminateIfActive 仅对活跃态生效，
+                // 对已正确置为 ENDED/PAUSED/EXCEPTION/INTERRUPTED 的会话是幂等 no-op。
                 .doFinally(signal -> {
                     try {
                         String sid = sessionHolder[0];
                         if (sid != null) {
                             log.info("外层 doFinally 兜底清理: sessionId={}, signal={}", sid, signal);
-                            // 非 ON_COMPLETE（即 CANCEL/ERROR）：强制清理
+                            // CANCEL/ERROR：清理中断信号（正常完成不清理，避免误删新请求 sink）
                             if (signal != SignalType.ON_COMPLETE) {
                                 interruptSignalManager.forceUnregister(sid);
-                                projectionService.onForceTerminate(sid);
                             }
+                            // 错误分支→EXCEPTION；取消/正常→INTERRUPTED（正常完成时为幂等 no-op）
+                            SessionStatus terminal = errored[0]
+                                    ? SessionStatus.EXCEPTION
+                                    : SessionStatus.INTERRUPTED;
+                            projectionService.onForceTerminate(sid, terminal);
                         }
                     } catch (Exception e) {
                         log.error("外层 doFinally 异常: signal={}", signal, e);
@@ -367,8 +378,13 @@ public class TaskExecutionService {
                                 return Mono.empty();
                             }
                             return Flux.fromIterable(convertedList)
-                                    .concatMap(converted -> processConvertedEvent(converted, ctx,
-                                            hitlPaused, tokenStats));
+                                    .concatMap(converted -> Mono.fromCallable(() -> {
+                                        // C5 修复：将事件投影（HITL Redis 同步读写 + 阻塞 JDBC 落库）
+                                        // 移出 AgentScope 内核线程，交由 boundedElastic 调度，
+                                        // 释放内核线程、避免热路径阻塞；concatMap 保证会话内事件顺序。
+                                        processConvertedEvent(converted, ctx, hitlPaused, tokenStats);
+                                        return converted;
+                                    }).subscribeOn(Schedulers.boundedElastic()));
                         })
                         // 流中副作用：累积输出 + 更新心跳（每个事件都执行）
                         .doOnNext(event -> {
@@ -404,6 +420,28 @@ public class TaskExecutionService {
                                     if (hitlFlowService.isApproved(ctx.getSessionId())) {
                                         log.info("清理已消费的 HITL 审批状态: sessionId={}", ctx.getSessionId());
                                         hitlFlowService.clearHitlState(ctx.getSessionId());
+                                    }
+                                    // P0-2（C3 修复）兜底：onActing 直接发起的 HITL 审批请求
+                                    // （未知/MCP 工具默认 ASK、通配符 HitlNode 命中）可能未途经
+                                    // 流事件转换（框架中间件事件路由未覆盖）而未被 processConvertedEvent 捕获。
+                                    // 此处统一落库 + 置 PAUSED，确保可审批、可恢复、不卡死。
+                                    Map<String, Object> pendingHitl = ctx.takePendingHitlRequest();
+                                    if (pendingHitl != null) {
+                                        Object replyId = pendingHitl.get("replyId");
+                                        Object toolCalls = pendingHitl.get("toolCalls");
+                                        if (toolCalls instanceof List) {
+                                            @SuppressWarnings("unchecked")
+                                            List<Map<String, Object>> tcList =
+                                                    (List<Map<String, Object>>) toolCalls;
+                                            hitlFlowService.saveHitlRequest(ctx.getSessionId(),
+                                                    replyId != null ? String.valueOf(replyId) : null, tcList);
+                                        }
+                                        log.info("HITL 兜底落库（onActing 直接发起）: sessionId={}, tool={}",
+                                                ctx.getSessionId(), pendingHitl.get("toolName"));
+                                        sessionManageService.updateStatus(ctx.getSessionId(),
+                                                SessionStatus.PAUSED);
+                                        projectionService.updateStatusCache(ctx.getSessionId(),
+                                                SessionStatus.PAUSED);
                                     }
                                 }
                                 // 统一终态委托：助手消息落库 + 最终状态设置 + 缓存清理

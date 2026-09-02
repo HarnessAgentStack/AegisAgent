@@ -23,6 +23,7 @@ import com.aegis.runtime.service.sandbox.SandboxLifecycleManager;
 import com.aegis.runtime.service.sandbox.SandboxPoolRouter;
 import com.aegis.runtime.service.metering.TenantQuotaService;
 import com.aegis.runtime.service.sandbox.SlotKeyParser;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import io.agentscope.harness.agent.IsolationScope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -358,12 +359,14 @@ public class AegisSandboxCoordinator {
 
         log.info("池内动态创建沙箱实例: poolCode={}, namespace={}, image={}, cpu={}, memMb={}, slotKey={}, active={}/{}",
                 pool.getPoolCode(), pool.getNamespace(), imageRef, cpu, memMb, slotKey, active, maxInstances);
+        String k8sResourceId = null;
+        SandboxInstance newInstance = null;
         try {
             // 3. 池内创建 Pod（命名空间归属池，标签携带 tenant/pool 归属标识）
             Map<String, String> labels = new HashMap<>(4);
             labels.put("tenant", String.valueOf(tenantId));
             labels.put("pool", pool.getPoolCode());
-            String k8sResourceId = sandboxBackend.createInPool(
+            k8sResourceId = sandboxBackend.createInPool(
                     tenantId, pool.getNamespace(), imageRef, cpu, memMb, labels);
 
             String[] parts = k8sResourceId.split("/", 2);
@@ -385,7 +388,7 @@ public class AegisSandboxCoordinator {
             // 5. 落库（instanceId=UUID，与 admin 预热格式一致；tenantId=占用方租户；
             //    A3: residentSlot 时状态直接落 RESIDENT，跳过 OCCUPIED 中间态）
             String instanceId = UUID.randomUUID().toString().replace("-", "");
-            SandboxInstance newInstance = SandboxInstance.builder()
+            newInstance = SandboxInstance.builder()
                     .instanceId(instanceId)
                     .poolId(pool.getId())
                     .tenantId(tenantId)
@@ -426,12 +429,55 @@ public class AegisSandboxCoordinator {
             }
             return result;
         } catch (BusinessException e) {
+            // C6 修复：部分分配失败时回滚孤儿 Pod / sbx_instance，避免资源泄漏
+            rollbackPartialAllocation(k8sResourceId, newInstance, tenantId, slotKey);
             throw e;
         } catch (Exception e) {
             log.error("池内动态创建沙箱实例失败: poolCode={}, tenantId={}, scope={}, error={}",
                     pool.getPoolCode(), tenantId, scope, e.getMessage(), e);
+            // C6 修复：部分分配失败时回滚孤儿 Pod / sbx_instance，避免资源泄漏
+            rollbackPartialAllocation(k8sResourceId, newInstance, tenantId, slotKey);
             throw new BusinessException(ResultCode.SERVICE_UNAVAILABLE,
                     "池内创建沙箱实例失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * C6 修复：沙箱分配部分失败时的资源回滚。
+     *
+     * <p>{@code createInPool} 已创建 Pod 但后续步骤（工作区初始化/落库/租约）失败时，
+     * 销毁已创建的 Pod 并删除已写入的 {@code sbx_instance} 行，避免孤儿容器与孤儿记录
+     * （原实现仅记录日志后抛出，Pod 与 DB 行均泄漏，槽位被永久占用）。
+     * 各清理步骤独立 try-catch，单步失败仅告警，不掩盖原始异常。</p>
+     *
+     * @param k8sResourceId 已创建的沙箱后端实例标识（namespace/podName），可能为 null
+     * @param newInstance   已落库的 sbx_instance 实体，可能为 null
+     * @param tenantId      租户ID
+     * @param slotKey       槽位键（随 sbx_instance 删除自然释放占用）
+     */
+    private void rollbackPartialAllocation(String k8sResourceId, SandboxInstance newInstance,
+                                            Long tenantId, String slotKey) {
+        // 1. 销毁已创建的 Pod（避免孤儿容器占用集群/沙箱资源）
+        if (k8sResourceId != null) {
+            try {
+                sandboxBackend.destroy(tenantId, k8sResourceId);
+                log.info("C6 回滚：已销毁孤儿 Pod: k8sResourceId={}, slotKey={}", k8sResourceId, slotKey);
+            } catch (Exception ex) {
+                log.warn("C6 回滚：销毁 Pod 失败（需人工清理）: k8sResourceId={}, slotKey={}, error={}",
+                        k8sResourceId, slotKey, ex.getMessage());
+            }
+        }
+        // 2. 删除已落库的 sbx_instance 行（避免孤儿记录导致槽位永久占用）
+        if (newInstance != null && newInstance.getInstanceId() != null) {
+            try {
+                sandboxInstanceMapper.delete(new LambdaQueryWrapper<SandboxInstance>()
+                        .eq(SandboxInstance::getInstanceId, newInstance.getInstanceId()));
+                log.info("C6 回滚：已删除孤儿 sbx_instance: instanceId={}, slotKey={}",
+                        newInstance.getInstanceId(), slotKey);
+            } catch (Exception ex) {
+                log.warn("C6 回滚：删除 sbx_instance 失败（需人工清理）: instanceId={}, slotKey={}, error={}",
+                        newInstance.getInstanceId(), slotKey, ex.getMessage());
+            }
         }
     }
 

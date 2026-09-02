@@ -20,8 +20,10 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -52,6 +54,18 @@ public class SessionManageService {
     private final SessionSummaryService sessionSummaryService;
     /** P1-6：Redis 原子自增 seq，替代 JVM 锁 + FOR UPDATE + 唯一索引重试三层防护 */
     private final org.springframework.data.redis.core.StringRedisTemplate stringRedisTemplate;
+
+    /**
+     * C7 修复：seq 原子自增 Lua 脚本（SETNX 初始化 + INCR 合并为单次原子操作）。
+     * key = {@code aegis:msg:seq:{sessionId}}；ARGV[1] = DB 当前 MAX(seq)（仅首次初始化使用）。
+     */
+    private static final DefaultRedisScript<Long> SEQ_INIT_INCR_SCRIPT;
+    static {
+        SEQ_INIT_INCR_SCRIPT = new DefaultRedisScript<>();
+        SEQ_INIT_INCR_SCRIPT.setScriptText(
+                "if redis.call('exists', KEYS[1]) == 0 then redis.call('set', KEYS[1], ARGV[1]) end return redis.call('incr', KEYS[1])");
+        SEQ_INIT_INCR_SCRIPT.setResultType(Long.class);
+    }
 
     // 事务管理器，用于编程式事务包装消息插入 + 会话统计更新
     private final org.springframework.transaction.PlatformTransactionManager transactionManager;
@@ -445,14 +459,16 @@ public class SessionManageService {
     private int nextSeqViaRedis(String sessionId, Long tenantId) {
         String key = "aegis:msg:seq:" + sessionId;
         try {
-            // 兼容存量会话：若 key 不存在，以 DB 当前 MAX(seq) 初始化（SETNX 仅在不存在时写入）
-            Boolean initialized = stringRedisTemplate.opsForValue().setIfAbsent(key, "0");
-            if (Boolean.TRUE.equals(initialized)) {
+            // C7 修复：仅首次初始化需读 DB MAX(seq)（FOR UPDATE 锁读）；key 存在后纯 INCR，热路径零 DB 读。
+            // 初始化与自增合并为单次 Lua 原子操作，消除 SETNX→set→INCR 之间的竞态覆盖窗口。
+            if (!Boolean.TRUE.equals(stringRedisTemplate.hasKey(key))) {
                 int dbMax = sessionMessageMapper.selectMaxSeqForUpdate(sessionId, tenantId);
-                stringRedisTemplate.opsForValue().set(key, String.valueOf(dbMax));
+                Long next = stringRedisTemplate.execute(SEQ_INIT_INCR_SCRIPT,
+                        Collections.singletonList(key), String.valueOf(dbMax));
+                return next == null ? dbMax + 1 : next.intValue();
             }
             Long next = stringRedisTemplate.opsForValue().increment(key);
-            return next == null ? (sessionMessageMapper.selectMaxSeqForUpdate(sessionId, tenantId) + 1) : next.intValue();
+            return next == null ? 0 : next.intValue();
         } catch (Exception e) {
             log.warn("Redis INCR seq 失败，降级 DB MAX(seq)+1（单实例正确，跨实例可能冲突）: sessionId={}", sessionId, e);
             return sessionMessageMapper.selectMaxSeqForUpdate(sessionId, tenantId) + 1;

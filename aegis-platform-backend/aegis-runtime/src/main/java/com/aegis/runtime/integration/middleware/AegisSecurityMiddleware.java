@@ -9,11 +9,13 @@ import com.aegis.core.enums.agent.GovernanceTier;
 import com.aegis.core.enums.common.SecurityLevel;
 import com.aegis.core.enums.resource.ResourceType;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
+import com.aegis.runtime.service.tool.ToolRiskService;
 import com.aegis.runtime.service.conversation.ContentAdapter;
 import com.aegis.runtime.service.policy.AegisSecurityPolicyEngine;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.middleware.ActingInput;
 import io.agentscope.core.middleware.AgentInput;
@@ -25,7 +27,9 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -60,6 +64,8 @@ public class AegisSecurityMiddleware implements MiddlewareBase, OrderedMiddlewar
     private final AegisSecurityPolicyEngine securityPolicyEngine;
     // 通配符 HITL 规则覆盖：onActing 中检查通配符 HitlNode 条件
     private final AegisHitlRuleLoader hitlRuleLoader;
+    // 工具风险信息服务：构造 hitl.request 事件时复用与 HarnessEventConverter 一致的风险信息
+    private final ToolRiskService toolRiskService;
 
     @Override
     public int order() {
@@ -290,42 +296,60 @@ public class AegisSecurityMiddleware implements MiddlewareBase, OrderedMiddlewar
                     continue;
                 }
 
-                // === MCP 只读工具 / AgentScope 通用只读工具前缀放行 ===
-                // 非内置工具（builtinRisk == null）默认视为 MCP 动态工具，
-                // 只读前缀工具（get_*, query_*, search_*, list_*, describe_*, check_*,
-                // fetch_*, read_*, lookup_*, resolve_*, find_*）直接放行，无需审批
+                // === MCP / 通用只读工具前缀放行（无副作用，无需审批）===
                 if (builtinRisk == null && isMcpReadOnlyTool(toolName)) {
                     taskCtx.markToolApproved(toolName, PolicyDecision.allow(null, "mcp-readonly-prefix", null, null));
                     log.debug("SecurityMiddleware onActing MCP只读前缀放行: tool={}", toolName);
                     continue;
                 }
 
-                // === 构建策略上下文并评估 ===
-                var ctxBuilder = SecurityPolicyContext.builder()
+                // === C1 修复：未知/MCP 非只读工具默认 ASK（fail-closed），不再静默 ALLOW ===
+                // 旧实现经并联引擎 evaluateToolPolicy 评估：未登记工具 toolLevel=null
+                // → evaluateByResourceLevel(null)→L1→ALLOW，导致"任意未登记工具默认放行"。
+                // 此处显式发起 HITL 审批（复用 hitl.request 恢复链路），与"企业级合规"一致；
+                // 管理员若需放开某 MCP 工具，应在 res_tool 登记并经 sec_tool_policy 配置 ALLOW 规则。
+                if (builtinRisk == null) {
+                    taskCtx.recordPolicyDecision(toolName,
+                            PolicyDecision.ask("未知/MCP 工具需人工审批: " + toolName,
+                                    null, "unknown-tool-require-approval", null, null, null));
+                    log.info("C1 修复：未知/MCP 非只读工具触发 ASK 审批: tool={}", toolName);
+                    return Flux.just(buildHitlRequestEvent(toolCall, taskCtx, "未知/MCP 工具需审批"));
+                }
+
+                // === C3 修复：通配符 HITL 走框架恢复链路（删除 setPendingApproval 死字段）===
+                // 命中通配符 HitlNode 时构造 hitl.request 事件，复用与精确规则完全相同的
+                // 落库(saveHitlRequest)→暂停(PAUSED)→前端审批→confirm() 恢复链路，
+                // 不再走 setPendingApproval + Flux.empty() 的死路（工具被吞、会话永久卡死、不可恢复）。
+                List<HitlNode> wildcardNodes = hitlRuleLoader.resolveWildcardHitlNodes(taskCtx.getAgentId());
+                for (HitlNode wn : wildcardNodes) {
+                    SecurityLevel toolLevel = taskCtx.getToolSecurityLevel(toolName);
+                    if (matchesWildcardRule(wn, toolName, toolLevel, builtinRisk)) {
+                        taskCtx.recordPolicyDecision(toolName,
+                                PolicyDecision.ask("匹配通配符审批规则: " + wn.getNodeName(),
+                                        null, "wildcard-hitl-rule-" + wn.getId(), null, null, null));
+                        log.info("C3 修复：通配符 HITL 规则命中（走 hitl.request 恢复链路）: tool={}, nodeName={}, nodeId={}",
+                                toolName, wn.getNodeName(), wn.getId());
+                        return Flux.just(buildHitlRequestEvent(toolCall, taskCtx,
+                                "通配符审批规则: " + wn.getNodeName()));
+                    }
+                }
+
+                // === 内置已登记工具：经并联引擎按 resourceLevel 评估（resourceLevel 已知，行为稳定）===
+                // REJECT 由 onActing 阻断；ASK 复用框架 HITL 恢复链路；ALLOW 标记已审批。
+                // sec_tool_policy 的精确 REJECT/ASK 规则由框架 PermissionEngine 在执行期兜底裁决。
+                SecurityLevel toolLevel = mapBuiltinRiskLevel(builtinRisk);
+                SecurityPolicyContext policyCtx = SecurityPolicyContext.builder()
                         .tenantId(taskCtx.getTenantId())
                         .agentId(taskCtx.getAgentId())
                         .governanceTier(taskCtx.getGovernanceTier())
                         .resourceCode(toolName)
+                        .resourceLevel(toolLevel)
                         .action(SecurityPolicyContext.Action.TOOL_CALL)
                         .content(toolCall.getInput() != null ? toolCall.getInput().toString() : null)
                         .sessionId(taskCtx.getSessionId())
-                        .traceId(taskCtx.getTraceId());
-
-                // 获取工具的 securityLevel：优先内置 BuiltinToolRiskConfig，其次 TaskContext 注入值（含 MCP 工具）
-                SecurityLevel toolLevel;
-                if (builtinRisk != null) {
-                    toolLevel = mapBuiltinRiskLevel(builtinRisk);
-                } else {
-                    toolLevel = taskCtx.getToolSecurityLevel(toolName);
-                }
-                if (toolLevel != null) {
-                    ctxBuilder.resourceLevel(toolLevel);
-                }
-
-                SecurityPolicyContext policyCtx = ctxBuilder.build();
+                        .traceId(taskCtx.getTraceId())
+                        .build();
                 PolicyDecision decision = securityPolicyEngine.evaluateToolPolicy(policyCtx);
-
-                // 记录策略决策到 TaskContext
                 taskCtx.recordPolicyDecision(toolName, decision);
 
                 if (decision.isReject()) {
@@ -336,32 +360,9 @@ public class AegisSecurityMiddleware implements MiddlewareBase, OrderedMiddlewar
                 }
 
                 if (decision.isAsk()) {
-                    // 触发 HITL 审批：仅标记为待审批，暂停工具执行，等待用户审批后由 HITL 流恢复
-                    // 不调用 markToolApproved，否则 ASK 决策被立即当作 ALLOW 放行，使人工审批形同虚设
-                    taskCtx.setPendingApproval(toolName, decision);
-                    log.info("SecurityMiddleware onActing ASK: tool={}, reason={}", toolName, decision.getReason());
-                    return Flux.<AgentEvent>empty();
-                }
-
-                // 通配符 HITL 规则覆盖：在 ALLOW 放行前检查通配符 HitlNode 条件
-                // AS PermissionEngine 无法通配匹配，故在 onActing 中间件层面统一兜底
-                // 注：MCP 工具与未知工具(toolLevel=null)默认低风险，不通配符拦截；
-                //     管理员需审批 MCP 工具时应配置 sec_tool_policy 或 toolName 精确规则
-                if (!decision.isReject()) {
-                    List<HitlNode> wildcardNodes = hitlRuleLoader.resolveWildcardHitlNodes(taskCtx.getAgentId());
-                    for (HitlNode wn : wildcardNodes) {
-                        if (matchesWildcardRule(wn, toolName, toolLevel, builtinRisk)) {
-                            PolicyDecision wildcardDecision = PolicyDecision.ask(
-                                    "匹配通配符审批规则: " + wn.getNodeName(),
-                                    null,
-                                    "wildcard-hitl-rule-" + wn.getId(),
-                                    null, null, null);
-                            taskCtx.setPendingApproval(toolName, wildcardDecision);
-                            log.info("P2-11 通配符 HITL 规则命中: tool={}, nodeName={}, nodeId={}",
-                                    toolName, wn.getNodeName(), wn.getId());
-                            return Flux.<AgentEvent>empty();
-                        }
-                    }
+                    // 复用框架 HITL 恢复链路（原 setPendingApproval 为死字段，会话会卡死）
+                    log.info("SecurityMiddleware onActing ASK（走 hitl.request 恢复链路）: tool={}, reason={}", toolName, decision.getReason());
+                    return Flux.just(buildHitlRequestEvent(toolCall, taskCtx, decision.getReason()));
                 }
 
                 // ALLOW 决策：标记为已审批，防止后续重复评估
@@ -370,10 +371,77 @@ public class AegisSecurityMiddleware implements MiddlewareBase, OrderedMiddlewar
             }
 
         } catch (Exception e) {
-            log.error("SecurityMiddleware onActing 异常，透传", e);
+            // P0-1（C2 修复）：安全评估异常必须 fail-closed —— 默认阻断工具执行，
+            // 而非"异常即放行"。阻断后由下游 BLOCKED 事件告知前端。
+            log.error("SecurityMiddleware onActing 安全评估异常，按 fail-closed 阻断工具执行", e);
+            taskCtx.setBlocked(true);
+            taskCtx.setBlockReason("安全策略评估异常，已阻断执行: "
+                    + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            return Flux.<AgentEvent>empty();
         }
 
         return next.apply(input);
+    }
+
+    /**
+     * 构造 hitl.request 事件（复用与精确规则 HITL 完全相同的恢复链路）。
+     *
+     * <p>事件 data 结构与 {@code HarnessEventConverter.convertRequireUserConfirm} 保持一致
+     * （replyId + toolCalls[{id,name,input,riskInfo}] + maxRiskLevel + autoApproved），
+     * 使 {@code TaskExecutionService.processConvertedEvent} 能按既有逻辑落库(saveHitlRequest)、
+     * 置 PAUSED、并支持前端审批后 confirm() 恢复。
+     *
+     * <p>同时存入 {@code AegisTaskContext.pendingHitlRequest}，作为兜底：若该事件未途经
+     * 流事件转换（框架中间件事件路由未覆盖），{@code streamExecution} 的 doFinally 仍会
+     * 统一落库 + 置 PAUSED，确保可审批、可恢复、不卡死（C1/C3 修复）。
+     *
+     * @param toolCall 当前工具调用
+     * @param taskCtx  任务上下文
+     * @param reason   审批原因（用于日志与前端提示）
+     * @return hitl.request 事件
+     */
+    private AgentEvent buildHitlRequestEvent(ToolUseBlock toolCall, AegisTaskContext taskCtx, String reason) {
+        String toolName = toolCall.getName();
+        String toolCallId = toolCall.getId() != null ? toolCall.getId() : toolName;
+        String replyId = taskCtx.getSessionId() + ":hitl:" + toolCallId;
+
+        Map<String, Object> input = toolCall.getInput() != null ? toolCall.getInput() : Map.of();
+        ToolRiskInfo riskInfo = toolRiskService.evaluateRisk(toolName, input);
+
+        Map<String, Object> riskInfoMap = new HashMap<>();
+        riskInfoMap.put("riskLevel", riskInfo.getRiskLevel().name());
+        riskInfoMap.put("riskReason", riskInfo.getRiskReason());
+        riskInfoMap.put("category", riskInfo.getCategory());
+        riskInfoMap.put("toolType", riskInfo.getToolType() != null ? riskInfo.getToolType().name() : "UNKNOWN");
+        riskInfoMap.put("needApproval", riskInfo.isNeedApproval());
+        riskInfoMap.put("sandboxExecution", riskInfo.isSandboxExecution());
+
+        Map<String, Object> tc = new HashMap<>();
+        tc.put("id", toolCallId);
+        tc.put("name", toolName);
+        tc.put("input", input);
+        tc.put("riskInfo", riskInfoMap);
+
+        List<Map<String, Object>> toolCalls = List.of(tc);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("replyId", replyId);
+        data.put("toolCalls", toolCalls);
+        data.put("maxRiskLevel", riskInfo.getRiskLevel().name());
+        data.put("autoApproved", false);
+        data.put("toolName", toolName);
+        data.put("reason", reason);
+
+        // 兜底落库：存入 TaskContext，由 TaskExecutionService.streamExecution 的 doFinally 统一处理
+        taskCtx.setPendingHitlRequest(data);
+
+        log.info("发起 HITL 审批（复用 hitl.request 链路）: sessionId={}, tool={}, reason={}",
+                taskCtx.getSessionId(), toolName, reason);
+        // 返回框架原生 RequireUserConfirmEvent（其父类即 AgentEvent，可被 onActing 的 Flux<AgentEvent> 收口）。
+        // 该事件经 HarnessEventConverter.convertRequireUserConfirm 转换为与精确规则 HITL 完全一致的
+        // hitl.request 数据流（replyId + toolCalls + maxRiskLevel + autoApproved），既支持实时流推送，
+        // 又通过上面的 setPendingHitlRequest(data) 兜底落库，确保可审批、可恢复、不卡死（C1/C3）。
+        return new RequireUserConfirmEvent(replyId, toolName, reason, List.of(toolCall));
     }
 
     /**

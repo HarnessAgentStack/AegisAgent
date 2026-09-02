@@ -246,12 +246,31 @@ public class AegisTaskContext implements Serializable {
     private Map<String, PolicyDecision> approvedTools;
 
     /**
-     * 设置待审批状态（触发 HITL）。
+     * onActing 直接发起的 HITL 审批请求（兜底落库用）。
+     *
+     * <p>安全中间件 onActing 在命中未知/MCP 工具默认审批或通配符 HitlNode 时，
+     * 构造 hitl.request 事件并存入此处；{@code TaskExecutionService.streamExecution} 的
+     * doFinally 读取它统一落库 + 置 PAUSED，确保即使该事件未途经流事件转换也能可审批、可恢复。
+     * 旧版 {@code setPendingApproval} 为死字段（无消费者、导致会话卡死），已由本机制替代。
      */
-    public void setPendingApproval(String toolName, PolicyDecision decision) {
-        setBlocked(true);
-        setBlockReason("工具调用需审批: " + toolName + " - " + (decision != null ? decision.getReason() : ""));
-        recordPolicyDecision(toolName, decision);
+    private transient Map<String, Object> pendingHitlRequest;
+
+    /**
+     * 暂存 onActing 直接发起的 HITL 审批请求（单次消费）。
+     */
+    public void setPendingHitlRequest(Map<String, Object> request) {
+        this.pendingHitlRequest = request;
+    }
+
+    /**
+     * 取出并清空 onActing 直接发起的 HITL 审批请求（幂等消费）。
+     *
+     * @return 审批请求 data（含 replyId/toolCalls），无则返回 null
+     */
+    public Map<String, Object> takePendingHitlRequest() {
+        Map<String, Object> r = this.pendingHitlRequest;
+        this.pendingHitlRequest = null;
+        return r;
     }
 
     /**
