@@ -1,7 +1,7 @@
 # 运行时全流程剖析
 
-> 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-08-31
-> 所有调用链、中间件顺序、事件类型均来自真实代码，无臆造。
+> 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-09-02（基于 AgentScope 2.0.2 源码 + aegis-runtime 源码复核）
+> 所有调用链、中间件顺序、事件类型、存储 Key 均来自真实代码，无臆造；与 `.tmp/AgentAssemblyService运行时数据状态全景解析.md` 互为参照。
 
 ---
 
@@ -155,13 +155,25 @@ HarnessAgent agent = HarnessAgent.builder()
     .build();
 ```
 
-### IsolationScope 和 Redis Key 映射
+### 隔离作用域（IsolationScope）与 Redis Key
 
-| governance_tier | IsolationScope | agent_state_session_key（Redis） |
+> AgentScope 把**对话上下文（AgentState）**与**沙箱隔离（slotKey）**拆成两个独立维度，别混为一谈。
+
+**① AgentState（对话上下文）Redis Key**——由 `AegisRedisConfig` 的 `RedisAgentStateStore`（keyPrefix=`aegis:session:`）管理，格式固定、与治理档无关：
+
+| Key | 类型 | 说明 |
 |---|---|---|
-| UNIVERSAL | USER | `tenantId:userId:UNIVERSAL:agentId:sessionId` |
-| APPLICATION | AGENT | `tenantId:userId:APPLICATION:agentId:sessionId` |
-| SYSTEM | AGENT | `tenantId:userId:SYSTEM:agentId:sessionId` |
+| `aegis:session:{userId}/{sessionId}:agent_state` | String(JSON) | 单值对话上下文（运行时主链路，调用前后读写） |
+| `aegis:session:{userId}/{sessionId}:agent_state:list` | List | 上下文历史 |
+| `aegis:session:{userId}/{sessionId}:_keys` | Set | 本会话全部 Redis Key 索引（删主 key 须连带清） |
+
+**② 沙箱隔离 slotKey**——由 `IsolationScope` 决定粒度，落 `sbx_instance.isolation_scope`（枚举 `USER`/`AGENT`/`GLOBAL`/`SESSION`）：
+
+| governance_tier | IsolationScope（slotKey 粒度） | slotKey 模板 |
+|---|---|---|
+| UNIVERSAL | USER | `aegis:{tenantId}:user:{userId}` |
+| APPLICATION | AGENT | `aegis:{tenantId}:agent:{agentId}` |
+| SYSTEM | GLOBAL（常驻） | `aegis:resident:sys:{agentId}`（RESIDENT 是实例状态+前缀，**非** IsolationScope 枚举值） |
 
 ### 懒分配沙箱机制
 
@@ -187,7 +199,7 @@ sequenceDiagram
 
 ## 四、洋葱链中间件（11 层）
 
-AgentScope 2.0.2 的 Middleware 有 **5 个拦截点**，洋葱链对所有拦截点统一生效。order 值越大越外层，越先执行。
+AgentScope 2.0.2 的 Middleware 有 **5 个拦截点**：4 个**洋葱型**（`onAgent` / `onReasoning` / `onActing` / `onModelCall`）+ 1 个**管道型变换**（`onSystemPrompt`）。order 值越大越外层、越先执行，对 4 个洋葱型统一生效；`onSystemPrompt` 按 order 排序后串联改写系统提示词。
 
 ### order 值（从源码 `AegisMiddlewareChain.java` + 各中间件 `order()` 方法）
 
@@ -218,12 +230,13 @@ flowchart TD
 
 ### 洋葱链在 5 个拦截点分别做什么
 
-| 拦截点 | 触发时机 | 主要中间件 | 做什么 |
+| 拦截点 | 类型 / 触发时机 | 主要中间件 | 做什么 |
 |---|---|---|---|
-| **onSystemPrompt** | 发给 LLM 之前 | RagMiddleware | Milvus 检索 TOP-K 知识片段 → 拼到系统提示词末尾 |
-| **onModelCall** | 每次调 LLM 时 | TraceMiddleware | 创建 MODEL_CALL Span，记录输入输出 |
-| **onReasoning** | LLM 返回 CoT 思考过程时 | TraceMiddleware | 创建 REASONING Span |
-| **onActing** | LLM 决定调用工具时 | SecurityMiddleware **最关键** | `(tool_type, security_level)` 查 sec_tool_policy → 无命中时按等级直映（L1/L2→ALLOW, L3→ASK, L4→REJECT） |
+| **onAgent** | 洋葱·最外层，进入 Agent 时 | SecurityMiddleware(order=90) | 输入初筛、租户边界、HITL 规则预载 |
+| **onSystemPrompt** | 管道·发给 LLM 之前 | RagMiddleware / IntentMiddleware / ContentFilterMiddleware / SecurityMiddleware(55) | 串联改写系统提示词：RAG 片段、意图约束、敏感词指令、安全策略 |
+| **onModelCall** | 洋葱·每次调 LLM 时 | TraceMiddleware(95) / SecurityMiddleware(40) | 创建 MODEL_CALL Span 记录 I/O；安全路由（STRICT+L4→本地加密） |
+| **onReasoning** | 洋葱·LLM 返回 CoT 时 | TraceMiddleware | 创建 REASONING Span |
+| **onActing** | 洋葱·LLM 决定调工具时 | SecurityMiddleware(30) **最关键** | `(tool_type, security_level)` 查 sec_tool_policy → 无命中按等级直映（L1/L2→ALLOW, L3→ASK/HITL, L4→REJECT） |
 
 ### 最关键：AegisSecurityMiddleware.onActing()
 
@@ -369,7 +382,7 @@ AgentScope AgentEvent 经 HarnessEventConverter 转换后以 SSE 点分事件名
 | `error` | 执行异常 | `{"code":"NETWORK_TIMEOUT","message":"LLM API 连接超时"}` |
 | `done` | SSE 关闭信号（**必发**，前端靠它关闭 EventSource） | `{"replyId":"req-uuid-abc123"}` |
 
-> **不存在 `agent_end` 事件**：AgentScope 的 AGENT_END 被 HarnessEventConverter 转换为 `done`；token/成本/耗时数据落库到 mon_trace/sess_message，**不经 SSE 下发**，前端需从可观测接口查询。
+> **`agent_end` 与 `done` 是两个不同事件**：`AGENT_END` 经 `HarnessEventConverter` 映射为 `agent_end`（data 含本次 token 用量，驱动 `sess_message`/`mon_trace` 终态落库、会话置 ENDED）；`done` 由 `TaskController` 在流末追加，仅作 SSE 关闭信号（前端靠它关闭 EventSource）。两者都真实存在、顺序为 `agent_end` 先、`done` 后。成本 `cost_amount` 当前**恒为 NULL**（运行时未计算，见下文）。
 
 ### 完整 SSE 帧示例（raw text）
 
@@ -417,6 +430,17 @@ data: {"replyId":"req-uuid-abc123"}
 
 **流式输出过程中 fire-and-forget 落库，不阻塞 SSE 主线程。** 所有 UPDATE/INSERT 操作异步执行。
 
+### 运行时数据状态：两套会话记忆并存（关键）
+
+一次会话的"记忆"分散在**两类存储**，职责不同、并存、不可互相替代：
+
+| 存储 | Key / 表 | 性质 | 读写时机 | 用途 |
+|---|---|---|---|---|
+| Redis（AgentScope） | `aegis:session:{userId}/{sessionId}:agent_state` | **运行时上下文（主链路必落）** | 调用开始 `GET` 重载、调用结束 `SET` 落盘 | ReAct 循环的对话缓冲，分布式部署取到最新状态 |
+| MySQL（Aegis） | `sess_message` / `sess_session` | **审计/回放投影（异步可降级）** | 流式 fire-and-forget 落库 | 消息留痕、状态机、前端历史查询 |
+
+> 要点：`agent_state` 是"运行态"（丢了本轮对话断片），`sess_message` 是"账本"（丢了可查历史）——两者都要保，`deleteSession` 会级联清 MySQL 并删 AgentScope Redis key 防孤儿堆积。
+
 ### 状态流转
 
 ```mermaid
@@ -448,17 +472,18 @@ stateDiagram-v2
 | `tool_result` | sess_message INSERT（TOOL_RESULT） + mon_span INSERT | sess_message, mon_span |
 | `text_delta` | 不直接落（累积到 agent_end 一次性落） | — |
 | `hitl.request` | sess_session status → PAUSED + sec_hitl_history INSERT | sess_session, sec_hitl_history |
-| `agent_end` | sess_message INSERT（ASSISTANT，含 reasoning + token + cost）+ sess_session status → ENDED + mon_trace INSERT | sess_message, mon_trace |
+| `agent_end` | sess_message INSERT（ASSISTANT，含 reasoning + token；cost_amount 不计算）+ sess_session status → ENDED + mon_trace INSERT | sess_message, mon_trace |
 | `generate_file` 工具 | sess_artifact INSERT + MinIO PUT | sess_artifact, MinIO |
 
-### cost_amount 计算公式
+### 成本：当前只落 token，不计算金额（实现缺口）
 
-```
-cost_amount = token_input × model_def.input_cost / 1000
-            + token_output × model_def.output_cost / 1000
-```
+运行时**只持久化 token 计数**，不计算金额成本：
 
-在 agent_end 事件触发时计算，单价取自 `model_def.input_cost` / `output_cost`（元/千 token，见 DDL model_def 表）。
+- `sess_message.token_input` / `token_output`、`sess_session.token_used`、`mon_trace.token_input` / `token_output` 来自 LLM 回传的 `ChatUsage`，**真实落库**；
+- `sess_message.cost_amount` / `mon_trace.cost_amount` 字段存在，但 `aegis-runtime` 内**无任何代码计算或赋值**（grep `costAmount` 零命中），运行时恒为 `NULL`；
+- `model_def.input_cost` / `output_cost`（元/千 token）仅 Admin 模型管理配置，runtime 不参与计费。
+
+> 若需真实金额，应在 `agent_end` 处用 `ChatUsage × ModelDef 单价` 补算（当前未接线）。这属于**当前实现缺口，不是文档笔误**。
 
 ---
 

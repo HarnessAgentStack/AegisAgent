@@ -14,6 +14,9 @@ public enum MaskDataType {
     BANK_CARD("银行卡"),
     EMAIL("邮箱"),
     IP("IP地址"),
+    PASSPORT("护照号"),
+    LICENSE("车牌号"),
+    COMPANY_ID("统一社会信用代码"),
     CUSTOM("自定义");
 
     private final String desc;

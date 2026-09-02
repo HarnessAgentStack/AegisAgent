@@ -27,7 +27,6 @@ export const SECURITY_TABS = [
   { key: 'word', label: '📝 敏感词库' },
   { key: 'mask', label: '🎭 脱敏规则' },
   { key: 'out', label: '🌐 出站策略' },
-  { key: 'content', label: '🔍 内容审核' },
 ];
 
 // ==================== Tab 1: 安全级别（静态说明数据） ====================
@@ -182,6 +181,9 @@ export const MASK_DATA_TYPE_OPTIONS = [
   { value: 'BANK_CARD', label: '银行卡号' },
   { value: 'EMAIL', label: '邮箱' },
   { value: 'IP', label: 'IP 地址' },
+  { value: 'PASSPORT', label: '护照号' },
+  { value: 'LICENSE', label: '车牌号' },
+  { value: 'COMPANY_ID', label: '统一社会信用代码' },
   { value: 'CUSTOM', label: '自定义' },
 ];
 
@@ -191,6 +193,9 @@ export const MASK_DATA_TYPE_MAP: Record<string, { text: string; color: string }>
   BANK_CARD: { text: '银行卡号', color: COLOR.warning },
   EMAIL: { text: '邮箱', color: COLOR.success },
   IP: { text: 'IP 地址', color: '#7c3aed' },
+  PASSPORT: { text: '护照号', color: '#ec4899' },
+  LICENSE: { text: '车牌号', color: '#14b8a6' },
+  COMPANY_ID: { text: '统一社会信用代码', color: '#f97316' },
   CUSTOM: { text: '自定义', color: '#6b7280' },
 };
 
@@ -228,10 +233,6 @@ export const OUTBOUND_SCOPE_MAP: Record<string, { text: string; color: string }>
   AGENT: { text: '智能体', color: COLOR.primary },
   DEPT: { text: '部门', color: COLOR.info },
 };
-
-// ==================== Tab 6: 内容审核 ====================
-
-export const AUDIT_SCOPE_MAP = WORD_SCOPE_MAP;
 
 // ==================== 通用辅助 ====================
 

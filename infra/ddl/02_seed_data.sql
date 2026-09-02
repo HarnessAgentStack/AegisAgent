@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- Aegis Platform - 种子数据 (A 类：平台种子/预置配置数据最小集)
 -- -----------------------------------------------------------------------------
 -- 用途：新部署最小可运行数据集，保证「建库 → 起服务 → 可登录 → 有沙箱
@@ -124,63 +124,121 @@ VALUES
   (2000000000000000102, 0, 'default_public', 2, 'ROLE', 'TENANT_ADMIN',   'PENDING', NULL, NULL, NULL, NOW(), 0);
 
 -- -----------------------------------------------------------------------------
--- 8. 工具策略 sec_tool_policy：工具类型 × 安全等级 → 动作 矩阵（11 条基线）
+-- 8. 工具策略 sec_tool_policy：工具类型 × 安全等级 → 动作 完整矩阵（24 条）
+--    设计原则（演示友好优先）：
+--    - L1 公开级：全 ALLOW（最高演示友好，公开业务无阻碍）
+--    - L2 内部级：全 ALLOW（内部业务正常操作，外网/代码执行也放行）
+--    - L3 机密级：EXTERNAL_NETWORK/CODE_EXEC/HIGH_RISK 降为 APPROVE（还能审批放行）
+--    - L4 绝密级：只有 READONLY 还能 APPROVE，其余全 REJECT（严格管控）
 -- -----------------------------------------------------------------------------
 INSERT IGNORE INTO `sec_tool_policy`
   (`id`, `tenant_id`, `tool_type`, `security_level`, `action`, `description`, `enabled`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`)
 VALUES
-  (11001, 1, 'READONLY',        1, 'ALLOW',   '只读工具L1：允许直接执行',         1, 1, NOW(), 1, NOW(), 0),
-  (11002, 1, 'READONLY',        4, 'REJECT',  '只读工具L4：拒绝执行，安全等级过高', 1, 1, NOW(), 1, NOW(), 0),
-  (11003, 1, 'INTERNAL_API',    1, 'ALLOW',   '内部API工具L1：允许直接调用',       1, 1, NOW(), 1, NOW(), 0),
-  (11004, 1, 'INTERNAL_API',    3, 'APPROVE', '内部API工具L3：需审批后调用',       1, 1, NOW(), 1, NOW(), 0),
-  (11005, 1, 'WRITE',           2, 'APPROVE', '写入工具L2：需审批后执行',          1, 1, NOW(), 1, NOW(), 0),
-  (11006, 1, 'WRITE',           4, 'REJECT',  '写入工具L4：拒绝执行，安全等级过高', 1, 1, NOW(), 1, NOW(), 0),
-  (11007, 1, 'EXTERNAL_NETWORK',2, 'APPROVE', '外部网络工具L2：需审批后访问',      1, 1, NOW(), 1, NOW(), 0),
-  (11008, 1, 'EXTERNAL_NETWORK',4, 'REJECT',  '外部网络工具L4：拒绝访问，安全等级过高',1,1, NOW(), 1, NOW(), 0),
-  (11009, 1, 'CODE_EXEC',       3, 'APPROVE', '代码执行工具L3：需审批后执行',      1, 1, NOW(), 1, NOW(), 0),
-  (11010, 1, 'CODE_EXEC',       4, 'REJECT',  '代码执行工具L4：拒绝执行，安全等级过高',1,1, NOW(), 1, NOW(), 0),
-  (11011, 1, 'HIGH_RISK',       4, 'REJECT',  '高危工具L4：一律拒绝执行',          1, 1, NOW(), 1, NOW(), 0);
+  -- READONLY（只读查询）
+  (11001, 1, 'READONLY',        1, 'ALLOW',   '只读工具 L1：公开级直接放行',      1, 1, NOW(), 1, NOW(), 0),
+  (11002, 1, 'READONLY',        2, 'ALLOW',   '只读工具 L2：内部级直接放行',      1, 1, NOW(), 1, NOW(), 0),
+  (11003, 1, 'READONLY',        3, 'ALLOW',   '只读工具 L3：机密级直接放行',      1, 1, NOW(), 1, NOW(), 0),
+  (11004, 1, 'READONLY',        4, 'APPROVE', '只读工具 L4：绝密级需审批',        1, 1, NOW(), 1, NOW(), 0),
+
+  -- INTERNAL_API（内部接口）
+  (11005, 1, 'INTERNAL_API',    1, 'ALLOW',   '内部API L1：公开级直接放行',       1, 1, NOW(), 1, NOW(), 0),
+  (11006, 1, 'INTERNAL_API',    2, 'ALLOW',   '内部API L2：内部级直接放行',       1, 1, NOW(), 1, NOW(), 0),
+  (11007, 1, 'INTERNAL_API',    3, 'ALLOW',   '内部API L3：机密级直接放行',       1, 1, NOW(), 1, NOW(), 0),
+  (11008, 1, 'INTERNAL_API',    4, 'REJECT',  '内部API L4：绝密级拒绝',           1, 1, NOW(), 1, NOW(), 0),
+
+  -- WRITE（写入操作）
+  (11009, 1, 'WRITE',           1, 'ALLOW',   '写入工具 L1：公开级直接放行',      1, 1, NOW(), 1, NOW(), 0),
+  (11010, 1, 'WRITE',           2, 'ALLOW',   '写入工具 L2：内部级直接放行',      1, 1, NOW(), 1, NOW(), 0),
+  (11011, 1, 'WRITE',           3, 'APPROVE', '写入工具 L3：机密级需审批',        1, 1, NOW(), 1, NOW(), 0),
+  (11012, 1, 'WRITE',           4, 'REJECT',  '写入工具 L4：绝密级拒绝',          1, 1, NOW(), 1, NOW(), 0),
+
+  -- EXTERNAL_NETWORK（外网访问）
+  (11013, 1, 'EXTERNAL_NETWORK',1, 'ALLOW',   '外网工具 L1：公开级放行（白名单域名）',1,1,NOW(),1,NOW(),0),
+  (11014, 1, 'EXTERNAL_NETWORK',2, 'ALLOW',   '外网工具 L2：内部级放行',          1, 1, NOW(), 1, NOW(), 0),
+  (11015, 1, 'EXTERNAL_NETWORK',3, 'APPROVE', '外网工具 L3：机密级需审批',        1, 1, NOW(), 1, NOW(), 0),
+  (11016, 1, 'EXTERNAL_NETWORK',4, 'REJECT',  '外网工具 L4：绝密级禁止出网',      1, 1, NOW(), 1, NOW(), 0),
+
+  -- CODE_EXEC（代码执行）
+  (11017, 1, 'CODE_EXEC',       1, 'ALLOW',   '代码执行 L1：公开级放行（沙箱隔离）',1,1,NOW(),1,NOW(),0),
+  (11018, 1, 'CODE_EXEC',       2, 'ALLOW',   '代码执行 L2：内部级放行',          1, 1, NOW(), 1, NOW(), 0),
+  (11019, 1, 'CODE_EXEC',       3, 'APPROVE', '代码执行 L3：机密级需审批',        1, 1, NOW(), 1, NOW(), 0),
+  (11020, 1, 'CODE_EXEC',       4, 'REJECT',  '代码执行 L4：绝密级禁止',          1, 1, NOW(), 1, NOW(), 0),
+
+  -- HIGH_RISK（高风险操作）
+  (11021, 1, 'HIGH_RISK',       1, 'ALLOW',   '高危工具 L1：公开级放行（沙箱隔离）',1,1,NOW(),1,NOW(),0),
+  (11022, 1, 'HIGH_RISK',       2, 'ALLOW',   '高危工具 L2：内部级放行',          1, 1, NOW(), 1, NOW(), 0),
+  (11023, 1, 'HIGH_RISK',       3, 'APPROVE', '高危工具 L3：机密级需审批',        1, 1, NOW(), 1, NOW(), 0),
+  (11024, 1, 'HIGH_RISK',       4, 'REJECT',  '高危工具 L4：绝密级禁止',          1, 1, NOW(), 1, NOW(), 0);
 
 -- -----------------------------------------------------------------------------
--- 9. 脱敏规则 sec_mask_rule：PHONE/ID_CARD/BANK_CARD/EMAIL/IP（5 条基线）
+-- 9. 脱敏规则 sec_mask_rule：8 条生产基线
+--    - 修 BANK_CARD regex：原 \d{16,19} 太宽会误伤订单号，改为银联卡前缀 62[0-9]{14,17}
+--    - 新增 PASSPORT / LICENSE / COMPANY_ID 覆盖常见证件类型
+--    - IP 脱敏改为 ALL（整段替换为 ***.*.*），避免泄露网段信息
 -- -----------------------------------------------------------------------------
 INSERT IGNORE INTO `sec_mask_rule`
   (`id`, `tenant_id`, `data_type`, `regex`, `mask_way`, `example`, `enabled`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`)
 VALUES
-  (13001, 1, 'PHONE',     '1[3-9]\\d{9}',                                                                                       'MIDDLE4',       '138****5678',           1, 1, NOW(), 1, NOW(), 0),
-  (13002, 1, 'ID_CARD',   '[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]',             'KEEP_HEAD_TAIL','110***********1234',   1, 1, NOW(), 1, NOW(), 0),
-  (13003, 1, 'BANK_CARD', '\\d{16,19}',                                                                                          'KEEP_LAST4',    '************1234',     1, 1, NOW(), 1, NOW(), 0),
-  (13004, 1, 'EMAIL',     '[\\w.+-]+@[\\w-]+\\.[\\w.-]+',                                                                        'KEEP_HEAD_TAIL','z***@example.com',     1, 1, NOW(), 1, NOW(), 0),
-  (13005, 1, 'IP',        '\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}',                                                            'KEEP_HEAD_TAIL','192.168.*.*',          1, 1, NOW(), 1, NOW(), 0);
+  (13001, 1, 'PHONE',      '1[3-9]\\d{9}',                                                                                          'MIDDLE4',       '138****5678',          1, 1, NOW(), 1, NOW(), 0),
+  (13002, 1, 'ID_CARD',    '[1-9]\\d{5}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]',              'KEEP_HEAD_TAIL','110***********1234',   1, 1, NOW(), 1, NOW(), 0),
+  (13003, 1, 'BANK_CARD',  '62[0-9]{14,17}',                                                                                        'KEEP_LAST4',    '************1234',     1, 1, NOW(), 1, NOW(), 0),
+  (13004, 1, 'EMAIL',      '[\\w.+-]+@[\\w-]+\\.[\\w.-]+',                                                                         'KEEP_HEAD_TAIL','z***@example.com',     1, 1, NOW(), 1, NOW(), 0),
+  (13005, 1, 'IP',         '\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}',                                                             'ALL',           '***.***.***.***',     1, 1, NOW(), 1, NOW(), 0),
+  (13006, 1, 'PASSPORT',   '[EeGgPp][0-9]{8}',                                                                                      'KEEP_HEAD_TAIL','E******67',            1, 1, NOW(), 1, NOW(), 0),
+  (13007, 1, 'LICENSE',    '[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{5}',                       'KEEP_LAST4',    '京A12345 → 京****5',   1, 1, NOW(), 1, NOW(), 0),
+  (13008, 1, 'COMPANY_ID', '[0-9A-HJ-NPQRTUWXY]{18}',                                                                               'KEEP_HEAD_TAIL','911100***********9X', 1, 1, NOW(), 1, NOW(), 0);
 
 -- -----------------------------------------------------------------------------
--- 10. 出站策略 sec_outbound_policy：白名单域名 + 黑名单 IP（示例基线）
---     注：域名已替换为通用示例，生产请按实际需要调整
+-- 10. 出站策略 sec_outbound_policy：SSRF 防护 + 示例白名单（12 条）
+--     设计原则：
+--     - BLACKLIST_IP 覆盖全部内网网段（SSRF 防护基线）：回环、A/B/C 类内网、链路本地、
+--       IPv4/IPv6 私网、云元数据段 169.254.0.0/16
+--     - WHITELIST_DOMAIN 给 6 条常见云服务示例（生产需按实际业务调整）
+--     - 所有域名默认限制 443 端口（HTTPS），禁止 80/8080/8443 等非标准端口
 -- -----------------------------------------------------------------------------
 INSERT IGNORE INTO `sec_outbound_policy`
   (`id`, `tenant_id`, `policy_type`, `domain`, `ip_cidr`, `port_limit`, `applicable_scope`, `scope_config`, `valid_hours`, `description`, `enabled`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`)
 VALUES
-  (17001, 1, 'WHITELIST_DOMAIN', 'api.example.com',      NULL,          NULL, 'ALL',  NULL, NULL, '允许调用白名单外部 API 域名（示例，请替换为实际域名）', 1, 1, NOW(), 1, NOW(), 0),
-  (17002, 1, 'BLACKLIST_IP',     NULL,                   '10.0.0.0/8',  NULL, 'ALL',  NULL, NULL, '禁止访问内网 10.0.0.0/8 网段（SSRF 防护基线）',          1, 1, NOW(), 1, NOW(), 0),
-  (17003, 1, 'WHITELIST_DOMAIN', 'oss.example.com',      NULL,          NULL, 'AGENT',NULL, NULL, '允许特定智能体调用对象存储域名（示例）',               1, 1, NOW(), 1, NOW(), 0);
+  -- ========== BLACKLIST_IP：SSRF 防护基线（全部内网网段 + 链路本地） ==========
+  (17001, 1, 'BLACKLIST_IP', NULL, '127.0.0.0/8',    NULL, 'ALL', NULL, NULL, '禁止访问回环地址（SSRF 防护）',                     1, 1, NOW(), 1, NOW(), 0),
+  (17002, 1, 'BLACKLIST_IP', NULL, '10.0.0.0/8',     NULL, 'ALL', NULL, NULL, '禁止访问 A 类内网 10.0.0.0/8（SSRF 防护）',          1, 1, NOW(), 1, NOW(), 0),
+  (17003, 1, 'BLACKLIST_IP', NULL, '172.16.0.0/12',  NULL, 'ALL', NULL, NULL, '禁止访问 B 类内网 172.16.0.0/12（SSRF 防护）',       1, 1, NOW(), 1, NOW(), 0),
+  (17004, 1, 'BLACKLIST_IP', NULL, '192.168.0.0/16', NULL, 'ALL', NULL, NULL, '禁止访问 C 类内网 192.168.0.0/16（SSRF 防护）',      1, 1, NOW(), 1, NOW(), 0),
+  (17005, 1, 'BLACKLIST_IP', NULL, '169.254.0.0/16', NULL, 'ALL', NULL, NULL, '禁止访问链路本地 169.254.0.0/16（含云元数据服务）',    1, 1, NOW(), 1, NOW(), 0),
+  (17006, 1, 'BLACKLIST_IP', NULL, '0.0.0.0/8',      NULL, 'ALL', NULL, NULL, '禁止访问当前网络 0.0.0.0/8（SSRF 防护）',           1, 1, NOW(), 1, NOW(), 0),
+
+  -- ========== WHITELIST_DOMAIN：示例（生产请按实际业务调整） ==========
+  (17010, 1, 'WHITELIST_DOMAIN', 'api.openai.com',        NULL, 443, 'ALL',  NULL, NULL, '允许调用 OpenAI API（HTTPS 443）',                  1, 1, NOW(), 1, NOW(), 0),
+  (17011, 1, 'WHITELIST_DOMAIN', '*.volces.com',          NULL, 443, 'ALL',  NULL, NULL, '允许调用火山引擎（豆包）API（HTTPS 443）',          1, 1, NOW(), 1, NOW(), 0),
+  (17012, 1, 'WHITELIST_DOMAIN', '*.aliyuncs.com',        NULL, 443, 'ALL',  NULL, NULL, '允许访问阿里云 OSS（HTTPS 443）',                  1, 1, NOW(), 1, NOW(), 0),
+  (17013, 1, 'WHITELIST_DOMAIN', '*.tencentcloudapi.com', NULL, 443, 'ALL',  NULL, NULL, '允许调用腾讯云 API（HTTPS 443）',                  1, 1, NOW(), 1, NOW(), 0),
+  (17014, 1, 'WHITELIST_DOMAIN', '*.baidu.com',           NULL, 443, 'ALL',  NULL, NULL, '允许访问百度系 API（HTTPS 443）',                  1, 1, NOW(), 1, NOW(), 0),
+  (17015, 1, 'WHITELIST_DOMAIN', 'weixin.qq.com',         NULL, 443, 'ALL',  NULL, NULL, '允许访问微信开放平台（HTTPS 443）',                1, 1, NOW(), 1, NOW(), 0);
 
 -- -----------------------------------------------------------------------------
--- 11. 敏感词 sec_sensitive_word：最小基线（仅字面 REPLACE 脱敏词）
---     设计决策（2026-09-01 用户确认）：
---     - 仅保留 3 条最必要的 REPLACE（替换脱敏）词，不配置 BLOCK 拦截词，
---       避免"黑客/机密/confidential"等安全合规术语误伤正常文档解析
---       （如技术规格书中"降低被黑客攻击的风险"被整条拦截的误判）
---     - 结构化数据（手机号/身份证/银行卡/邮箱）正则脱敏职责在
---       sec_mask_rule（DataMaskService 正则引擎），敏感词表不重复配置 REGEX 词
---       （引擎对敏感词采用字面 contains 匹配，REGEX 词实际不生效）
---     - 附件解析文本命中 BLOCK 词时降级为脱敏放行（AegisSecurityMiddleware 拆分检测）
+-- 11. 敏感词 sec_sensitive_word：9 条生产基线（5 BLOCK + 4 REPLACE）
+--     设计说明：
+--     - BLOCK 词（5 条）：覆盖诈骗/赌博/毒品/自杀/色情五类高频违禁，词库为示例框架，
+--       生产应按行业合规要求动态扩充（政治敏感/暴力恐怖等具体词不硬编码在 seed 中）
+--     - REPLACE 词（4 条）：对隐私关键词脱敏替换，避免 token/密钥等在对话/输出中明文泄露
+--     - 结构化数据（手机号/身份证/银行卡/邮箱）正则脱敏由 sec_mask_rule 负责，
+--       敏感词表仅处理字面匹配的隐私关键词
 -- -----------------------------------------------------------------------------
 INSERT IGNORE INTO `sec_sensitive_word`
   (`id`, `tenant_id`, `word`, `category`, `match_mode`, `action`, `replace_text`, `scope`, `enabled`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`)
 VALUES
-  (12003, 1, '密码',   'PRIVACY', 'EXACT', 'REPLACE', '***',     'INPUT', 1, 1, NOW(), 1, NOW(), 0),
-  (12015, 1, '社保号', 'PRIVACY', 'FUZZY', 'REPLACE', '***',     'INPUT', 1, 1, NOW(), 1, NOW(), 0),
-  (12017, 1, '薪资',   'PRIVACY', 'EXACT', 'REPLACE', '[薪资]', 'INPUT', 1, 1, NOW(), 1, NOW(), 0);
+  -- ========== BLOCK 拦截类（通用违禁） ==========
+  (12001, 1, '诈骗',   'GENERAL', 'EXACT', 'BLOCK', NULL,   'INPUT',       1, 1, NOW(), 1, NOW(), 0),
+  (12002, 1, '赌博',   'GENERAL', 'EXACT', 'BLOCK', NULL,   'INPUT',       1, 1, NOW(), 1, NOW(), 0),
+  (12003, 1, '博彩',   'GENERAL', 'EXACT', 'BLOCK', NULL,   'INPUT',       1, 1, NOW(), 1, NOW(), 0),
+  (12004, 1, '自杀',   'GENERAL', 'EXACT', 'BLOCK', NULL,   'ALL',         1, 1, NOW(), 1, NOW(), 0),
+  (12005, 1, '毒品',   'GENERAL', 'EXACT', 'BLOCK', NULL,   'INPUT',       1, 1, NOW(), 1, NOW(), 0),
+
+  -- ========== REPLACE 替换类（隐私脱敏） ==========
+  (12010, 1, '密码',   'PRIVACY', 'EXACT', 'REPLACE', '***', 'ALL',         1, 1, NOW(), 1, NOW(), 0),
+  (12011, 1, '口令',   'PRIVACY', 'EXACT', 'REPLACE', '***', 'ALL',         1, 1, NOW(), 1, NOW(), 0),
+  (12012, 1, '密钥',   'PRIVACY', 'EXACT', 'REPLACE', '***', 'ALL',         1, 1, NOW(), 1, NOW(), 0),
+  (12013, 1, 'token',  'PRIVACY', 'FUZZY', 'REPLACE', '***', 'ALL',         1, 1, NOW(), 1, NOW(), 0);
 
 -- -----------------------------------------------------------------------------
 -- 12. 权限字典 org_permission：平台共享权限（tenant_id=0，所有租户可见）
