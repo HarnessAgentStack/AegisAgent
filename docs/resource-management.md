@@ -1,6 +1,6 @@
 # 资源管理更新机制剖析
 
-> 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-08-31
+> 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-09-03（源码核实）
 > 覆盖四类资源：**智能体 / 技能 / 知识库 / MCP**。核心回答三个问题：怎么创建、怎么发布、runtime 端怎么感知变更。
 
 ---
@@ -137,7 +137,7 @@ sequenceDiagram
 
 | 场景 | 指纹变化 | 实例池行为 |
 |---|---|---|
-| 绑定新增一个 SKILL | SHA 变 | refreshToolkit（Toolkit.removeTool + re-register）+ BindingSyncMiddleware 重物化 Workspace |
+| 绑定新增一个 SKILL | SHA 变 | refreshToolkit（Toolkit.removeTool + re-register）+ WorkspaceMaterializer 重物化 Workspace |
 | 绑定删除一个 TOOL | SHA 变 | 同上 |
 | 绑定的 SKILL 从 FIXED v1.0 改成 FIXED v1.1 | SHA 变 | 同上 |
 | 绑定的 SKILL version=0（DYNAMIC），SKILL 本身有新版本发布 | SHA **不变**（binding 表 version 还是 0）| **不自动刷新**——DYNAMIC 类型设计就是跟随上游，runtime 每次装载时直接拉 skill.latest_version |
@@ -268,7 +268,7 @@ flowchart TD
         B1["POST /api/admin/resource/kb/{id}/upload/apply<br/>获取 MinIO 上传凭证"] --> B2["客户端直传 MinIO<br/>res_kb_document INSERT<br/>status = UPLOADING"]
         B2 --> B3["POST /api/admin/resource/kb/{id}/upload/notify<br/>通知服务端上传完成"]
         B3 --> B4["FileParseEngine 解析<br/>status: UPLOADING → PARSING"]
-        B4 --> B5["生成 res_kb_document_chunk<br/>每块 500 token + 50 重叠"]
+        B4 --> B5["生成 res_kb_document_chunk<br/>每块 500 字符 + 50 重叠"]
         B5 --> B6["Embedding → Milvus 集合<br/>status: PARSING → EMBEDDING → READY"]
         B6 --> B7["ProcessProgressVO SSE 推送进度<br/>GET /documents/{docId}/progress/stream"]
     end
@@ -318,7 +318,7 @@ stateDiagram-v2
   chunk_id    BIGINT      ← res_kb_document_chunk.id
   doc_id      BIGINT      ← res_kb_document.id
   content     VARCHAR     ← 500 字符文本片段
-  embedding   FLOAT[1536] ← 取决于 Embedding Provider 维度
+  embedding   FLOAT[dim] ← 维度由 Embedding Provider 决定（非固定）
   tenant_id   BIGINT      ← 冗余字段，双重保险跨租户隔离
 ```
 
@@ -467,7 +467,7 @@ ChatRequest.resources 字段允许用户在对话中临时选择资源（不改�
 | `AgentAssemblyService` | 装配：查 def + config + binding + 创建 session + 构建 context | Runtime |
 | `AegisAgentInstanceManager` | 实例池（poolKey 粒度 + LRU + TTL + Lazy 沙箱 + 指纹比对） | Runtime |
 | `BindingFingerprinter` | SHA-256(type:id:version 排序) 指纹计算 | Runtime |
-| `BindingSyncMiddleware` | onAgent 拦截点 → 指纹比对 → 重物化 Workspace | Runtime |
+| `BindingSyncMiddleware` | 装配阶段由 `AgentAssemblyService` 调用：绑定指纹比对 + 重物化 Workspace（非洋葱链中间件） | Runtime |
 | `AegisSkillRepository` | RuntimeContextSkillRepository SPI 实现，按档位分轨装载 | Runtime |
 | `ResourceQueryService` | 聚合 Tool/Skill/Kb/Mcp 五 Mapper，供装配层统一查询 | Runtime |
 | `AegisRagMiddleware` | onSystemPrompt → Embedding → Milvus → 知识片段注入 | Runtime |

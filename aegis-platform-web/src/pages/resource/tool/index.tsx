@@ -4,7 +4,7 @@
  * @author wang.zhen
  * @since 1.0.0
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
@@ -23,7 +23,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { PageHeader } from '@/components/common/PageHeader';
 import { SecurityLevelTag } from '@/components/common/SecurityLevelTag';
 import { LifeStatusTag } from '@/components/common/LifeStatusTag';
-import { LifeStatus, SecurityLevel } from '@/types/enum';
+import { SecurityLevel } from '@/types/enum';
 import type { Tool } from '@/types/resource';
 import { toolApi } from '@/api/resource';
 import { safeJsonParse } from '@/utils/number';
@@ -39,131 +39,37 @@ type SourceType = Tool['sourceType'];
 /** 工具状态 */
 type ToolStatus = Tool['status'];
 
-/** 工具类型 ->Tag 颜色 / 文案 */
-const TOOL_TYPE_TAG: Record<ToolType, { color: string; text: string }> = {
+/** 工具类型 ->Tag 颜色 / 文案（兼容后端 ToolType 枚举与历史值） */
+const TOOL_TYPE_TAG: Partial<Record<ToolType, { color: string; text: string }>> = {
+  READONLY: { color: 'green', text: '只读操作' },
+  INTERNAL_API: { color: 'blue', text: '内部 API' },
+  WRITE: { color: 'orange', text: '写操作' },
+  EXTERNAL_NETWORK: { color: 'geekblue', text: '外部网络' },
+  CODE_EXEC: { color: 'red', text: '代码执行' },
+  HIGH_RISK: { color: 'magenta', text: '高风险' },
   BUILTIN: { color: 'blue', text: '内置' },
   CUSTOM: { color: 'purple', text: '自定义' },
   MCP_BOUND: { color: 'cyan', text: 'MCP 绑定' },
   SKILL_BOUND: { color: 'geekblue', text: '技能绑定' },
 };
 
-/** 工具来源类型 →Tag 颜色 / 文案 */
-const SOURCE_TYPE_TAG: Record<SourceType, { color: string; text: string }> = {
+/** 工具来源类型 →Tag 颜色 / 文案（兼容后端 BUILTIN/MCP 与历史值） */
+const SOURCE_TYPE_TAG: Partial<Record<SourceType, { color: string; text: string }>> = {
+  BUILTIN: { color: 'blue', text: '平台内置' },
+  MCP: { color: 'cyan', text: 'MCP' },
   SYSTEM: { color: 'default', text: '系统' },
   USER: { color: 'blue', text: '用户' },
-  MCP: { color: 'cyan', text: 'MCP' },
   SKILL: { color: 'geekblue', text: '技能' },
 };
 
-/** 工具状态 →Tag 颜色 / 文案 */
-const TOOL_STATUS_TAG: Record<ToolStatus, { color: string; text: string }> = {
+/** 工具状态 →Tag 颜色 / 文案（兼容后端 NORMAL/DISABLED 与历史值） */
+const TOOL_STATUS_TAG: Partial<Record<ToolStatus, { color: string; text: string }>> = {
+  NORMAL: { color: 'success', text: '正常' },
+  DISABLED: { color: 'default', text: '已禁用' },
   ACTIVE: { color: 'success', text: '可用' },
   INACTIVE: { color: 'default', text: '未启用' },
   DEPRECATED: { color: 'warning', text: '已废弃' },
 };
-
-/** 工具Mock数据 */
-const TOOL_MOCK: Tool[] = [
-  {
-    id: '1',
-    toolCode: 'TOOL_SQL_EXEC',
-    toolName: 'SQL执行',
-    toolType: 'BUILTIN',
-    sourceType: 'SYSTEM',
-    securityLevel: SecurityLevel.L3,
-    lifeStatus: LifeStatus.PUBLISHED,
-    status: 'ACTIVE',
-    signature: 'executeSql(sql: string, datasource: string): ResultSet',
-    description: '执行只读 SQL 查询并返回结果集',
-    requireApproval: true,
-    inputSchema: '{"type":"object","properties":{"sql":{"type":"string"},"datasource":{"type":"string"}},"required":["sql"]}',
-    outputSchema: '{"type":"object","properties":{"columns":{"type":"array"},"rows":{"type":"array"}}}',
-    createdAt: '2024-06-01 10:00:00',
-  },
-  {
-    id: '2',
-    toolCode: 'TOOL_HTTP_REQUEST',
-    toolName: 'HTTP请求',
-    toolType: 'BUILTIN',
-    sourceType: 'SYSTEM',
-    securityLevel: SecurityLevel.L2,
-    lifeStatus: LifeStatus.PUBLISHED,
-    status: 'ACTIVE',
-    signature: 'httpRequest(url: string, method: string, headers: object, body: string): Response',
-    description: '发起 HTTP/HTTPS 请求，支持 GET/POST/PUT/DELETE',
-    requireApproval: false,
-    inputSchema: '{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string"}}}',
-    outputSchema: '{"type":"object","properties":{"status":{"type":"number"},"body":{"type":"string"}}}',
-    createdAt: '2024-06-02 11:00:00',
-  },
-  {
-    id: '3',
-    toolCode: 'TOOL_FILE_READ',
-    toolName: '文件读取',
-    toolType: 'MCP_BOUND',
-    sourceType: 'MCP',
-    securityLevel: SecurityLevel.L2,
-    lifeStatus: LifeStatus.PUBLISHED,
-    status: 'ACTIVE',
-    signature: 'readFile(path: string): FileContent',
-    description: '从沙箱文件系统读取文件内容',
-    requireApproval: false,
-    inputSchema: '{"type":"object","properties":{"path":{"type":"string"}}}',
-    outputSchema: '{"type":"object","properties":{"content":{"type":"string"}}}',
-    sourceRef: 'MCP_FILE',
-    createdAt: '2024-06-10 14:00:00',
-  },
-  {
-    id: '4',
-    toolCode: 'TOOL_EMAIL_SEND',
-    toolName: '邮件发送',
-    toolType: 'CUSTOM',
-    sourceType: 'USER',
-    securityLevel: SecurityLevel.L2,
-    lifeStatus: LifeStatus.PUBLISHED,
-    status: 'INACTIVE',
-    signature: 'sendEmail(to: string[], subject: string, body: string): SendResult',
-    description: '通过 SMTP 发送邮件，支持模板',
-    requireApproval: true,
-    inputSchema: '{"type":"object","properties":{"to":{"type":"array"},"subject":{"type":"string"},"body":{"type":"string"}}}',
-    outputSchema: '{"type":"object","properties":{"success":{"type":"boolean"},"messageId":{"type":"string"}}}',
-    createdAt: '2024-07-15 09:30:00',
-  },
-  {
-    id: '5',
-    toolCode: 'TOOL_TRANSLATE',
-    toolName: '翻译',
-    toolType: 'SKILL_BOUND',
-    sourceType: 'SKILL',
-    securityLevel: SecurityLevel.L1,
-    lifeStatus: LifeStatus.PUBLISHED,
-    status: 'ACTIVE',
-    signature: 'translate(text: string, from: string, to: string): TranslateResult',
-    description: '多语言互译，保留专业术语',
-    requireApproval: false,
-    inputSchema: '{"type":"object","properties":{"text":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}}}',
-    outputSchema: '{"type":"object","properties":{"translated":{"type":"string"}}}',
-    sourceRef: 'SKILL_TRANSLATE',
-    createdAt: '2024-07-20 16:00:00',
-  },
-  {
-    id: '6',
-    toolCode: 'TOOL_WEB_SEARCH',
-    toolName: '网页搜索',
-    toolType: 'MCP_BOUND',
-    sourceType: 'MCP',
-    securityLevel: SecurityLevel.L1,
-    lifeStatus: LifeStatus.PUBLISHED,
-    status: 'DEPRECATED',
-    signature: 'webSearch(query: string, topK: number): SearchResult[]',
-    description: '搜索互联网并返回结构化结果',
-    requireApproval: false,
-    inputSchema: '{"type":"object","properties":{"query":{"type":"string"},"topK":{"type":"number"}}}',
-    outputSchema: '{"type":"array","items":{"type":"object"}}',
-    sourceRef: 'MCP_SEARCH',
-    createdAt: '2024-07-25 10:15:00',
-  },
-];
 
 const ToolPage: React.FC = () => {
   const { message } = App.useApp();
@@ -171,7 +77,7 @@ const ToolPage: React.FC = () => {
   const [toolType, setToolType] = useState<string>('all');
   const [sourceType, setSourceType] = useState<string>('all');
   const [loading, setLoading] = useState(false);
-  const [tools, setTools] = useState<Tool[]>(TOOL_MOCK);
+  const [tools, setTools] = useState<Tool[]>([]);
 
   // 详情弹窗
   const [detailVisible, setDetailVisible] = useState(false);
@@ -188,19 +94,21 @@ const ToolPage: React.FC = () => {
     });
   }, [keyword, toolType, sourceType, tools]);
 
-  /** 刷新列表 */
-  const refresh = async () => {
+  /** 加载列表（silent=true 时为挂载静默加载，不弹提示） */
+  const load = async (silent = false) => {
     setLoading(true);
     try {
       const list = await toolApi.list();
       setTools(list);
-      message.success('已刷新工具列表');
+      if (!silent) message.success('已刷新工具列表');
     } catch {
       /* 弹错已处理 */
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => { load(true); }, []);
 
   /** 打开详情弹窗 */
   const openDetail = (record: Tool) => {
@@ -225,7 +133,7 @@ const ToolPage: React.FC = () => {
       width: 110,
       render: (t: ToolType) => {
         const cfg = TOOL_TYPE_TAG[t];
-        return <Tag color={cfg.color}>{cfg.text}</Tag>;
+        return cfg ? <Tag color={cfg.color}>{cfg.text}</Tag> : <Tag>{t}</Tag>;
       },
     },
     {
@@ -234,7 +142,7 @@ const ToolPage: React.FC = () => {
       width: 90,
       render: (s: SourceType) => {
         const cfg = SOURCE_TYPE_TAG[s];
-        return <Tag color={cfg.color}>{cfg.text}</Tag>;
+        return cfg ? <Tag color={cfg.color}>{cfg.text}</Tag> : <Tag>{s}</Tag>;
       },
     },
     {
@@ -249,15 +157,15 @@ const ToolPage: React.FC = () => {
       width: 100,
       render: (s: ToolStatus) => {
         const cfg = TOOL_STATUS_TAG[s];
-        return <Tag color={cfg.color}>{cfg.text}</Tag>;
+        return cfg ? <Tag color={cfg.color}>{cfg.text}</Tag> : <Tag>{s}</Tag>;
       },
     },
     {
-      title: '审批',
-      dataIndex: 'requireApproval',
+      title: '读写',
+      dataIndex: 'readOnly',
       width: 80,
       render: (v?: boolean) =>
-        v ? <Tag color="orange">需要</Tag> : <Tag>无需</Tag>,
+        v ? <Tag color="green">只读</Tag> : <Tag color="orange">写</Tag>,
     },
     {
       title: '操作',
@@ -286,31 +194,30 @@ const ToolPage: React.FC = () => {
           <Descriptions.Item label="工具编码">{r.toolCode}</Descriptions.Item>
           <Descriptions.Item label="名称">{r.toolName}</Descriptions.Item>
           <Descriptions.Item label="工具类型">
-            <Tag color={TOOL_TYPE_TAG[r.toolType].color}>{TOOL_TYPE_TAG[r.toolType].text}</Tag>
+            {(() => { const cfg = TOOL_TYPE_TAG[r.toolType]; return cfg ? <Tag color={cfg.color}>{cfg.text}</Tag> : <Tag>{r.toolType}</Tag>; })()}
           </Descriptions.Item>
           <Descriptions.Item label="来源">
-            <Tag color={SOURCE_TYPE_TAG[r.sourceType].color}>{SOURCE_TYPE_TAG[r.sourceType].text}</Tag>
+            {(() => { const cfg = SOURCE_TYPE_TAG[r.sourceType]; return cfg ? <Tag color={cfg.color}>{cfg.text}</Tag> : <Tag>{r.sourceType}</Tag>; })()}
           </Descriptions.Item>
           <Descriptions.Item label="安全级别">
             <SecurityLevelTag level={r.securityLevel} />
           </Descriptions.Item>
           <Descriptions.Item label="状态">
-            <Tag color={TOOL_STATUS_TAG[r.status].color}>{TOOL_STATUS_TAG[r.status].text}</Tag>
+            {(() => { const cfg = TOOL_STATUS_TAG[r.status]; return cfg ? <Tag color={cfg.color}>{cfg.text}</Tag> : <Tag>{r.status}</Tag>; })()}
           </Descriptions.Item>
-          <Descriptions.Item label="生命周期">
-            <LifeStatusTag status={r.lifeStatus} />
-          </Descriptions.Item>
-          <Descriptions.Item label="需要审批">
-            {r.requireApproval ? <Tag color="orange">是</Tag> : <Tag>否</Tag>}
+          {r.lifeStatus && (
+            <Descriptions.Item label="生命周期">
+              <LifeStatusTag status={r.lifeStatus} />
+            </Descriptions.Item>
+          )}
+          <Descriptions.Item label="是否只读">
+            {r.readOnly ? <Tag color="green">只读</Tag> : <Tag color="orange">含写操作</Tag>}
           </Descriptions.Item>
           {r.sourceRef && (
             <Descriptions.Item label="来源引用" span={2}>
               <Text code>{r.sourceRef}</Text>
             </Descriptions.Item>
           )}
-          <Descriptions.Item label="方法签名" span={2}>
-            <Text code style={{ fontSize: 12 }}>{r.signature ?? '—'}</Text>
-          </Descriptions.Item>
           <Descriptions.Item label="描述" span={2}>
             {r.description ?? '—'}
           </Descriptions.Item>
@@ -377,26 +284,26 @@ const ToolPage: React.FC = () => {
               style={{ width: 140 }}
               options={[
                 { value: 'all', label: '全部类型' },
-                { value: 'BUILTIN', label: '内置' },
-                { value: 'CUSTOM', label: '自定义' },
-                { value: 'MCP_BOUND', label: 'MCP 绑定' },
-                { value: 'SKILL_BOUND', label: '技能绑定' },
+                { value: 'READONLY', label: '只读操作' },
+                { value: 'INTERNAL_API', label: '内部 API' },
+                { value: 'WRITE', label: '写操作' },
+                { value: 'EXTERNAL_NETWORK', label: '外部网络' },
+                { value: 'CODE_EXEC', label: '代码执行' },
+                { value: 'HIGH_RISK', label: '高风险' },
               ]}
             />
             <Select
               value={sourceType}
               onChange={setSourceType}
-              style={{ width: 120 }}
+              style={{ width: 140 }}
               options={[
                 { value: 'all', label: '全部来源' },
-                { value: 'SYSTEM', label: '系统' },
-                { value: 'USER', label: '用户' },
+                { value: 'BUILTIN', label: '平台内置' },
                 { value: 'MCP', label: 'MCP' },
-                { value: 'SKILL', label: '技能' },
               ]}
             />
           </Space>
-          <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>
+          <Button icon={<ReloadOutlined />} onClick={() => load()} loading={loading}>
             刷新
           </Button>
         </Space>

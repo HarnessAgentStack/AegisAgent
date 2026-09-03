@@ -4,6 +4,11 @@ import com.aegis.dal.mapper.security.MaskRuleMapper;
 import com.aegis.dal.mapper.security.OutboundPolicyMapper;
 import com.aegis.dal.mapper.security.SensitiveWordMapper;
 import com.aegis.dal.mapper.security.ToolPolicyMapper;
+import com.aegis.core.dto.security.SandboxPolicyVO;
+import com.aegis.core.dto.security.SandboxPolicyUpdateRequest;
+import com.aegis.core.dto.security.SandboxPolicyCreateRequest;
+import com.aegis.core.domain.security.SandboxPolicy;
+import com.aegis.dal.mapper.security.SandboxPolicyMapper;
 import com.aegis.core.common.error.BusinessException;
 import com.aegis.core.common.web.ResultCode;
 import com.aegis.core.domain.security.MaskRule;
@@ -49,6 +54,7 @@ public class SecurityService {
     private final SensitiveWordMapper sensitiveWordMapper;
     private final MaskRuleMapper maskRuleMapper;
     private final OutboundPolicyMapper outboundPolicyMapper;
+    private final SandboxPolicyMapper sandboxPolicyMapper;
 
     /** 策略变更事件发布器 */
     @org.springframework.beans.factory.annotation.Autowired
@@ -391,4 +397,65 @@ public class SecurityService {
                     tenantId, policyType, policyId, operation, e);
         }
     }
+
+    // ==================== 沙箱命令策略 ====================
+
+    public Page<SandboxPolicyVO> listSandboxPolicies(String toolCode, Boolean enabled,
+                                                     Long tenantId, int page, int size) {
+        Page<SandboxPolicy> pageObj = new Page<>(page, size);
+        LambdaQueryWrapper<SandboxPolicy> wrapper = new LambdaQueryWrapper<SandboxPolicy>()
+                .eq(tenantId != null, SandboxPolicy::getTenantId, tenantId)
+                .eq(toolCode != null && !toolCode.isEmpty(), SandboxPolicy::getToolCode, toolCode)
+                .eq(enabled != null, SandboxPolicy::getEnabled, enabled)
+                .orderByDesc(SandboxPolicy::getId);
+        Page<SandboxPolicy> entityPage = sandboxPolicyMapper.selectPage(pageObj, wrapper);
+        return convertPage(entityPage, this::toSandboxPolicyVO, page, size);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public SandboxPolicyVO createSandboxPolicy(SandboxPolicyCreateRequest req, Long tenantId) {
+        SandboxPolicy entity = new SandboxPolicy();
+        BeanUtils.copyProperties(req, entity);
+        entity.setTenantId(tenantId);
+        if (entity.getEnabled() == null) entity.setEnabled(true);
+        try {
+            sandboxPolicyMapper.insert(entity);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            throw new BusinessException(ResultCode.CONFLICT, "该工具的沙箱策略已存在，请直接编辑既有策略");
+        }
+        log.info("SandboxPolicy created: tenantId={}, policyId={}", tenantId, entity.getId());
+        return toSandboxPolicyVO(entity);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void updateSandboxPolicy(Long id, SandboxPolicyUpdateRequest req, Long tenantId) {
+        SandboxPolicy existing = sandboxPolicyMapper.selectById(id);
+        if (existing == null || !tenantId.equals(existing.getTenantId())) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "沙箱策略不存在或无权修改");
+        }
+        if (req.getSandboxExecution() != null) existing.setSandboxExecution(req.getSandboxExecution());
+        if (req.getDescription() != null) existing.setDescription(req.getDescription());
+        if (req.getEnabled() != null) existing.setEnabled(req.getEnabled());
+        sandboxPolicyMapper.updateById(existing);
+        log.info("SandboxPolicy updated: tenantId={}, policyId={}", tenantId, id);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteSandboxPolicy(Long id, Long tenantId) {
+        SandboxPolicy existing = sandboxPolicyMapper.selectById(id);
+        if (existing == null || !tenantId.equals(existing.getTenantId())) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "沙箱策略不存在或无权删除");
+        }
+        sandboxPolicyMapper.deleteById(id);
+        log.info("SandboxPolicy deleted: tenantId={}, policyId={}", tenantId, id);
+    }
+
+    private SandboxPolicyVO toSandboxPolicyVO(SandboxPolicy e) {
+        return SandboxPolicyVO.builder()
+                .id(e.getId()).tenantId(e.getTenantId()).toolCode(e.getToolCode())
+                .sandboxExecution(e.getSandboxExecution()).description(e.getDescription())
+                .enabled(e.getEnabled()).createTime(e.getCreateTime()).updateTime(e.getUpdateTime())
+                .build();
+    }
+
 }

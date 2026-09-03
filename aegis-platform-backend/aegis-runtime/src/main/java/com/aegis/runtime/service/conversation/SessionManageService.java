@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.agent.AgentConfig;
+import com.aegis.runtime.service.sandbox.SandboxSessionHolder;
 
 /**
  * 会话管理领域服务。
@@ -71,13 +72,19 @@ public class SessionManageService {
     private final org.springframework.transaction.PlatformTransactionManager transactionManager;
     private org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
+    /** 会话创建锁池 */
+    private final ConcurrentHashMap<String, ReentrantLock> sessionCreateLocks = new ConcurrentHashMap<>();
+
     /**
      * 按 userId+agentId 维度的会话创建锁池。
      *
      * <p>同一用户+同一智能体的 getOrCreateSession 请求串行化执行，
-     * 防止并发创建两个 STARTED 活跃会话。
+     * 防止并发创建两个 STARTED 活跃会话。</p>
      */
-    private final ConcurrentHashMap<String, ReentrantLock> sessionCreateLocks = new ConcurrentHashMap<>();
+    // ↑ 锁池字段见上方 sessionCreateLocks
+
+    /** 周期3：会话级沙箱持有器（会话删除时释放沙箱实例） */
+    private final SandboxSessionHolder sandboxSessionHolder;
 
     /**
      * 初始化 TransactionTemplate（编程式事务）。
@@ -219,22 +226,27 @@ public class SessionManageService {
      */
     public void persistUserMessage(String sessionId, Long tenantId, Long userId, String content) {
         Mono.fromRunnable(() -> {
-            // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
-            for (int attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    persistMessageInternal(sessionId, tenantId, userId, MessageType.USER, content, null, 0, 0);
-                    return;
-                } catch (Exception e) {
-                    log.error("P1-12: persistUserMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
-                    if (attempt < 3) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            return;
+            com.aegis.core.common.tenant.TenantContextHolder.bind(tenantId);
+            try {
+                // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
+                for (int attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        persistMessageInternal(sessionId, tenantId, userId, MessageType.USER, content, null, 0, 0);
+                        return;
+                    } catch (Exception e) {
+                        log.error("P1-12: persistUserMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
+                        if (attempt < 3) {
+                            try {
+                                Thread.sleep(100);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
                         }
                     }
                 }
+            } finally {
+                com.aegis.core.common.tenant.TenantContextHolder.clear();
             }
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
     }
@@ -257,34 +269,39 @@ public class SessionManageService {
                                          int tokenInput, int tokenOutput,
                                          List<Map<String, Object>> toolCalls, String kbRefs) {
         Mono.fromRunnable(() -> {
-            // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
-            SessionMessage msg = null;
-            for (int attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    msg = persistMessageInternal(sessionId, tenantId, userId, MessageType.ASSISTANT,
-                            content, reasoning, tokenInput, tokenOutput);
-                    break;
-                } catch (Exception e) {
-                    log.error("P1-12: persistAssistantMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
-                    if (attempt < 3) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            return;
+            com.aegis.core.common.tenant.TenantContextHolder.bind(tenantId);
+            try {
+                // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
+                SessionMessage msg = null;
+                for (int attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        msg = persistMessageInternal(sessionId, tenantId, userId, MessageType.ASSISTANT,
+                                content, reasoning, tokenInput, tokenOutput);
+                        break;
+                    } catch (Exception e) {
+                        log.error("P1-12: persistAssistantMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
+                        if (attempt < 3) {
+                            try {
+                                Thread.sleep(100);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
                         }
                     }
                 }
-            }
-            // 更新 kbRefs 字段（best-effort，不参与重试）
-            if (kbRefs != null && msg != null) {
-                try {
-                    sessionMessageMapper.update(null, new LambdaUpdateWrapper<SessionMessage>()
-                            .eq(SessionMessage::getId, msg.getId())
-                            .set(SessionMessage::getKbRefs, kbRefs));
-                } catch (Exception e) {
-                    log.error("P1-12: persistAssistantMessage kbRefs 更新失败: sessionId={}", sessionId, e);
+                // 更新 kbRefs 字段（best-effort，不参与重试）
+                if (kbRefs != null && msg != null) {
+                    try {
+                        sessionMessageMapper.update(null, new LambdaUpdateWrapper<SessionMessage>()
+                                .eq(SessionMessage::getId, msg.getId())
+                                .set(SessionMessage::getKbRefs, kbRefs));
+                    } catch (Exception e) {
+                        log.error("P1-12: persistAssistantMessage kbRefs 更新失败: sessionId={}", sessionId, e);
+                    }
                 }
+            } finally {
+                com.aegis.core.common.tenant.TenantContextHolder.clear();
             }
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
     }
@@ -302,24 +319,29 @@ public class SessionManageService {
     public void persistToolCallMessage(String sessionId, Long tenantId, Long userId,
                                         String toolCallId, String toolName, String toolParams) {
         Mono.fromRunnable(() -> {
-            // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
-            for (int attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    // 复用 persistMessageInternal，保证事务原子性与 seq 重试抛异常语义
-                    persistMessageInternal(sessionId, tenantId, userId, MessageType.TOOL_CALL,
-                            null, null, 0, 0, toolCallId, toolName, toolParams, null);
-                    return;
-                } catch (Exception e) {
-                    log.error("P1-12: persistToolCallMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
-                    if (attempt < 3) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            return;
+            com.aegis.core.common.tenant.TenantContextHolder.bind(tenantId);
+            try {
+                // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
+                for (int attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        // 复用 persistMessageInternal，保证事务原子性与 seq 重试抛异常语义
+                        persistMessageInternal(sessionId, tenantId, userId, MessageType.TOOL_CALL,
+                                null, null, 0, 0, toolCallId, toolName, toolParams, null);
+                        return;
+                    } catch (Exception e) {
+                        log.error("P1-12: persistToolCallMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
+                        if (attempt < 3) {
+                            try {
+                                Thread.sleep(100);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
                         }
                     }
                 }
+            } finally {
+                com.aegis.core.common.tenant.TenantContextHolder.clear();
             }
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
     }
@@ -335,27 +357,57 @@ public class SessionManageService {
      */
     public void persistToolResultMessage(String sessionId, Long tenantId, Long userId,
                                           String toolCallId, String toolResult) {
+        // BUG-B 修复：tool_result 是 JSON 列，必须保证合法 JSON；若入参含裸控制字符（如 LF）或非 JSON 文本，
+        // 重新序列化使控制字符自动转义（LF→\n），避免 MySQL "Invalid JSON text: Invalid encoding in string."
+        String safeToolResult = normalizeJsonField(toolResult);
         Mono.fromRunnable(() -> {
-            // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
-            for (int attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    // 复用 persistMessageInternal，保证事务原子性与 seq 重试抛异常语义
-                    persistMessageInternal(sessionId, tenantId, userId, MessageType.TOOL_RESULT,
-                            null, null, 0, 0, toolCallId, null, null, toolResult);
-                    return;
-                } catch (Exception e) {
-                    log.error("P1-12: persistToolResultMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
-                    if (attempt < 3) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            return;
+            com.aegis.core.common.tenant.TenantContextHolder.bind(tenantId);
+            try {
+                // 增加重试（3 次，每次间隔 100ms），避免 DB 写入失败仅 log 后丢失
+                for (int attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        // 复用 persistMessageInternal，保证事务原子性与 seq 重试抛异常语义
+                        persistMessageInternal(sessionId, tenantId, userId, MessageType.TOOL_RESULT,
+                                null, null, 0, 0, toolCallId, null, null, safeToolResult);
+                        return;
+                    } catch (Exception e) {
+                        log.error("P1-12: persistToolResultMessage 投影失败 (attempt {}/3): sessionId={}", attempt, sessionId, e);
+                        if (attempt < 3) {
+                            try {
+                                Thread.sleep(100);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
                         }
                     }
                 }
+            } finally {
+                com.aegis.core.common.tenant.TenantContextHolder.clear();
             }
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
+    }
+
+    /**
+     * JSON 字段规范化：保证入参在写入 JSON 列前为合法 JSON 文本。
+     *
+     * <p>背景：tool_result/tool_params 等字段是 MySQL JSON 列，若字符串内含裸控制字符
+     * （如 LF/CR/TAB）或非 JSON 文本，MySQL 会以 {@code Data truncation: Invalid JSON text:
+     * "Invalid encoding in string."} 拒绝写入。</p>
+     *
+     * <p>策略：尝试用 fastjson2 解析；成功则重新序列化（自动转义控制字符）；失败则包装为
+     * {@code {"text": <raw>}} 保证合法。null/空串原样返回。</p>
+     */
+    private String normalizeJsonField(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return raw;
+        }
+        try {
+            Object parsed = JSON.parse(raw);
+            return JSON.toJSONString(parsed);
+        } catch (Exception e) {
+            return JSON.toJSONString(Collections.singletonMap("text", raw));
+        }
     }
 
     private SessionMessage persistMessageInternal(String sessionId, Long tenantId, Long userId,
@@ -715,7 +767,15 @@ public class SessionManageService {
         } catch (Exception e) {
             log.warn("deleteSession Redis 清理失败（MySQL 已删，孤儿 key 可由定时任务补清）: sessionId={}", sessionId, e);
         }
-        log.info("Session and messages deleted (Redis agent_state cleared): sessionId={}", sessionId);
+        // 周期4-2：删除会话时同步释放沙箱（OCCUPIED→IDLE 复用不杀 Pod）。
+        // 安全幂等：releaseOnSessionEnd 内部 ConcurrentHashMap.remove 不存在则 null 返回。
+        try {
+            sandboxSessionHolder.releaseOnSessionEnd(sessionId);
+        } catch (Exception sandEx) {
+            log.warn("deleteSession 沙箱释放异常（不影响会话删除）: sessionId={}, error={}",
+                    sessionId, sandEx.getMessage());
+        }
+        log.info("Session and messages deleted (Redis agent_state cleared, sandbox released): sessionId={}", sessionId);
     }
 
     /**

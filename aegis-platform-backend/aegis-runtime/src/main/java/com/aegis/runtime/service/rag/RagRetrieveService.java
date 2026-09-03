@@ -287,14 +287,17 @@ public class RagRetrieveService {
             return Collections.emptyList();
         }
 
-        // 向量相关性锚点：HYBRID 语义上依赖向量路径提供"确实相关"的信号。
-        // 如果向量路径被阈值全滤光，说明 query 与该库在语义上不相关 → 整体放弃。
-        // 纯 keyword 偶然命中不应作为 RAG 引用（那是 KEYWORD 策略该做的事）。
+        // HYBRID 语义修正：融合两路而非向量守门。
+        // 向量路径全空时降级为 keyword-only 返回（不再整体放弃）。
+        // 架构理由：HYBRID 名称本意是"同时走向量 + 关键词两路召回并融合"，
+        // 当向量路径因阈值全被滤光时，说明该 query 与知识库在语义空间相关性较弱，
+        // 但关键词精确匹配（如人名、技术代号）仍有价值，此时让 keyword 结果独立返回
+        // 比"整体放弃"更符合用户预期和 RAG 工程实践。
         if ((vectorHits == null || vectorHits.isEmpty())
                 && keywordHits != null && !keywordHits.isEmpty()) {
-            log.info("HYBRID 向量路径为空（全部低于阈值 {}），keyword 命中 {} 条但整体放弃: kbId={}, query={}",
+            log.info("HYBRID 向量路径为空（阈值 {}），降级为 keyword-only 返回 {} 条: kbId={}, query={}",
                     threshold, keywordHits.size(), kb.getId(), truncateForLog(query));
-            return Collections.emptyList();
+            return keywordHits;
         }
 
         if (vectorHits == null || vectorHits.isEmpty()) {

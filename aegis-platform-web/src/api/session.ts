@@ -55,7 +55,7 @@ function getCurrentUserId(): string {
 }
 
 function getCurrentTenantId(): string {
-  const tenantId = storage.get<number | string>(STORAGE_KEY.TENANT_ID, null);
+  const tenantId = storage.get<number | string | null>(STORAGE_KEY.TENANT_ID, null);
   if (tenantId === null || tenantId === undefined || tenantId === 0 || String(tenantId).trim() === '') {
     throw new Error('Tenant ID not configured. Please login first.');
   }

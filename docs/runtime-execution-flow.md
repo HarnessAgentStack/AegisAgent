@@ -7,7 +7,7 @@
 
 ## 序章：全局一瞥
 
-从用户浏览器点开 SSE 连接到 Agent 返回最终回复，一共经过 6 个阶段、3 个进程、11 个中间件、N 次 ReAct 循环。这条文档把每一步拆透。
+从用户浏览器点开 SSE 连接到 Agent 返回最终回复，一共经过 6 个阶段、3 个进程、5 个中间件、N 次 ReAct 循环。这条文档把每一步拆透。
 
 ### 一句话链路
 
@@ -200,13 +200,13 @@ AgentScope 2.0.2 的 Middleware 有 **5 个拦截点**：4 个**洋葱型**（`o
 
 ### order 值（各中间件 `order()` 方法，经 Spring 注入 `List<MiddlewareBase>` 排序装配）
 
-Phase 2 精简后保留 5 层（Trace/BindingSync/RAG/Mask/Audit），Security/TenantIsolation/Intent/ContentFilter/SandboxHeartbeat/Memory 等中间件已删除——安全决策收敛到 AgentScope 原生 PermissionEngine（`AegisPermissionRuleLoader` 从 sec_tool_policy 映射规则），记忆由 HarnessAgent 原生 MemoryConfig 承载：
+Phase 2 精简后保留 5 层（Trace/SandboxRouting/RAG/Mask/Audit），Security/TenantIsolation/Intent/ContentFilter/SandboxHeartbeat/Memory 等中间件已删除——安全决策收敛到 AgentScope 原生 PermissionEngine（`AegisPermissionRuleLoader` 从 sec_tool_policy 映射规则），记忆由 HarnessAgent 原生 MemoryConfig 承载：
 
 ```mermaid
 flowchart TD
     subgraph "外层（先执行）"
         M1["order=95  AegisTraceMiddleware<br/>链路追踪 + Span 创建"]
-        M2["order=75  AegisBindingSyncMiddleware<br/>绑定同步校验"]
+        M2["order=85  SandboxRoutingMiddleware<br/>沙箱路由判定(sec_sandbox_policy)"]
         M3["order=70  AegisRagMiddleware<br/>知识库检索 + 知识片段注入系统提示词"]
     end
     subgraph "内层（后执行）"

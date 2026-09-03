@@ -19,21 +19,19 @@ import java.util.Base64;
  * <h3>处理链路</h3>
  * <pre>
  *   ENGINE_PARSE 图片附件
- *     → 1. PaddleOCR 识别文字（扫描件/截图首选）
- *        ├─ 成功且文字有效 → 直接返回 OCR 结果 ✓
- *        └─ 失败/空结果     → 降级到 Step 2
+ *     → 1. ONNX OCR 识别（det + rec 进程内推理，默认）
+ *        ├─ 成功且文字有效 → 直接返回 ✓
+ *        └─ 失败/空结果     → 尝试 fallback 或降级 Step 2
+ *     → 1b. PaddleOCR HTTP fallback（仅当 ONNX 失败且 paddle.enabled=true）
  *     → 2. Vision LLM 生成图片描述（场景照片首选）
  *        ├─ 成功 → 返回描述 ✓
  *        └─ 失败 → 降级到 Step 3
  *     → 3. 元信息标注（永不阻塞）
  * </pre>
  *
- * <h3>降级策略（三层 fail-closed）</h3>
- * <ol>
- *   <li><b>OCR 层</b>：PaddleOCR 容器不可达、图片超 10MB、响应解析失败 → 静默降级到 vision LLM</li>
- *   <li><b>Vision LLM 层</b>：STRONG 档无模型 → 回退 LIGHT 档；LIGHT 也无 → 降级元信息</li>
- *   <li><b>元信息层</b>：永不向上抛出异常，返回 {@code [图片: xxx.png, 大小: 128KB]}</li>
- * </ol>
+ * <h3>OCR 架构变更（2026-09-03）</h3>
+ * <p>原 PaddleOCR Docker 容器方案已被 ONNX Runtime Java 嵌入方案替代，
+ * 零外部服务依赖。PaddleOcrClient 保留为可选 fallback。</p>
  *
  * @author wang.zhen
  */
@@ -42,16 +40,26 @@ import java.util.Base64;
 public class VisionDescriptionService {
 
     private final LlmClientFactory llmClientFactory;
-    private final PaddleOcrProperties ocrProperties;
+    private final PaddleOcrProperties paddleOcrProperties;
 
-    /**
-     * PaddleOCR 客户端（可选注入）。
-     *
-     * <p>当 {@code aegis.ocr.paddle.enabled=false} 时 bean 不会创建，
-     * 此字段为 null，跳过 OCR 直接走 vision LLM 路径。</p>
-     */
+    /** ONNX Runtime 进程内 OCR（默认启用，零外部服务依赖） */
     @Autowired(required = false)
-    private PaddleOcrClient ocrClient;
+    private OnnxOcrClient onnxOcrClient;
+
+    /** PaddleOCR HTTP 客户端（可选 fallback，保留向后兼容） */
+    @Autowired(required = false)
+    private PaddleOcrClient paddleOcrClient;
+
+    /** ONNX OCR 配置（含阈值、模型路径等） */
+    private final OnnxOcrProperties onnxOcrProperties;
+
+    public VisionDescriptionService(LlmClientFactory llmClientFactory,
+                                     PaddleOcrProperties paddleOcrProperties,
+                                     OnnxOcrProperties onnxOcrProperties) {
+        this.llmClientFactory = llmClientFactory;
+        this.paddleOcrProperties = paddleOcrProperties;
+        this.onnxOcrProperties = onnxOcrProperties;
+    }
 
     /** 视觉描述系统提示词 */
     private static final String VISION_SYSTEM_PROMPT =
@@ -62,11 +70,6 @@ public class VisionDescriptionService {
 
     /** 视觉描述默认超时秒数 */
     private static final int VISION_TIMEOUT_SECONDS = 60;
-
-    public VisionDescriptionService(LlmClientFactory llmClientFactory, PaddleOcrProperties ocrProperties) {
-        this.llmClientFactory = llmClientFactory;
-        this.ocrProperties = ocrProperties;
-    }
 
     /**
      * 生成图片描述（OCR 优先 + Vision LLM 降级）。
@@ -82,32 +85,42 @@ public class VisionDescriptionService {
         }
 
         // =============================================================
-        // Step 1: OCR 优先识别（扫描件/截图场景的最佳路径）
+        // Step 1: OCR 优先识别（ONNX 进程内推理 → Paddle HTTP fallback）
         // =============================================================
-        if (ocrClient != null && ocrProperties.isEnabled()) {
-            long ocrStart = System.currentTimeMillis();
-            PaddleOcrClient.OcrResult ocrResult = ocrClient.recognize(imageBytes, filename);
-            long ocrElapsed = System.currentTimeMillis() - ocrStart;
+        OcrResult ocrResult = null;
+        long ocrStart = System.currentTimeMillis();
+        String ocrSource = null;
 
-            if (ocrResult.hasValidText(ocrProperties.getMinTextLengthThreshold())) {
-                // OCR 成功且有有效文字 → 直接返回
-                log.info("{} OCR 优先命中: filename={}, chars={}, lines={}, elapsed={}ms",
-                        ocrProperties.getOcrSuccessTag(), filename,
-                        ocrResult.getFullText().length(),
-                        ocrResult.getLineCount(), ocrElapsed);
-                return ocrResult.getFullText();
-            } else {
-                // OCR 失败或无有效文字 → 降级 vision LLM
-                log.info("{} OCR 未命中（{}），降级 vision LLM: filename={}, elapsed={}ms",
-                        ocrProperties.getOcrFallbackTag(),
-                        ocrResult.isSuccess()
-                                ? "识别结果空/太少（" + ocrResult.getFullText().length() + " chars）"
-                                : "服务异常（" + ocrResult.getError() + "）",
-                        filename, ocrElapsed);
+        // 1a. ONNX Runtime 进程内（默认主路径，零外部依赖）
+        if (onnxOcrClient != null) {
+            ocrResult = onnxOcrClient.recognize(imageBytes, filename);
+            ocrSource = "ONNX";
+        }
+
+        // 1b. ONNX 未命中 → 尝试 PaddleOCR HTTP fallback（如果启用且注入）
+        if (ocrResult == null || !ocrResult.hasValidText(onnxOcrProperties.getMinTextLengthThreshold())) {
+            if (paddleOcrClient != null && paddleOcrProperties.isEnabled()) {
+                OcrResult fallback = paddleOcrClient.recognize(imageBytes, filename);
+                if (fallback.hasValidText(onnxOcrProperties.getMinTextLengthThreshold())) {
+                    ocrResult = fallback;
+                    ocrSource = "PaddleHTTP";
+                }
             }
+        }
+
+        long ocrElapsed = System.currentTimeMillis() - ocrStart;
+
+        if (ocrResult != null && ocrResult.hasValidText(onnxOcrProperties.getMinTextLengthThreshold())) {
+            log.info("[OCR][{}] 优先命中: filename={}, chars={}, lines={}, elapsed={}ms",
+                    ocrSource, filename, ocrResult.getFullText().length(),
+                    ocrResult.getLineCount(), ocrElapsed);
+            return ocrResult.getFullText();
         } else {
-            log.debug("OCR 未启用或客户端未注入，直接走 vision LLM: filename={}, enabled={}, client={}",
-                    filename, ocrProperties.isEnabled(), ocrClient != null);
+            log.info("[OCR] 未命中，降级 vision LLM: filename={}, source={}, elapsed={}ms, reason={}",
+                    filename, ocrSource, ocrElapsed,
+                    ocrResult != null
+                            ? (ocrResult.isSuccess() ? "文字太少(" + ocrResult.getFullText().length() + "chars)" : "引擎异常(" + ocrResult.getError() + ")")
+                            : "无可用 OCR 引擎");
         }
 
         // =============================================================

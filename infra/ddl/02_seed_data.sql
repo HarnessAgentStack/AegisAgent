@@ -120,3 +120,12 @@ INSERT IGNORE INTO `sec_outbound_policy` (`id`, `tenant_id`, `policy_type`, `dom
 
 
 SET FOREIGN_KEY_CHECKS = 1;
+
+-- ===== sec_sandbox_policy: 存量执行类工具默认进沙箱 =====
+INSERT INTO sec_sandbox_policy (id, tenant_id, tool_code, sandbox_execution, description, enabled) VALUES
+(2095418000000000000, 1, 'aegis_execute', 1, '存量执行类工具默认进沙箱', 1),
+(2095418000000000001, 1, 'aegis_generate_file', 1, '存量执行类工具默认进沙箱', 1),
+(2095418000000000002, 1, 'shell', 1, '存量执行类工具默认进沙箱', 1),
+(2095418000000000003, 1, 'run_script', 1, '存量执行类工具默认进沙箱', 1),
+(2095418000000000004, 1, 'build_test', 1, '存量执行类工具默认进沙箱', 1),
+(2095418000000000005, 1, 'exec_attachment', 1, '存量执行类工具默认进沙箱', 1);

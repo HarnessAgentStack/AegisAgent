@@ -17,6 +17,7 @@ import {
 import ToolPolicyTab from './tabs/ToolPolicyTab';
 import SensitiveWordTab from './tabs/SensitiveWordTab';
 import MaskRuleTab from './tabs/MaskRuleTab';
+import SandboxPolicyTab from './tabs/SandboxPolicyTab';
 import OutboundPolicyTab from './tabs/OutboundPolicyTab';
 
 const { Text } = Typography;
@@ -40,6 +41,7 @@ const SecurityPage: React.FC = () => {
       />
       <SubTabs tabs={SECURITY_TABS} active={activeTab} onChange={setActiveTab} />
       {activeTab === 'tool' && <ToolPolicyTab />}
+      {activeTab === 'sandbox' && <SandboxPolicyTab />}
       {activeTab === 'word' && <SensitiveWordTab />}
       {activeTab === 'mask' && <MaskRuleTab />}
       {activeTab === 'out' && <OutboundPolicyTab />}

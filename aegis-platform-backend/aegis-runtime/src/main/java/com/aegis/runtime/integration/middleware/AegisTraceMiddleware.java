@@ -133,7 +133,24 @@ public class AegisTraceMiddleware implements MiddlewareBase {
         String traceId = taskCtx.getTaskId();
         Model model = modelInput.model();
         String modelName = (model != null) ? model.getModelName() : "unknown";
-        List<Msg> messages = modelInput.messages();
+        // AgentScope 中间件在 LLM 调用前拦截时，ModelCallInput.messages() 可能返回 null
+        // 优先从 ModelCallInput 取，fallback 到 agent.getMessages()（AgentScope Agent 有此方法）
+        List<Msg> rawMessages = modelInput.messages();
+        List<Msg> resolvedMessages = rawMessages;
+        if ((rawMessages == null || rawMessages.isEmpty()) && agent != null) {
+            try {
+                java.lang.reflect.Method gm = agent.getClass().getMethod("getMessages");
+                Object gmResult = gm.invoke(agent);
+                if (gmResult instanceof List) {
+                    resolvedMessages = (List<Msg>) gmResult;
+                    log.debug("P3-FIX: ModelCallInput.messages()为空，fallback agent.getMessages() 得到 {} 条",
+                            resolvedMessages.size());
+                }
+            } catch (Exception e) {
+                log.debug("P3-FIX: agent.getMessages() fallback 失败: {}", e.getMessage());
+            }
+        }
+        final List<Msg> messages = resolvedMessages;
         List<ToolSchema> tools = modelInput.tools();
         int msgCount = messages != null ? messages.size() : 0;
         int toolCount = tools != null ? tools.size() : 0;
@@ -153,9 +170,10 @@ public class AegisTraceMiddleware implements MiddlewareBase {
                         int[] usage = modelTokenUsage.remove(modelCallKey);
                         Integer tokenInput = (usage != null) ? usage[0] : null;
                         Integer tokenOutput = (usage != null) ? usage[1] : null;
-                        String meta = String.format(
-                                "{\"modelName\":\"%s\",\"messageCount\":%d,\"toolCount\":%d}",
-                                finalModelName, msgCount, toolCount);
+                        // P1-B：对齐 MysqlTraceStore.buildStepDetail 读取的富契约 key
+                        // 写入 requestContext.messages / responseSummary.text / toolContext 等结构化字段
+                        String meta = buildLlmCallMeta(finalModelName, msgCount, toolCount,
+                                messages, outputText, tokenInput, tokenOutput);
                         recorder.recordSpan(traceId, "LLM_CALL", finalModelName, "SUCCESS",
                                 LocalDateTime.now(), LocalDateTime.now(), durationMs,
                                 truncate(buildInputPreview(messages), 512),
@@ -264,6 +282,56 @@ public class AegisTraceMiddleware implements MiddlewareBase {
             sb.append('\n');
         }
         return sb.toString();
+    }
+
+    /**
+     * P1-B：构造 LLM_CALL Span 的富契约 meta JSON。
+     *
+     * <p>对齐 {@code MysqlTraceStore.buildStepDetail} 读取的全部 key，
+     * 让观测中心会话详情能展示 requestMessages / responseText / tokenUsage：</p>
+     * <ul>
+     *   <li>{@code modelName} / {@code modelVersion} / {@code cachedTokens}：模型元信息</li>
+     *   <li>{@code requestContext.messages}：[{role, content}, ...] 完整消息列表</li>
+     *   <li>{@code responseSummary.text} / {@code outputText} / {@code text}：输出文本（多 key 兜底）</li>
+     *   <li>{@code inputTokens} / {@code outputTokens}：token 统计</li>
+     *   <li>{@code messageCount} / {@code toolCount}：向后兼容旧读取</li>
+     * </ul>
+     */
+    private static String buildLlmCallMeta(String modelName, int msgCount, int toolCount,
+                                            List<Msg> messages, String outputText,
+                                            Integer tokenInput, Integer tokenOutput) {
+        com.alibaba.fastjson2.JSONObject meta = new com.alibaba.fastjson2.JSONObject();
+        meta.put("modelName", modelName);
+        meta.put("modelVersion", null);
+        meta.put("cachedTokens", 0);
+        meta.put("messageCount", msgCount);
+        meta.put("toolCount", toolCount);
+        if (tokenInput != null) meta.put("inputTokens", tokenInput);
+        if (tokenOutput != null) meta.put("outputTokens", tokenOutput);
+
+        // requestContext.messages：[{role, content}, ...]
+        com.alibaba.fastjson2.JSONObject requestContext = new com.alibaba.fastjson2.JSONObject();
+        com.alibaba.fastjson2.JSONArray msgArray = new com.alibaba.fastjson2.JSONArray();
+        if (messages != null) {
+            for (Msg msg : messages) {
+                com.alibaba.fastjson2.JSONObject m = new com.alibaba.fastjson2.JSONObject();
+                MsgRole role = msg.getRole();
+                m.put("role", role != null ? role.name() : "UNKNOWN");
+                m.put("content", msg.getTextContent() != null ? msg.getTextContent() : "");
+                msgArray.add(m);
+            }
+        }
+        requestContext.put("messages", msgArray);
+        meta.put("requestContext", requestContext);
+
+        // responseSummary.text + 多 key 兜底（outputText / text）
+        com.alibaba.fastjson2.JSONObject responseSummary = new com.alibaba.fastjson2.JSONObject();
+        responseSummary.put("text", outputText != null ? outputText : "");
+        meta.put("responseSummary", responseSummary);
+        meta.put("outputText", outputText != null ? outputText : "");
+        meta.put("text", outputText != null ? outputText : "");
+
+        return meta.toJSONString();
     }
 
     private static String truncate(String s, int maxLen) {

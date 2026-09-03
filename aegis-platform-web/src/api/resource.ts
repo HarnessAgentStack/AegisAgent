@@ -267,13 +267,16 @@ export const mcpApi = {
 
 // ===== 工具 =====
 
-const TOOL_BASE = '/admin/resource/tool';
+const TOOL_BASE = '/admin/tool';
 
 /** 工具快捷方法 */
 export const toolApi = {
-  /** 工具分页列表（对接后端 ToolController /page 端点） */
-  page: (params?: { keyword?: string; page?: number; size?: number; tenantId?: string }) =>
+  /** 工具分页列表（对接后端 ToolController /api/admin/tool/page 端点） */
+  page: (params?: { keyword?: string; page?: number; size?: number }) =>
     http.get<{ records: Tool[]; total: number; current: number; size: number }>(`${TOOL_BASE}/page`, { params }),
-  /** 工具列表（兼容旧调用） */
-  list: () => http.get<Tool[]>(TOOL_BASE),
+  /** 工具全量列表（内部走分页端点提取 records，后端无独立 list 端点） */
+  list: async (): Promise<Tool[]> => {
+    const res = await toolApi.page({ page: 1, size: 1000 });
+    return res?.records ?? [];
+  },
 };

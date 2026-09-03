@@ -1,9 +1,12 @@
 package com.aegis.runtime.integration.tool;
 
 import com.aegis.core.spi.ISandboxBackend;
+import com.aegis.runtime.integration.config.RuntimeProperties;
+import com.aegis.runtime.integration.sandbox.AegisSandbox;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
 import com.aegis.runtime.integration.agent.ToolResultCache;
 import com.aegis.runtime.service.sandbox.AegisSandboxPoolExecutor;
+import com.aegis.runtime.service.sandbox.SandboxSessionHolder;
 import com.alibaba.fastjson2.JSON;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.TextBlock;
@@ -14,6 +17,7 @@ import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionDecision;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.ToolCallParam;
+import io.agentscope.harness.agent.sandbox.ExecResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
@@ -29,11 +33,15 @@ import java.util.Map;
  * <p>在沙箱环境中执行代码（主要是 Python），用于计算、数据处理等场景。
  * 沙箱组件不可用时 fail-closed 拒绝执行（P0-3：禁止降级裸跑宿主）。
  *
- * <h3>Phase 2 减法后的补完链路</h3>
- * <p>自建沙箱池协调体系（Coordinator/ReadinessGate/SlotKeyParser 等）已删除；
- * aegis_execute 经 {@link AegisSandboxPoolExecutor} 直连 ISandboxBackend：
- * 查池（sbx_pool）→ 探活复用实例（sbx_instance）→ exec；无可用实例时池内扩容
- * （createInPool + 登记）。实例状态修复/回收/预热由 admin Reconcile 统一纳管。
+ * <h3>执行路径（周期4 灰度双路径）</h3>
+ * <pre>
+ *   aegis.runtime.sandbox.framework-drive.enabled=true
+ *     → SandboxSessionHolder.acquireIfNeeded（惰性会话分配）
+ *       → AegisSandbox.exec（委托 AegisSandboxAllocator + ISandboxBackend，心跳回写 + op_log 审计）
+ *
+ *   aegis.runtime.sandbox.framework-drive.enabled=false（默认）
+ *     → AegisSandboxPoolExecutor.exec（Phase 2 补完路径：查池 → 探活复用实例 → exec；无可用实例时池内扩容）
+ * </pre>
  *
  * <h3>功能</h3>
  * <p>执行 Python 代码，返回执行结果和标准输出。
@@ -46,11 +54,13 @@ public class AegisExecuteTool extends ToolBase {
 
     private final ToolResultCache toolResultCache;
     private final ISandboxBackend sandboxBackend;
-    /** 沙箱池极简执行器：查池 → 探活复用实例 → exec（Phase 2 减法后的补完路径） */
+    /** 沙箱池极简执行器：查池 → 探活复用实例 → exec（Phase 2 减法后的补完路径，灰度关闭时的回退路径） */
+    @Deprecated
     private final AegisSandboxPoolExecutor sandboxPoolExecutor;
-
-    /** A5：资源装载等待超时（秒），超时降级为按需语义 */
-    private static final long RESOURCE_LOAD_TIMEOUT_SEC = 10;
+    /** 周期3：会话级沙箱持有器（灰度开启时，执行路径经此获取 Sandbox 实例） */
+    private final SandboxSessionHolder sandboxSessionHolder;
+    /** 运行时配置（含框架驱动灰度开关） */
+    private final RuntimeProperties runtimeProperties;
 
     /** execute 的 inputSchema（JSON Schema）— 同时支持 code 与 command 两种参数 */
     private static final Map<String, Object> INPUT_SCHEMA = JSON.parseObject(
@@ -71,19 +81,20 @@ public class AegisExecuteTool extends ToolBase {
     /** 代码执行超时时间（秒） */
     private static final long EXEC_TIMEOUT_SEC = 30;
 
-    /** 沙箱分配超时时间（秒） */
-    private static final long SANDBOX_ALLOCATE_TIMEOUT_SEC = 10;
-
     /**
      * 构造函数：注入 Spring Bean 并描述工具元数据。
      *
      * @param toolResultCache      工具结果缓存（用于填充 tool_result SSE 事件）
-     * @param sandboxCoordinator   沙箱协调器（用于分配沙箱实例）
-     * @param sandboxBackend       沙箱后端（用于在沙箱中执行命令）
+     * @param sandboxBackend       沙箱后端（fail-closed 检查用；执行路径由灰度开关决定）
+     * @param sandboxPoolExecutor  Phase 2 补完执行器（灰度关闭时回退路径）
+     * @param sandboxSessionHolder 周期3会话持有器（灰度开启时，acquireIfNeeded 惰性分配）
+     * @param runtimeProperties    运行时配置（含 framework-drive 灰度开关）
      */
     public AegisExecuteTool(ToolResultCache toolResultCache,
                              ISandboxBackend sandboxBackend,
-                             AegisSandboxPoolExecutor sandboxPoolExecutor) {
+                             AegisSandboxPoolExecutor sandboxPoolExecutor,
+                             SandboxSessionHolder sandboxSessionHolder,
+                             RuntimeProperties runtimeProperties) {
         super(ToolBase.builder()
                 .name("aegis_execute")
                 .description("【Aegis 代码执行 - Python 计算与数据处理】\n"
@@ -97,6 +108,8 @@ public class AegisExecuteTool extends ToolBase {
         this.toolResultCache = toolResultCache;
         this.sandboxBackend = sandboxBackend;
         this.sandboxPoolExecutor = sandboxPoolExecutor;
+        this.sandboxSessionHolder = sandboxSessionHolder;
+        this.runtimeProperties = runtimeProperties;
     }
 
     /**
@@ -168,10 +181,17 @@ public class AegisExecuteTool extends ToolBase {
 
             // P0-3：fail-closed —— 沙箱不可用时不降级宿主执行（原降级会裸跑宿主 Python，
             // 继承父进程环境/权限且无独立工作目录，沙箱故障窗口 = 无审批直通宿主）。
-            // 沙箱组件缺失或异常时返回结构化错误，工具结果照常回传 LLM（流不中断）。
-            if (sandboxBackend == null || tid == null) {
-                log.error("execute 工具沙箱组件不可用，fail-closed 拒绝执行: backend={}, tenantId={}",
-                        sandboxBackend != null, tid);
+            // 灰度开启：framework-drive 路径需要 SandboxSessionHolder + ISandboxBackend；
+            // 灰度关闭：Phase 2 补完路径需要 ISandboxBackend + AegisSandboxPoolExecutor；
+            // 共同必须：tenantId（沙箱池所有查询均绑定租户，缺租户上下文 = 无法路由）。
+            boolean frameworkDrive = isFrameworkDriveEnabled();
+            boolean sandboxReady = frameworkDrive
+                    ? (sandboxSessionHolder != null && sandboxBackend != null && tid != null)
+                    : (sandboxBackend != null && sandboxPoolExecutor != null && tid != null);
+            if (!sandboxReady) {
+                log.error("execute 工具沙箱组件不可用，fail-closed 拒绝执行: frameworkDrive={}, backend={}, poolExec={}, sessionHolder={}, tenantId={}",
+                        frameworkDrive, sandboxBackend != null, sandboxPoolExecutor != null,
+                        sandboxSessionHolder != null, tid);
                 result.put("result", null);
                 result.put("stdout", "");
                 result.put("stderr", "沙箱不可用：执行环境未配置或租户上下文缺失，代码未执行");
@@ -207,10 +227,13 @@ public class AegisExecuteTool extends ToolBase {
     }
 
     /**
-     * 在沙箱中执行代码。
+     * 在沙箱中执行代码（周期4 灰度双路径）。
      *
-     * <p>Phase 2 减法：自建沙箱池已删除，沙箱分配语义交由 AgentScope SandboxManager 原生承载。
-     * 当前 aegis_execute 暂未接入新的 sandbox 句柄获取路径，fail-closed 拒绝执行。
+     * <pre>
+     *  framework-drive=true:  SandboxSessionHolder.acquireIfNeeded（惰性会话分配）
+     *                          → AegisSandbox.exec（心跳回写 + allocator.touch）
+     *  framework-drive=false: AegisSandboxPoolExecutor.exec（Phase 2 补完路径）
+     * </pre>
      *
      * @param tenantId  租户ID
      * @param userId    用户ID
@@ -219,7 +242,7 @@ public class AegisExecuteTool extends ToolBase {
      * @param agentType 智能体类型（UNIVERSAL/APPLICATION/SYSTEM）
      * @param language  编程语言
      * @param code      代码内容
-     * @return 执行结果
+     * @return 执行结果 stdout（stderr 为空时）或 stderr
      */
     private String executeInSandbox(Long tenantId, Long userId, Long agentId,
                                      String sessionId, String agentType,
@@ -236,21 +259,54 @@ public class AegisExecuteTool extends ToolBase {
                 .encodeToString(wrapped.getBytes(StandardCharsets.UTF_8));
         String command = "echo " + b64Script + " | base64 -d | python3 -";
 
-        // 3. 沙箱池内执行（slotKey 隔离选取 → 原子占用（后台联动落痕）→ exec；无可用实例时池内扩容）
-        ISandboxBackend.ExecResult result =
-                sandboxPoolExecutor.exec(tenantId, userId, agentId, sessionId, agentType,
-                        command, EXEC_TIMEOUT_SEC);
-        if (result == null) {
-            throw new IllegalStateException("沙箱执行返回空结果");
+        if (isFrameworkDriveEnabled()) {
+            // ========== 路径A：周期4 框架驱动（灰度开启） ==========
+            log.info("execute[framework] 走框架驱动路径: sessionId={}, agentType={}", sessionId, agentType);
+            AegisSandbox sandbox = sandboxSessionHolder.acquireIfNeeded(
+                    sessionId, tenantId, userId, agentId, agentType);
+            ExecResult r = sandbox.exec(null, command, (int) EXEC_TIMEOUT_SEC);
+            String stdout = r.stdout() != null ? r.stdout().trim() : "";
+            String stderr = r.stderr() != null ? r.stderr().trim() : "";
+            if (r.exitCode() != 0) {
+                throw new IllegalStateException("沙箱执行退出码 " + r.exitCode() + ": "
+                        + (stderr.isEmpty() ? stdout : stderr));
+            }
+            return stdout.isEmpty() ? stderr : stdout;
+        } else {
+            // ========== 路径B：Phase 2 补完路径（灰度关闭，默认） ==========
+            log.info("execute[legacy] 走 Phase 2 补完路径: sessionId={}", sessionId);
+            ISandboxBackend.ExecResult result =
+                    sandboxPoolExecutor.exec(tenantId, userId, agentId, sessionId, agentType,
+                            command, EXEC_TIMEOUT_SEC);
+            if (result == null) {
+                throw new IllegalStateException("沙箱执行返回空结果");
+            }
+            String stdout = result.stdout != null ? result.stdout.trim() : "";
+            String stderr = result.stderr != null ? result.stderr.trim() : "";
+            if (result.exitCode != 0) {
+                throw new IllegalStateException("沙箱执行退出码 " + result.exitCode + ": "
+                        + (stderr.isEmpty() ? stdout : stderr));
+            }
+            return stdout.isEmpty() ? stderr : stdout;
         }
+    }
 
-        String stdout = result.stdout != null ? result.stdout.trim() : "";
-        String stderr = result.stderr != null ? result.stderr.trim() : "";
-        if (result.exitCode != 0) {
-            throw new IllegalStateException("沙箱执行退出码 " + result.exitCode + ": "
-                    + (stderr.isEmpty() ? stdout : stderr));
+    /**
+     * 是否启用框架驱动执行（周期4 灰度开关）。
+     *
+     * <p>读取 {@code aegis.runtime.sandbox.framework-drive.enabled}；
+     * 配置缺失/未注入时安全返回 false（保守降级旧路径）。</p>
+     */
+    private boolean isFrameworkDriveEnabled() {
+        try {
+            return runtimeProperties != null
+                    && runtimeProperties.getSandbox() != null
+                    && runtimeProperties.getSandbox().getFrameworkDrive() != null
+                    && runtimeProperties.getSandbox().getFrameworkDrive().isEnabled();
+        } catch (Exception e) {
+            log.debug("execute: 读取 framework-drive 灰度开关异常，安全降级: {}", e.getMessage());
+            return false;
         }
-        return stdout.isEmpty() ? stderr : stdout;
     }
 
     /**

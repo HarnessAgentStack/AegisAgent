@@ -24,6 +24,8 @@ import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionRule;
 import com.aegis.runtime.infrastructure.sandbox.client.MinioSnapshotClient;
+import com.aegis.runtime.integration.sandbox.AegisSandboxClient;
+import com.aegis.runtime.integration.sandbox.AegisSandboxFilesystemSpec;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -119,6 +121,14 @@ public class AegisAgentInstanceManager {
 
     @Value("${aegis.runtime.sandbox.enabled:false}")
     private boolean sandboxEnabled;
+
+    /** P2 周期2：框架驱动沙箱灰度开关，默认 false 走 RemoteFS（现状零差异），true 走 AegisSandboxFilesystemSpec */
+    @Value("${aegis.sandbox.framework-drive.enabled:false}")
+    private boolean sandboxFrameworkDriveEnabled;
+
+    /** P2 周期2：Aegis 沙箱客户端（桥接 admin 池 allocator），灰度开启时用于构建 SandboxFilesystemSpec */
+    @Autowired
+    private AegisSandboxClient aegisSandboxClient;
 
     /** 实例池，读操作无锁并发，结构变更用写锁互斥 */
     private final ConcurrentHashMap<String, AgentEntry> pool = new ConcurrentHashMap<>();
@@ -772,10 +782,23 @@ public class AegisAgentInstanceManager {
                                                   String sessionId,
                                                   IsolationStrategy isolationStrategy,
                                                   String agentType) {
-        // Phase 2 减法：自建沙箱池体系已删除，沙箱 acquire/release/persist 语义
-        // 交由 AgentScope SandboxManager + SandboxLifecycleMiddleware 原生处理。
-        // 当前阶段 sandboxEnabled 默认 false，统一走 RemoteFS 路径；
-        // distributedStore 会通过 injectStoreIfAbsent 自动注入 baseStore。
+        // P2 周期2：sandbox.framework-drive.enabled=true 时走 AegisSandboxFilesystemSpec，
+        // 框架自动从 spec 构建 SandboxManager + SandboxLifecycleMiddleware 装入 HarnessAgent；
+        // 否则走 RemoteFilesystemSpec（现状零差异）。
+        if (sandboxFrameworkDriveEnabled) {
+            AegisSandboxFilesystemSpec sandboxFsSpec = AegisSandboxFilesystemSpec.forContext(
+                    aegisSandboxClient, snapshotSpec, agentType,
+                    tenantId, userId, agentId, sessionId);
+            builder.filesystem(sandboxFsSpec);
+            String slotKey = sandboxFsSpec.getIsolationScope() != null
+                    ? "aegis:" + tenantId + ":" + (isolationScope == IsolationScope.USER
+                            ? "user:" + userId : "agent:" + agentId) : null;
+            log.info("文件系统配置(框架驱动沙箱): agentId={}, scope={}, agentType={}, slotKey={}",
+                    agentId, isolationScope, agentType, slotKey);
+            return new FilesystemConfig(true, slotKey);
+        }
+
+        // 现状路径：纯 RemoteFS（sandboxFrameworkDriveEnabled=false 默认）
         log.info("文件系统配置(纯 RemoteFS): agentId={}, scope={}, agentType={}, sandboxEnabled={}",
                 agentId, isolationScope, agentType, sandboxEnabled);
         RemoteFilesystemSpec fsSpec = new RemoteFilesystemSpec()

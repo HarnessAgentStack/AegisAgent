@@ -104,6 +104,9 @@ public class SandboxInstance extends BaseEntity {
     /** 沙箱槽位键，由 IsolationScope + 业务主键合成，决定 slot 复用粒度（对应 sbx_instance.slot_key） */
     private String slotKey;
 
+    /** AgentScope SandboxManager sessionKey（跨节点 resume 用，对应 sbx_instance.agent_scope_session_key） */
+    private String agentScopeSessionKey;
+
     /** 最新快照时间，记录最近一次快照保存的时间点（对应 sbx_instance.snapshot_time） */
     private LocalDateTime snapshotTime;
 
@@ -129,6 +132,9 @@ public class SandboxInstance extends BaseEntity {
 
     /** 最近回收时间（工作区重初始化时间） */
     private LocalDateTime lastRecycleTime;
+
+    /** 最近回收策略（admin Reconcile 回收时记录：FULL_RESET/WORKSPACE_RESET/DESTROY） */
+    private String recycleStrategy;
 
     /** 版本号（乐观并发控制），每次状态变更递增，防止并发状态更新 */
     private Integer version;

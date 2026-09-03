@@ -24,6 +24,7 @@ export const COLOR = {
 /** 子标签定义（已移除独立的"安全级别"TAB，安全级别详情嵌入工具管控决策矩阵） */
 export const SECURITY_TABS = [
   { key: 'tool', label: '🛡️ 权限规则' },
+  { key: 'sandbox', label: '📦 沙箱命令策略' },
   { key: 'word', label: '📝 敏感词库' },
   { key: 'mask', label: '🎭 脱敏规则' },
   { key: 'out', label: '🌐 出站策略' },
@@ -260,3 +261,16 @@ export const renderEnabledTag = (enabled?: boolean) =>
   );
 
 export type { SecurityLevelKey };
+
+// ==================== Tab 6: 沙箱命令策略 ====================
+
+/** 沙箱执行决策选项（true=强制进沙箱 / false=明确不进 / null=未配置） */
+export const SANDBOX_EXECUTION_OPTIONS = [
+  { value: true, label: '强制进沙箱' },
+  { value: false, label: '不进沙箱' },
+];
+
+export const SANDBOX_EXECUTION_MAP: Record<string, { text: string; color: string }> = {
+  true: { text: '强制进沙箱', color: COLOR.primary },
+  false: { text: '不进沙箱', color: COLOR.info },
+};

@@ -130,3 +130,26 @@ export interface OutboundPolicyFormValues {
   applicableScope: string;
   enabled: boolean;
 }
+
+// ==================== Tab 6: 沙箱命令策略 ====================
+
+/** 沙箱命令策略 DTO */
+export interface SandboxPolicyDTO {
+  id?: string;
+  tenantId?: string;
+  toolCode?: string;
+  sandboxExecution?: boolean | null;
+  description?: string;
+  enabled?: boolean;
+  createTime?: string;
+  updateTime?: string;
+  [key: string]: unknown;
+}
+
+/** 沙箱命令策略表单值 */
+export interface SandboxPolicyFormValues {
+  toolCode: string;
+  sandboxExecution: boolean;
+  description?: string;
+  enabled: boolean;
+}

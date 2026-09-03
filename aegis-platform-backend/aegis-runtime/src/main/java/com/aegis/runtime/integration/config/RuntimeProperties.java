@@ -88,14 +88,26 @@ public class RuntimeProperties {
     public static class Sandbox {
         /** 是否启用沙箱 */
         private boolean enabled = true;
-        /** 后端类型：docker | process */
+        /** 后端类型：docker | k8s | process */
         private String backend = "process";
+        /**
+         * 框架驱动灰度开关（周期4：沙箱工具改经 SandboxSessionHolder + SandboxManager 驱动）。
+         * 默认 false：关闭即回退旧路径 AegisSandboxPoolExecutor.exec。
+         */
+        private FrameworkDrive frameworkDrive = new FrameworkDrive();
         /** 默认沙箱镜像 */
         private String image = "python:3.11-slim";
         /** 默认 CPU 配额（核） */
         private double cpu = 1.0;
         /** 默认内存配额（MB） */
         private int memoryMb = 512;
+        /** 框架驱动灰度配置。 */
+        @Data
+        public static class FrameworkDrive {
+            /** 是否启用框架驱动沙箱工具执行（周期4灰度开关） */
+            private boolean enabled = false;
+        }
+
         /** Docker 连接配置 */
         private Docker docker = new Docker();
         /** 池规格配置 */

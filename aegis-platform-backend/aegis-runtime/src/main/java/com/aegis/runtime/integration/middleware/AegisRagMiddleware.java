@@ -110,6 +110,26 @@ public class AegisRagMiddleware implements MiddlewareBase {
         long agentId = taskCtx.getAgentId();
         Long tenantId = taskCtx.getTenantId() != null ? taskCtx.getTenantId() : resolveTenantId(ctx);
 
+        // 关键修复：AgentScope 中间件链在独立线程调用 onAgent，ThreadLocal 租户上下文已丢失。
+        // 所有 Service/Mapper 调用前必须绑定租户上下文（MyBatis-Plus 租户插件 fail-closed）。
+        // 这里用 TenantContextScope 包裹整个业务逻辑块，确保所有 DB 操作安全。
+        if (tenantId == null) {
+            log.warn("AegisRagMiddleware tenantId 为空，跳过 RAG 检索: agentId={}", agentId);
+            return next.apply(input);
+        }
+
+        try (var scope = TenantContextScope.of(tenantId)) {
+            return doOnAgentInternal(agent, ctx, input, next, taskCtx, agentId, tenantId);
+        }
+    }
+
+    /**
+     * onAgent 的实际业务逻辑（已在租户上下文内执行）。
+     * 抽取为独立方法是为了让租户上下文 try-with-resources 清晰包裹。
+     */
+    private Flux<AgentEvent> doOnAgentInternal(Agent agent, RuntimeContext ctx, AgentInput input,
+                                                Function<AgentInput, Flux<AgentEvent>> next,
+                                                AegisTaskContext taskCtx, long agentId, Long tenantId) {
         // 1. 提取用户查询 + 最近 5 轮 USER 历史
         String userQuery = extractUserQuery(input);
         List<String> recentHistory = extractRecentUserHistory(input);

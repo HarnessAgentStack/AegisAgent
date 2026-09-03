@@ -27,9 +27,11 @@
 #   ./aegis.sh infra                Toggle infra containers only
 #
 # Architecture:
-#   Infra = Docker Compose (MySQL / Redis / Nacos / MinIO / etcd / Milvus / PaddleOCR)
+#   Infra = Docker Compose (MySQL / Redis / Nacos / MinIO / etcd / Milvus)
 #   Apps  = local java -jar (gateway/admin/runtime/mcp-demo) + vite dev/build
 #   mcp-demo registers itself to admin on startup (auto-registrar), no DB seed needed
+#   DB init: MySQL container auto-runs infra/ddl/*.sql on FIRST empty volume boot
+#   OCR   = ONNX Runtime Java 进程内推理（零外部依赖，已移除 PaddleOCR Docker 服务）
 #   DB init: MySQL container auto-runs infra/ddl/*.sql on FIRST empty volume boot
 # =============================================================================
 
@@ -182,23 +184,15 @@ start_infra() {
     info "Starting Docker containers..."
     cd "$INFRA_ROOT"
     docker compose up -d mysql redis nacos minio etcd milvus 2>/dev/null
-    # PaddleOCR
-    if ! docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -q 'aegis-paddleocr'; then
-        info "First build of PaddleOCR image (downloads OCR v5 model, ~2-3 min)..."
-        docker compose --profile ocr build paddleocr 2>/dev/null
-        ok "PaddleOCR image built"
-    fi
-    docker compose --profile ocr up -d paddleocr 2>/dev/null
     cd "$PROJECT_ROOT"
 
     if [ "$skip_hc" != "skip" ]; then
         info "Waiting for infra services..."
-        # MySQL 120, Redis 30, Nacos 120, Milvus 60, PaddleOCR 180
+        # MySQL 120, Redis 30, Nacos 120, Milvus 60
         if wait_port 3306 120 "MySQL";   then ok "MySQL ready (port 3306)";   else warn "MySQL not ready (port 3306)"; fi
         if wait_port 6379 30  "Redis";   then ok "Redis ready (port 6379)";   else warn "Redis not ready (port 6379)"; fi
         if wait_port 8848 120 "Nacos";   then ok "Nacos ready (port 8848)";   else warn "Nacos not ready (port 8848)"; fi
         if wait_port 19530 60 "Milvus";  then ok "Milvus ready (port 19530)"; else warn "Milvus not ready (port 19530)"; fi
-        if wait_port 8098 180 "PaddleOCR"; then ok "PaddleOCR ready (port 8098)"; else warn "PaddleOCR not ready (port 8098)"; fi
     fi
     return 0
 }
@@ -286,8 +280,45 @@ stop_backend() {
             hd "  Stopped: $name (PID $pid)"
         fi
     done
-    sleep 2
-    ok "Backend stopped"
+    sleep 1
+    ensure_backend_stopped
+}
+
+ensure_backend_stopped() {
+    # 兜底：按命令行匹配杀所有 aegis 相关 Java 进程（pkill -f 在 Linux/macOS 可用）
+    local killed=0
+    if command -v pkill >/dev/null 2>&1; then
+        local before
+        before=$(pgrep -f "aegis-(gateway|admin|runtime|mcp-demo).*-exec.jar" 2>/dev/null | wc -l)
+        pkill -9 -f "aegis-(gateway|admin|runtime|mcp-demo).*-exec.jar" 2>/dev/null
+        sleep 1
+        killed=$(( before - $(pgrep -f "aegis-(gateway|admin|runtime|mcp-demo).*-exec.jar" 2>/dev/null | wc -l) ))
+    fi
+    if [ "$killed" -gt 0 ]; then
+        info "Force-killed $killed aegis Java process(es)"
+    fi
+
+    # 验证 target jar 是否还被进程占用（lsof 可检测）
+    local jar_locked=0
+    for entry in "${BACKEND_SERVICES[@]}"; do
+        local name="${entry%%:*}"
+        local jar="$BACKEND_ROOT/$name/target/aegis-$name-*-exec.jar"
+        local match
+        match=$(ls -1 $jar 2>/dev/null | head -1)
+        if [ -n "$match" ] && command -v lsof >/dev/null 2>&1; then
+            if lsof "$match" >/dev/null 2>&1; then
+                err "  $name jar LOCKED: $(basename "$match")"
+                jar_locked=1
+            fi
+        fi
+    done
+
+    if [ "$jar_locked" -eq 1 ]; then
+        err "One or more backend JARs are LOCKED. Build will likely fail."
+        return 1
+    fi
+    ok "All backend processes cleanly stopped (jar files released)"
+    return 0
 }
 
 show_backend_status() {
@@ -308,6 +339,32 @@ show_backend_status() {
 # =============================================================================
 # Frontend
 # =============================================================================
+
+build_frontend() {
+    local mode=$1
+    [ -z "$mode" ] && mode="prod"
+    if [ "$mode" = "dev" ]; then
+        info "Frontend dev mode → 跳过 vite build（dev server 热更新）"
+        return 0
+    fi
+    info "Frontend build (prod)..."
+    cd "$FRONTEND_ROOT"
+    if [ ! -d node_modules ]; then
+        info "Installing frontend deps (first run)..."
+        $NPM_CMD install 2>&1 | tee "$LOG_DIR/npm-install.log"
+        [ $? -ne 0 ] && { err "npm install FAILED. See: $LOG_DIR/npm-install.log"; cd "$PROJECT_ROOT"; return 1; }
+    fi
+    npx vite build 2>&1 | tee "$LOG_DIR/vite-build.log"
+    local fe_rc=${PIPESTATUS[0]}
+    cd "$PROJECT_ROOT"
+    if [ $fe_rc -ne 0 ] || [ ! -d "$FRONTEND_ROOT/dist" ]; then
+        err "Frontend build FAILED (exit=$fe_rc). See: $LOG_DIR/vite-build.log"
+        return 1
+    fi
+    ok "Frontend build done"
+    return 0
+}
+
 start_frontend() {
     local mode=$1
     info "Starting frontend ($mode mode)..."
@@ -329,10 +386,17 @@ start_frontend() {
     else
         info "Frontend build (prod)..."
         cd "$FRONTEND_ROOT"
-        [ ! -d node_modules ] && $NPM_CMD install >/dev/null 2>&1
-        npx vite build >/dev/null 2>&1
+        if [ ! -d node_modules ]; then
+            $NPM_CMD install 2>&1 | tee "$LOG_DIR/npm-install.log"
+            [ $? -ne 0 ] && { err "npm install FAILED. See: $LOG_DIR/npm-install.log"; cd "$PROJECT_ROOT"; return; }
+        fi
+        npx vite build 2>&1 | tee "$LOG_DIR/vite-build.log"
+        local fe_rc=${PIPESTATUS[0]}
         cd "$PROJECT_ROOT"
-        if [ ! -d "$FRONTEND_ROOT/dist" ]; then err "Frontend build failed"; return; fi
+        if [ $fe_rc -ne 0 ] || [ ! -d "$FRONTEND_ROOT/dist" ]; then
+            err "Frontend build FAILED (exit=$fe_rc). See: $LOG_DIR/vite-build.log"
+            return
+        fi
 
         local port=80
         port_listening 80 && port=8088 && warn "Port 80 occupied, serve on $port"
@@ -384,10 +448,10 @@ build_backend() {
     local goal="package"
     [ "$clean" = "clean" ] && goal="clean package"
     cd "$BACKEND_ROOT"
-    if $MVN_CMD $goal -DskipTests -q 2>&1; then
+    if $MVN_CMD $goal -DskipTests 2>&1 | tee "$LOG_DIR/mvn-build.log"; then
         ok "Backend build done"
     else
-        err "Maven build failed"
+        err "Maven build FAILED (exit=${PIPESTATUS[0]}). See: $LOG_DIR/mvn-build.log"
         cd "$PROJECT_ROOT"
         return 1
     fi
@@ -405,7 +469,8 @@ show_help() {
   Aegis Platform - Unified Manager (Mac/Linux)
 ========================================
 
-Infra = Docker Compose (MySQL/Redis/Nacos/MinIO/Milvus/PaddleOCR)
+Infra = Docker Compose (MySQL/Redis/Nacos/MinIO/Milvus/etcd)
+OCR   = ONNX Runtime Java (进程内推理，零外部依赖)
 Apps  = local java -jar + vite (no container isolation issues)
 
 Usage:
@@ -463,7 +528,7 @@ case "$ACTION" in
 
     infra)
         local all_up=1
-        for c in aegis-mysql aegis-redis aegis-nacos aegis-minio aegis-etcd aegis-milvus aegis-paddleocr; do
+        for c in aegis-mysql aegis-redis aegis-nacos aegis-minio aegis-etcd aegis-milvus; do
             local r
             r="$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo false)"
             [ "$r" = "true" ] || { all_up=0; break; }
@@ -512,7 +577,14 @@ case "$ACTION" in
         if [ $? -eq 0 ]; then
             info "DB init note: MySQL container auto-runs infra/ddl/*.sql on FIRST empty boot"
             info "If infra was already up, DB is already initialized."
-            build_backend "incremental"
+            if ! build_backend "clean"; then
+                err "Backend build failed. Aborting start."
+                exit 1
+            fi
+            if ! build_frontend "$FRONTEND_MODE"; then
+                err "Frontend build failed. Aborting start."
+                exit 1
+            fi
             start_backend
             start_frontend "$FRONTEND_MODE"
             echo ""; ok "All services started!"
@@ -539,7 +611,14 @@ case "$ACTION" in
         stop_backend
         sleep 2
         resolve_env >/dev/null 2>&1
-        build_backend "clean"
+        if ! build_backend "clean"; then
+            err "Backend build failed. Aborting restart."
+            exit 1
+        fi
+        if ! build_frontend "$FRONTEND_MODE"; then
+            err "Frontend build failed. Aborting restart."
+            exit 1
+        fi
         start_infra "skip" && start_backend && start_frontend "$FRONTEND_MODE"
         echo ""; ok "Restart done"
         exit 0

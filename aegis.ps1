@@ -26,7 +26,7 @@
 #   .\aegis.ps1 infra                Toggle infra containers only
 #
 # Architecture:
-#   Infra = Docker Compose (MySQL / Redis / Nacos / MinIO / etcd / Milvus / PaddleOCR)
+#   Infra = Docker Compose (MySQL / Redis / Nacos / MinIO / etcd / Milvus)
 #   Apps  = local java -jar (gateway/admin/runtime/mcp-demo) + vite dev/build
 #   mcp-demo registers itself to admin on startup (auto-registrar), no DB seed needed
 #   DB init: MySQL container auto-runs infra/ddl/*.sql on FIRST empty volume boot
@@ -69,7 +69,7 @@ $BACKEND_SERVICES = @(
 
 $INFRA_CONTAINERS = @(
     "aegis-mysql", "aegis-redis", "aegis-nacos", "aegis-minio",
-    "aegis-etcd", "aegis-milvus", "aegis-paddleocr"
+    "aegis-etcd", "aegis-milvus"
 )
 
 # =============================================================================
@@ -183,34 +183,22 @@ function Start-Infra {
         return $false
     }
 
-    Write-Info "Starting Docker containers..."
+    # --- 核心基础设施先行启动 ---
+    Write-Info "Starting core Docker containers (MySQL/Redis/Nacos/MinIO/etcd/Milvus)..."
     Push-Location $INFRA_ROOT
     docker compose up -d mysql redis nacos minio etcd milvus 2>&1 | Out-Null
     Pop-Location
 
-    # PaddleOCR (profile ocr)
-    $paddleBuilt = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null | Where-Object { $_ -match "aegis-paddleocr" }
-    if (-not $paddleBuilt) {
-        Write-Info "First build of PaddleOCR image (downloads OCR v5 model, ~2-3 min)..."
-        Push-Location $INFRA_ROOT
-        docker compose --profile ocr build paddleocr 2>&1 | Out-Null
-        Pop-Location
-        Write-Ok "PaddleOCR image built"
-    }
-    Push-Location $INFRA_ROOT
-    docker compose --profile ocr up -d paddleocr 2>&1 | Out-Null
-    Pop-Location
-
+    # --- 先等核心服务就绪，再处理 PaddleOCR（避免 OCR 构建阻塞/掩盖核心启动进度）---
     if (-not $SkipHealthyCheck) {
-        Write-Info "Waiting for infra services..."
-        $checks = @(
+        Write-Info "Waiting for core infra services..."
+        $coreChecks = @(
             @{ Port = 3306; Name = "MySQL";    Timeout = 120 },
             @{ Port = 6379; Name = "Redis";    Timeout = 30 },
             @{ Port = 8848; Name = "Nacos";    Timeout = 120 },
-            @{ Port = 19530; Name = "Milvus";  Timeout = 60 },
-            @{ Port = 8098; Name = "PaddleOCR"; Timeout = 180 }
+            @{ Port = 19530; Name = "Milvus";  Timeout = 60 }
         )
-        foreach ($c in $checks) {
+        foreach ($c in $coreChecks) {
             if (Wait-PortReady $c.Port $c.Timeout $c.Name) {
                 Write-Ok "$($c.Name) ready (port $($c.Port))"
             } else {
@@ -218,9 +206,43 @@ function Start-Infra {
             }
         }
     }
+
+    # --- PaddleOCR 已移除：改用 ONNX Runtime Java 进程内推理（零外部服务依赖） ---
+
+    # ========== 预拉沙箱基础镜像（防御 Docker Desktop K8s containerd 镜像代理故障） ==========
+    # Docker Desktop K8s 模式下，K8s 内嵌的 containerd 与宿主 Docker daemon 是两套独立 runtime。
+    # 宿主 docker pull 用的是 Settings 里配的 Registry Mirrors（通常是好的），
+    # 但 containerd 不继承，它有自己的 /etc/containerd/certs.d/_default/hosts.toml，
+    # 里面经常被写死一个坏掉的 registry-mirror 代理 → Pod ImagePullBackOff 120s 超时重建循环。
+    # 这里预拉 + 利用宿主 containerd 缓存机制，确保 admin 沙箱池首次预热 Pod 能秒起。
+    Preload-SandboxImages
+
     return $true
 }
 
+
+function Preload-SandboxImages {
+    <#
+    预拉沙箱基础镜像到宿主 Docker daemon。
+    Docker Desktop K8s 内嵌的 containerd 共享宿主镜像缓存，
+    提前 docker pull 可避免 Pod 首次启动时 containerd 因 registry-mirror 代理故障拉取失败。
+    #>
+    $sandboxImages = @("library/python:3.11-slim", "library/python:3.9-slim")
+    foreach ($img in $sandboxImages) {
+        $exists = docker image inspect $img 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Info "Sandbox image already cached: $img"
+        } else {
+            Write-Info "Preloading sandbox image: $img ..."
+            docker pull $img 2>&1 | Select-Object -Last 3
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "Sandbox image pull FAILED: $img (Pod may ImagePullBackOff; check Docker Desktop Settings → Docker Engine → registry-mirrors)"
+            } else {
+                Write-Ok "Sandbox image ready: $img"
+            }
+        }
+    }
+}
 function Stop-Infra {
     Write-Info "Stopping Docker containers..."
     Push-Location $INFRA_ROOT
@@ -301,8 +323,67 @@ function Stop-Backend {
             Write-Host "  Stopped: $($svc.Name) (PID $procHandle)" -ForegroundColor DarkGray
         }
     }
-    Start-Sleep -Seconds 2
-    Write-Ok "Backend stopped"
+    Start-Sleep -Milliseconds 500
+    Ensure-BackendStopped
+}
+
+function Ensure-BackendStopped {
+    <#
+    彻底杀干净所有 aegis 相关 Java 进程。
+    按端口杀可能漏（进程卡死不响应但还占 jar），这里命令行匹配兜底 + 验证 jar 已释放。
+    #>
+    $killed = 0
+    try {
+        # 按命令行参数匹配：所有启动过 aegis-*-exec.jar 的 java.exe
+        $allJava = Get-CimInstance Win32_Process -Filter "name = 'java.exe'" -ErrorAction SilentlyContinue
+        foreach ($p in $allJava) {
+            if ($p.CommandLine -match "aegis-(gateway|admin|runtime|mcp-demo)") {
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+                Write-Host "  Force-killed: PID $($p.ProcessId) ($($p.CommandLine.Substring(0, [Math]::Min(80, $p.CommandLine.Length))))" -ForegroundColor DarkGray
+                $killed++
+            }
+        }
+    } catch {
+        # Win32_Process 不可用时回退
+        $allJava = Get-Process java -ErrorAction SilentlyContinue
+        foreach ($p in $allJava) {
+            try {
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($p.Id)" -ErrorAction SilentlyContinue).CommandLine
+                if ($cmdLine -match "aegis-(gateway|admin|runtime|mcp-demo)") {
+                    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                    $killed++
+                }
+            } catch {}
+        }
+    }
+
+    if ($killed -gt 0) {
+        Write-Info "Force-killed $killed aegis Java process(es)"
+    }
+
+    # 验证 target jar 已释放（Windows 下被独占锁定时 File.OpenWrite 抛 IOException）
+    $jarLocked = $false
+    foreach ($svc in $BACKEND_SERVICES) {
+        $jar = Join-Path $BACKEND_ROOT "$($svc.Name)\target\aegis-$($svc.Name)-*-exec.jar"
+        $match = Get-ChildItem -Path $jar -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($match) {
+            try {
+                $fs = [System.IO.File]::OpenWrite($match.FullName)
+                $fs.Dispose()
+            } catch {
+                Write-Err "  $($svc.Name) jar LOCKED: $($match.Name)"
+                $jarLocked = $true
+            }
+        }
+    }
+
+    Start-Sleep -Milliseconds 500
+    if ($jarLocked) {
+        Write-Err "One or more backend JARs are LOCKED. Build will likely fail. Check task manager."
+        return $false
+    }
+    Write-Ok "All backend processes cleanly stopped (jar files released)"
+    return $true
 }
 
 function Show-BackendStatus {
@@ -322,6 +403,36 @@ function Show-BackendStatus {
 # =============================================================================
 # Frontend
 # =============================================================================
+
+function Invoke-FrontendBuild {
+    param(
+        [string]$Mode = "prod"  # prod = vite build; dev 时不 build
+    )
+    if ($Mode -eq "dev") {
+        Write-Info "Frontend dev mode → 跳过 vite build（dev server 热更新）"
+        return $true
+    }
+    Write-Info "Frontend build (prod)..."
+    Push-Location $FRONTEND_ROOT
+    if (-not (Test-Path "node_modules")) {
+        Write-Info "Installing frontend deps (first run)..."
+        & $NPM_CMD install 2>&1 | Tee-Object -FilePath (Join-Path $LOG_DIR "npm-install.log")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "npm install FAILED. See: $LOG_DIR\npm-install.log"
+            Pop-Location; return $false
+        }
+    }
+    & npx vite build 2>&1 | Tee-Object -FilePath (Join-Path $LOG_DIR "vite-build.log")
+    $feRc = $LASTEXITCODE
+    Pop-Location
+    if ($feRc -ne 0 -or -not (Test-Path (Join-Path $FRONTEND_ROOT "dist"))) {
+        Write-Err "Frontend build FAILED (exit=$feRc). See: $LOG_DIR\vite-build.log"
+        return $false
+    }
+    Write-Ok "Frontend build done"
+    return $true
+}
+
 function Start-Frontend {
     param([string]$Mode = "dev")
     Write-Info "Starting frontend ($Mode mode)..."
@@ -345,10 +456,15 @@ function Start-Frontend {
     } else {
         Write-Info "Frontend build (prod)..."
         Push-Location $FRONTEND_ROOT
-        if (-not (Test-Path "node_modules")) { & $NPM_CMD install 2>&1 | Out-Null }
-        & npx vite build 2>&1 | Out-Null
+        if (-not (Test-Path "node_modules")) {
+            & $NPM_CMD install 2>&1 | Tee-Object -FilePath (Join-Path $LOG_DIR "npm-install.log")
+        }
+        & npx vite build 2>&1 | Tee-Object -FilePath (Join-Path $LOG_DIR "vite-build.log")
         Pop-Location
-        if (-not (Test-Path (Join-Path $FRONTEND_ROOT "dist"))) { Write-Err "Frontend build failed"; return }
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $FRONTEND_ROOT "dist"))) {
+            Write-Err "Frontend build FAILED (exit=$LASTEXITCODE). See: $LOG_DIR\vite-build.log"
+            return
+        }
 
         $port = 80
         if (Test-Port $port) { $port = 8088; Write-Warn "Port 80 occupied, serve on $port" }
@@ -396,15 +512,15 @@ function Show-FrontendStatus {
 function Build-Backend {
     param([switch]$Clean)
     Write-Info "Building backend JAR $(if($Clean){'(clean)'}else{'(incremental)'})..."
-    $goal = if ($Clean) { "clean package" } else { "package" }
+    $goal = if ($Clean) { @("clean", "package") } else { @("package") }
     Push-Location $BACKEND_ROOT
-    & $MVN_CMD $goal -DskipTests -q 2>&1 | ForEach-Object {
-        if ($_ -match "BUILD FAILURE|ERROR") { Write-Err $_ }
-        elseif ($_ -match "BUILD SUCCESS")   { Write-Ok "Build success" }
-    }
+    & $MVN_CMD @goal "-DskipTests" 2>&1 | Tee-Object -FilePath (Join-Path $LOG_DIR "mvn-build.log")
     $rc = $LASTEXITCODE
     Pop-Location
-    if ($rc -ne 0) { Write-Err "Maven build failed (exit=$rc)"; return $false }
+    if ($rc -ne 0) {
+        Write-Err "Maven build FAILED (exit=$rc). See: $LOG_DIR\mvn-build.log"
+        return $false
+    }
     Write-Ok "Backend build done"
     return $true
 }
@@ -418,7 +534,8 @@ function Show-Help {
     Write-Host "  Aegis Platform - Unified Manager (Win)" -ForegroundColor DarkCyan
     Write-Host "========================================" -ForegroundColor DarkCyan
     Write-Host ""
-    Write-Host "Infra = Docker Compose (MySQL/Redis/Nacos/MinIO/Milvus/PaddleOCR)" -ForegroundColor DarkGray
+    Write-Host "Infra = Docker Compose (MySQL/Redis/Nacos/MinIO/Milvus/etcd)" -ForegroundColor DarkGray
+    Write-Host "OCR   = ONNX Runtime Java (进程内推理，零外部依赖)" -ForegroundColor DarkGray
     Write-Host "Apps  = local java -jar + vite (no container isolation issues)" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "Usage:" -ForegroundColor White
@@ -490,12 +607,28 @@ if ($Action -eq "infra") {
 
 if ($Action -eq "build") {
     Resolve-Env | Out-Null
-    Build-Backend -Clean
+    if (-not (Build-Backend -Clean)) {
+        Write-Err "Backend build failed. Skipping frontend."
+        exit 1
+    }
+
     Write-Info "Building frontend dist..."
     Push-Location $FRONTEND_ROOT
-    if (-not (Test-Path "node_modules")) { & $NPM_CMD install 2>&1 | Out-Null }
-    & npx vite build 2>&1 | Out-Null
+    if (-not (Test-Path "node_modules")) {
+        Write-Info "Installing frontend deps (first run)..."
+        & $NPM_CMD install 2>&1 | Tee-Object -FilePath (Join-Path $LOG_DIR "npm-install.log")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "npm install FAILED. See: $LOG_DIR\npm-install.log"
+            Pop-Location; exit 1
+        }
+    }
+    & npx vite build 2>&1 | Tee-Object -FilePath (Join-Path $LOG_DIR "vite-build.log")
+    $feRc = $LASTEXITCODE
     Pop-Location
+    if ($feRc -ne 0 -or -not (Test-Path (Join-Path $FRONTEND_ROOT "dist"))) {
+        Write-Err "Frontend build FAILED (exit=$feRc). See: $LOG_DIR\vite-build.log"
+        exit 1
+    }
     Write-Ok "Frontend build done"
     exit 0
 }
@@ -524,7 +657,14 @@ if ($Action -eq "start") {
     if ($infraOk) {
         Write-Info "DB init note: MySQL container auto-runs infra/ddl/*.sql on FIRST empty boot"
         Write-Info "If infra was already up, DB is already initialized."
-        Build-Backend
+        if (-not (Build-Backend -Clean)) {
+            Write-Err "Backend build failed. Aborting start."
+            exit 1
+        }
+        if (-not (Invoke-FrontendBuild -Mode $Frontend)) {
+            Write-Err "Frontend build failed. Aborting start."
+            exit 1
+        }
         Start-Backend
         Start-Frontend -Mode $Frontend
         Write-Host ""
@@ -553,18 +693,16 @@ if ($Action -eq "restart") {
     Stop-Backend
     Start-Sleep -Seconds 2
     Resolve-Env | Out-Null
-    Build-Backend
-
-    # restart 只确保 infra 容器在跑，不重建镜像（避免每次都触发 PaddleOCR build）
+    if (-not (Build-Backend -Clean)) {
+        Write-Err "Backend build failed. Aborting restart."
+        exit 1
+    }
+    if (-not (Invoke-FrontendBuild -Mode $Frontend)) {
+        Write-Err "Frontend build failed. Aborting restart."
+        exit 1
+    }
     Push-Location $INFRA_ROOT
     docker compose up -d mysql redis nacos minio etcd milvus 2>&1 | Out-Null
-    # PaddleOCR 仅当镜像已存在时才启动；镜像不存在留给首次 start 或手动 infra
-    $paddleExists = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null | Where-Object { $_ -match "aegis-paddleocr" }
-    if ($paddleExists) {
-        docker compose --profile ocr up -d paddleocr 2>&1 | Out-Null
-    } else {
-        Write-Warn "PaddleOCR image not built yet, skipping. Run '.\aegis.ps1 start' to build it."
-    }
     Pop-Location
 
     Start-Backend

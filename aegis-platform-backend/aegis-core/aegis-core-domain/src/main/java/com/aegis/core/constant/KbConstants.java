@@ -54,7 +54,7 @@ public final class KbConstants {
     public static final int DEFAULT_CHUNK_OVERLAP = 50;
     public static final int DEFAULT_TOP_K = 5;
     /** 默认相似度阈值（COSINE 量纲）。 */
-    public static final java.math.BigDecimal DEFAULT_SIMILARITY_THRESHOLD = new java.math.BigDecimal("0.40");
+    public static final java.math.BigDecimal DEFAULT_SIMILARITY_THRESHOLD = new java.math.BigDecimal("0.30");
     /** 相似度阈值下限（COSINE 量纲），创建/更新知识库时统一钳制。 */
     public static final java.math.BigDecimal MIN_SIMILARITY_THRESHOLD = new java.math.BigDecimal("0.15");
     public static final String DEFAULT_EMBEDDING_MODEL = "doubao-embedding-vision";

@@ -1545,4 +1545,25 @@ CREATE TABLE `ten_usage` (
   KEY `idx_tenant_usage_create_time` (`create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='租户用量统计实体';
 
+
+
+-- ===== sec_sandbox_policy: 沙箱命令策略 =====
+DROP TABLE IF EXISTS sec_sandbox_policy;
+CREATE TABLE sec_sandbox_policy (
+  id bigint NOT NULL COMMENT '主键ID（雪花ID）',
+  tenant_id bigint NOT NULL COMMENT '租户ID',
+  tool_code varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '工具编码',
+  sandbox_execution tinyint(1) DEFAULT NULL COMMENT '沙箱执行决策：1强制进沙箱 / 0明确不进 / NULL未配置走默认',
+  description varchar(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '策略描述',
+  enabled tinyint(1) DEFAULT '1' COMMENT '是否启用，true生效 false暂停',
+  create_by bigint DEFAULT NULL COMMENT '创建人ID',
+  create_time datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  update_by bigint DEFAULT NULL COMMENT '更新人ID',
+  update_time datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  deleted tinyint DEFAULT '0' COMMENT '逻辑删除：0未删除 1已删除',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_sandbox_policy_tool (tenant_id, tool_code),
+  KEY idx_sandbox_policy_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='沙箱命令策略实体';
+
 SET FOREIGN_KEY_CHECKS = 1;

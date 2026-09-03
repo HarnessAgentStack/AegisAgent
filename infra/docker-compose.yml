@@ -176,6 +176,29 @@ services:
       start_period: 60s
 
   # ============================================================================
+  # web_search — SearXNG 自聚合搜索引擎 (免费无 API Key, 开源部署即插即用)
+  # 聚合 Google/Bing/DuckDuckGo/Brave 多引擎, 任一被封不影响其他
+  # 开源部署者一行起: docker compose up aegis-searxng
+  # ============================================================================
+  aegis-searxng:
+    image: searxng/searxng:latest
+    container_name: aegis-searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888
+      - SEARXNG_SECRET=aegis-searxng-secret-2026
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ============================================================================
   # Profile: ocr — PaddleOCR 图片文字识别 (首次启动下载模型, CPU-only)
   # ============================================================================
   paddleocr:

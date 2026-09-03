@@ -43,8 +43,16 @@ RUN pip install --no-cache-dir --upgrade pip
 
 # ============ 版本必须钉死，不能用 >= ============
 # paddlepaddle 2.6.2 + paddleocr 2.8.1 是 CPU-only 稳定组合
+#
+# P0-2 修复：默认 wheel 启用 MKLDNN/AVX 算子融合（SelfAttentionFusePass），
+# 若宿主机 CPU 不支持 AVX2/FMA 等指令子集会触发 SIGILL（Illegal instruction）导致
+# 容器死循环重启。PaddlePaddle 官方 no-avx wheel 通过 find-links (-f) 提供，
+# 注意必须用 -f 而非 --index-url（pip 对该索引页结构按 find-links 处理）。
+# 双管齐下：no-avx wheel + app.py 运行时关闭 MKLDNN/IR 算子融合
 RUN pip install --no-cache-dir \
     paddlepaddle==2.6.2 \
+    -f https://www.paddlepaddle.org.cn/whl/noavx/mkl/noavx.html
+RUN pip install --no-cache-dir \
     paddleocr==2.8.1 \
     fastapi>=0.110.0 \
     "uvicorn[standard]>=0.29.0" \

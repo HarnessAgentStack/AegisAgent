@@ -153,23 +153,29 @@ export interface McpServer {
   createTime?: string;
 }
 
-/** 工具行 */
+/** 工具行（对齐后端 res_tool 实体：toolType 为执行方式分类，sourceType 为来源，status 为 NORMAL/DISABLED） */
 export interface Tool {
   id: string;
   toolCode: string;
   toolName: string;
-  toolType: 'BUILTIN' | 'CUSTOM' | 'MCP_BOUND' | 'SKILL_BOUND';
-  sourceType: 'SYSTEM' | 'USER' | 'MCP' | 'SKILL';
+  toolType:
+    | 'READONLY' | 'INTERNAL_API' | 'WRITE' | 'EXTERNAL_NETWORK' | 'CODE_EXEC' | 'HIGH_RISK'
+    | 'BUILTIN' | 'CUSTOM' | 'MCP_BOUND' | 'SKILL_BOUND';
+  sourceType: 'BUILTIN' | 'MCP' | 'SYSTEM' | 'USER' | 'SKILL';
   securityLevel: SecurityLevel;
-  lifeStatus: LifeStatus;
-  status: 'ACTIVE' | 'INACTIVE' | 'DEPRECATED';
+  lifeStatus?: LifeStatus;
+  status: 'NORMAL' | 'DISABLED' | 'ACTIVE' | 'INACTIVE' | 'DEPRECATED';
   signature?: string;
   description?: string;
   requireApproval?: boolean;
+  readOnly?: boolean;
+  mcpServiceId?: string;
   inputSchema?: string;
   outputSchema?: string;
   sourceRef?: string;
-  createdAt: string;
+  createdAt?: string;
+  createTime?: string;
+  updateTime?: string;
 }
 
 /** MCP 工具视图对象（用于动态展示 MCP 服务暴露的工具） */

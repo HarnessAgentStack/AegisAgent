@@ -377,7 +377,7 @@ sequenceDiagram
     RT->>MySQL: INSERT sess_session<br/>version_snapshot = agent_config JSON
     RT->>MySQL: SELECT agent_def + agent_config + agent_binding
     RT->>Redis: agent_state_session_key 组装<br/>格式: aegis:session:{userId}/{sessionId}:_keys
-    RT->>AS: HarnessAgent.Builder<br/>.distributedStore(redis)<br/>.middlewares(10个)
+    RT->>AS: HarnessAgent.Builder<br/>.distributedStore(redis)<br/>.middlewares(5个)
 
     Note over RT,AS: 2. 执行 ReAct 循环
     RT->>AS: agent.replyAsync(user_msg)
@@ -490,7 +490,7 @@ erDiagram
     res_knowledge_base {
         bigint id PK
         varchar kb_code
-        varchar index_name "→ Milvus 集合名: tenant_{id}_{kbCode}"
+        varchar index_name "元数据列；Milvus 集合名由 kb_code 拼装为 tenant_{id}_{kbCode}，不读此列"
     }
     res_kb_document {
         bigint kb_id FK

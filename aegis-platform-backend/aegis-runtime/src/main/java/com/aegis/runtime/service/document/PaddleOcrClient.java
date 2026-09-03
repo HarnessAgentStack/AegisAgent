@@ -9,29 +9,19 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
-import java.io.IOException;
 import java.util.Base64;
-import java.util.Collections;
-import java.util.List;
 
 /**
- * PaddleOCR HTTP 客户端。
+ * PaddleOCR HTTP 客户端（已降级为 fallback，优先使用 {@link OnnxOcrClient}）。
  *
- * <p>封装与 PaddleOCR FastAPI 服务的通信，提供同步 OCR 识别能力。
- * 所有异常（网络、HTTP 5xx、超时、JSON 解析失败）都会被 catch 并返回
- * {@link OcrResult#failed(String)} 降级结果，调用方无需关心底层错误。</p>
+ * <p>封装与 PaddleOCR FastAPI 服务的通信。所有异常被 catch 并返回
+ * {@link OcrResult#failed(String)} 降级结果。</p>
  *
- * <h3>降级策略</h3>
- * <ul>
- *   <li>服务不可达 → OcrResult.failed()</li>
- *   <li>图片超 maxImageBytes → OcrResult.failed()</li>
- *   <li>HTTP 非 2xx → OcrResult.failed()</li>
- *   <li>响应体解析失败 → OcrResult.failed()</li>
- * </ul>
- *
- * @author wang.zhen
+ * @deprecated 请优先使用 {@link OnnxOcrClient}（ONNX Runtime Java 进程内推理，零外部服务依赖）。
+ *             本类保留用于向后兼容及 ONNX 模型不可用时的 fallback。
  */
 @Slf4j
+@Deprecated
 public class PaddleOcrClient {
 
     private final RestTemplate restTemplate;
@@ -43,11 +33,7 @@ public class PaddleOcrClient {
     }
 
     /**
-     * 执行 OCR 识别。
-     *
-     * @param imageBytes 原始图片字节
-     * @param filename   文件名（仅用于日志）
-     * @return OCR 结果（永不返回 null，失败时返回 OcrResult.failed()）
+     * 执行 OCR 识别（HTTP 调用 PaddleOCR FastAPI 服务）。
      */
     public OcrResult recognize(byte[] imageBytes, String filename) {
         if (!properties.isEnabled()) {
@@ -79,7 +65,6 @@ public class PaddleOcrClient {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-
         HttpEntity<String> entity = new HttpEntity<>(body.toJSONString(), headers);
 
         // 3. 发起 HTTP 调用
@@ -89,43 +74,30 @@ public class PaddleOcrClient {
             ResponseEntity<String> response = restTemplate.exchange(
                     url, HttpMethod.POST, entity, String.class);
             long elapsed = System.currentTimeMillis() - start;
-
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 return parseResponse(response.getBody(), filename, elapsed);
             } else {
-                String bodySample = response.getBody() != null ? response.getBody().substring(0, Math.min(500, response.getBody().length())) : "(empty)";
-                log.warn("PaddleOCR HTTP 非 2xx: filename={}, status={}, body={}, elapsed={}ms",
-                        filename, response.getStatusCode(), bodySample, elapsed);
+                log.warn("PaddleOCR HTTP 非 2xx: filename={}, status={}, elapsed={}ms",
+                        filename, response.getStatusCode(), elapsed);
                 return OcrResult.failed("HTTP " + response.getStatusCode().value());
             }
         } catch (ResourceAccessException e) {
             long elapsed = System.currentTimeMillis() - start;
-            log.warn("PaddleOCR 连接超时或服务不可达: filename={}, url={}, error={}, elapsed={}ms",
-                    filename, url, e.getMessage(), elapsed);
-            return OcrResult.failed("connection timeout/unreachable: " + e.getMessage());
+            log.warn("PaddleOCR 连接超时或不可达: filename={}, url={}, elapsed={}ms",
+                    filename, url, elapsed);
+            return OcrResult.failed("connection timeout: " + e.getMessage());
         } catch (RestClientException e) {
-            long elapsed = System.currentTimeMillis() - start;
-            log.warn("PaddleOCR 调用异常: filename={}, url={}, error={}, elapsed={}ms",
-                    filename, url, e.getMessage(), elapsed);
             return OcrResult.failed("rest error: " + e.getMessage());
         } catch (Exception e) {
-            long elapsed = System.currentTimeMillis() - start;
-            log.warn("PaddleOCR 未知异常: filename={}, error={}, elapsed={}ms",
-                    filename, e.getMessage(), elapsed, e);
+            log.warn("PaddleOCR 未知异常: filename={}, error={}", filename, e.getMessage(), e);
             return OcrResult.failed("unknown error: " + e.getMessage());
         }
     }
 
-    /**
-     * 检查 OCR 服务健康状态。
-     *
-     * @return true 表示 /health 返回 200
-     */
     public boolean healthCheck() {
         try {
             ResponseEntity<String> resp = restTemplate.getForEntity(
-                    properties.getEndpoint().replaceAll("/+$", "") + "/health",
-                    String.class);
+                    properties.getEndpoint().replaceAll("/+$", "") + "/health", String.class);
             return resp.getStatusCode().is2xxSuccessful();
         } catch (Exception e) {
             log.debug("PaddleOCR health check failed: {}", e.getMessage());
@@ -133,9 +105,6 @@ public class PaddleOcrClient {
         }
     }
 
-    /**
-     * 解析 OCR JSON 响应体。
-     */
     private OcrResult parseResponse(String json, String filename, long elapsedMs) {
         try {
             JSONObject root = JSON.parseObject(json);
@@ -143,83 +112,18 @@ public class PaddleOcrClient {
             String fullText = root.getString("full_text");
             int lineCount = 0;
             JSONArray linesArr = root.getJSONArray("text_lines");
-            if (linesArr != null) {
-                lineCount = linesArr.size();
-            }
+            if (linesArr != null) lineCount = linesArr.size();
 
             if (!success) {
-                log.warn("PaddleOCR 返回 success=false: filename={}, fullText={}, elapsed={}ms",
-                        filename, fullText != null ? fullText.substring(0, Math.min(200, fullText.length())) : "", elapsedMs);
+                log.warn("PaddleOCR success=false: filename={}", filename);
                 return OcrResult.failed(fullText != null ? fullText : "OCR success=false");
             }
-
-            log.info("PaddleOCR 识别成功: filename={}, lines={}, chars={}, elapsed={}ms",
-                    filename, lineCount, fullText != null ? fullText.length() : 0, elapsedMs);
+            log.info("PaddleOCR[fallback] 识别成功: filename={}, lines={}, elapsed={}ms",
+                    filename, lineCount, elapsedMs);
             return OcrResult.success(fullText != null ? fullText : "", lineCount, elapsedMs);
         } catch (Exception e) {
-            log.warn("PaddleOCR 响应解析失败: filename={}, bodyLen={}, error={}",
-                    filename, json.length(), e.getMessage());
+            log.warn("PaddleOCR 响应解析失败: filename={}, error={}", filename, e.getMessage());
             return OcrResult.failed("parse error: " + e.getMessage());
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // OcrResult —— OCR 结果 DTO
-    // -----------------------------------------------------------------------
-
-    /**
-     * OCR 识别结果。
-     *
-     * <p>通过 {@link #success(String, int, long)} 或 {@link #failed(String)} 创建。
-     */
-    public static class OcrResult {
-        private final boolean success;
-        private final String fullText;
-        private final int lineCount;
-        private final long elapsedMs;
-        private final String error;
-
-        private OcrResult(boolean success, String fullText, int lineCount, long elapsedMs, String error) {
-            this.success = success;
-            this.fullText = fullText;
-            this.lineCount = lineCount;
-            this.elapsedMs = elapsedMs;
-            this.error = error;
-        }
-
-        public static OcrResult success(String fullText, int lineCount, long elapsedMs) {
-            return new OcrResult(true, fullText, lineCount, elapsedMs, null);
-        }
-
-        public static OcrResult failed(String error) {
-            return new OcrResult(false, "", 0, 0, error);
-        }
-
-        /** OCR 服务是否成功返回（不含"成功但识别结果为空"的语义） */
-        public boolean isSuccess() { return success; }
-
-        /** 成功提取到的文字（换行拼接），失败时为空串 */
-        public String getFullText() { return fullText != null ? fullText : ""; }
-
-        /** 识别行数，失败时为 0 */
-        public int getLineCount() { return lineCount; }
-
-        /** 耗时毫秒，失败时为 0 */
-        public long getElapsedMs() { return elapsedMs; }
-
-        /** 失败原因，成功时为 null */
-        public String getError() { return error; }
-
-        /**
-         * OCR 是否有效（成功且提取到足够的文字）。
-         *
-         * <p>用于判断是否应该跳过后续的 vision LLM 调用。
-         * 判定标准：fullText 非空且字符数 ≥ minTextLengthThreshold。</p>
-         *
-         * @param minChars 最少有效字符阈值
-         */
-        public boolean hasValidText(int minChars) {
-            return success && fullText != null && fullText.trim().length() >= minChars;
         }
     }
 }

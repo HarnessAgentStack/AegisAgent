@@ -90,16 +90,35 @@ public class AegisBuiltinTools {
             return "{\"error\": \"Parameter 'query' is required\"}";
         }
 
-        // 优先使用配置的自定义搜索 API
+        // 优先使用配置的自定义搜索 API（如 SearXNG 自建）；否则用内置 Bing
         String webSearchUrl = toolProperties.getWebSearchUrl();
-        String result;
-        if (webSearchUrl != null && !webSearchUrl.isBlank()) {
-            result = searchViaCustomApi(query, webSearchUrl);
-        } else {
-            // 默认使用内置 Bing 搜索后端
-            result = searchViaBing(query);
+        String result = null;
+        Exception lastError = null;
+
+        // P0-3 增强：重试 2 次（总共最多 3 次尝试），避免偶发网络抖动/Bing 反爬
+        for (int attempt = 1; attempt <= 3 && result == null; attempt++) {
+            try {
+                if (webSearchUrl != null && !webSearchUrl.isBlank()) {
+                    result = searchViaCustomApi(query, webSearchUrl);
+                } else {
+                    result = searchViaBing(query);
+                }
+            } catch (Exception e) {
+                lastError = e;
+                log.warn("web_search attempt {}/3 failed: query='{}', error={}", attempt, query, e.getMessage());
+                if (attempt <= 2) {
+                    Thread.sleep(300L * attempt); // 300ms / 600ms 退避
+                }
+            }
         }
-        log.info("========== TOOL web_search COMPLETED: resultLen={}, duration={}ms ==========", result.length(), System.currentTimeMillis() - startTime);
+
+        if (result == null) {
+            log.error("web_search all attempts failed: query='{}'", query, lastError);
+            return "{\"error\": \"Search backend unavailable after 3 retries. Please try again later.\"}";
+        }
+
+        log.info("========== TOOL web_search COMPLETED: resultLen={}, duration={}ms ==========",
+                result.length(), System.currentTimeMillis() - startTime);
         return result;
     }
 
@@ -326,53 +345,170 @@ public class AegisBuiltinTools {
 
     /**
      * 通过配置的自定义搜索 API 查询。
+     *
+     * <p>智能识别返回格式：
+     * <ul>
+     *   <li>SearXNG：URL 含 "searxng" 或 "8888" → 自动加 {@code &format=json}，
+     *       结构化解析 {@code results[].title/url/content/engine}</li>
+     *   <li>通用 JSON API（如 Tavily/SerpAPI）：尝试解析 JSON，成功则结构化提取，
+     *       失败则回退原始文本</li>
+     *   <li>HTML 抓取（无 API）：回退泛化链接提取</li>
+     * </ul>
+     *
+     * <p>P0-3 增强：超时 5s（比默认 15s 更积极）+ 自动 JSON 格式识别。
      */
     private String searchViaCustomApi(String query, String webSearchUrl) throws Exception {
-        String url = webSearchUrl + "?q=" + URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8);
+        // 智能格式识别：SearXNG 加 format=json；其他 API 保留原样
+        boolean preferJson = webSearchUrl.toLowerCase().contains("searxng")
+                || webSearchUrl.contains(":8888")
+                || webSearchUrl.contains("format=json");
+        String separator = webSearchUrl.contains("?") ? "&" : "?";
+        String url = webSearchUrl + separator + "q="
+                + URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8);
+        if (preferJson && !webSearchUrl.contains("format=json")) {
+            url += "&format=json";
+        }
         String violation = checkUrlSafety(url);
         if (violation != null) {
             return "{\"error\": \"URL blocked: " + violation + "\"}";
         }
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(15))
-                .GET()
-                .build();
+                .timeout(Duration.ofSeconds(5)) // P0-3 增强：从 15s 降到 5s
+                .header("User-Agent", "Mozilla/5.0 Aegis-SearchBot/1.0")
+                .GET();
+        if (preferJson) {
+            reqBuilder.header("Accept", "application/json");
+        }
+        HttpRequest request = reqBuilder.build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         String body = response.body();
-        if (body != null && body.length() > 8000) {
-            body = body.substring(0, 8000) + "\n... (truncated)";
+        if (body == null) body = "";
+
+        if (response.statusCode() != 200) {
+            log.warn("Custom search API failed: status={}, url={}", response.statusCode(), url);
+            throw new RuntimeException("Search API returned " + response.statusCode());
         }
 
+        // P0-3 增强：尝试 JSON 结构化解析
+        String structured = tryParseSearchJson(body);
+        if (structured != null) {
+            return structured;
+        }
+
+        // 兜底：原始文本（截断到 8000 字符避免超长）
+        if (body.length() > 8000) {
+            body = body.substring(0, 8000) + "\n... (truncated)";
+        }
         return buildEnvelope("web_search",
                 envelopeTextBlock("搜索结果", body),
                 meta("query", query, "status", response.statusCode()));
     }
 
     /**
+     * 尝试将搜索 API 返回解析为结构化 Envelope。
+     * 识别 SearXNG JSON 格式（results[] + title/url/content/engine）。
+     *
+     * @return 结构化 Envelope JSON，或 null（非 JSON 格式）
+     */
+    private String tryParseSearchJson(String body) {
+        try {
+            com.alibaba.fastjson2.JSONObject json = JSON.parseObject(body);
+            if (json == null) return null;
+
+            // SearXNG 格式：{"query": "...", "number_of_results": N, "results": [...]}
+            if (json.containsKey("results") && json.get("results") instanceof java.util.List) {
+                @SuppressWarnings("unchecked")
+                List<?> rawResults = (List<?>) json.get("results");
+                List<Map<String, String>> results = new ArrayList<>();
+                for (Object o : rawResults) {
+                    if (!(o instanceof com.alibaba.fastjson2.JSONObject)) continue;
+                    com.alibaba.fastjson2.JSONObject item = (com.alibaba.fastjson2.JSONObject) o;
+                    Map<String, String> r = new HashMap<>(4);
+                    String title = item.getString("title");
+                    String url = item.getString("url");
+                    String content = item.getString("content");
+                    String engine = item.getString("engine");
+                    if (title != null) r.put("title", title);
+                    if (url != null) r.put("url", url);
+                    if (content != null) r.put("snippet", content);
+                    if (engine != null) r.put("engine", engine);
+                    if (!r.isEmpty()) results.add(r);
+                }
+                if (!results.isEmpty()) {
+                    return buildEnvelope("web_search",
+                            envelopeListBlock("搜索结果（SearXNG 聚合）", results),
+                            meta("source", "searxng", "resultCount", results.size()));
+                }
+            }
+
+            // 通用 JSON：尝试提取 data/results/list 等常见 key
+            String[] dataKeys = {"results", "data", "items", "list"};
+            for (String key : dataKeys) {
+                if (json.containsKey(key) && json.get(key) instanceof java.util.List) {
+                    @SuppressWarnings("unchecked")
+                    List<?> raw = (List<?>) json.get(key);
+                    List<Map<String, String>> extracted = new ArrayList<>();
+                    for (Object o : raw) {
+                        if (!(o instanceof com.alibaba.fastjson2.JSONObject)) continue;
+                        com.alibaba.fastjson2.JSONObject item = (com.alibaba.fastjson2.JSONObject) o;
+                        Map<String, String> r = new HashMap<>(3);
+                        if (item.containsKey("title")) r.put("title", item.getString("title"));
+                        if (item.containsKey("url")) r.put("url", item.getString("url"));
+                        if (item.containsKey("link")) r.put("url", item.getString("link"));
+                        if (item.containsKey("description")) r.put("snippet", item.getString("description"));
+                        if (item.containsKey("snippet")) r.put("snippet", item.getString("snippet"));
+                        if (item.containsKey("content")) r.put("snippet", item.getString("content"));
+                        if (!r.isEmpty()) extracted.add(r);
+                    }
+                    if (!extracted.isEmpty()) {
+                        return buildEnvelope("web_search",
+                                envelopeListBlock("搜索结果", extracted),
+                                meta("source", "json-api", "resultCount", extracted.size()));
+                    }
+                }
+            }
+
+            // 是 JSON 但无法提取结构 → 回退文本
+            return null;
+        } catch (Exception e) {
+            // 非 JSON 格式
+            return null;
+        }
+    }
+
+    /**
      * 内置 Bing 搜索后端（默认，无需配置 API Key）。
+     *
+     * <p>P0-3 增强：
+     * <ul>
+     *   <li>加 Cookie 头（SRCHHPGUSR）绕过部分反爬</li>
+     *   <li>解析失败（Bing 返回非 {@code li.b_algo} 结构）回退泛化链接提取</li>
+     *   <li>超时 5s（重试机制由 webSearch 主方法统一处理）</li>
+     * </ul>
      */
     private String searchViaBing(String query) throws Exception {
         String url = "https://cn.bing.com/search?q=" + URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8)
                 + "&count=10&setlang=zh-CN";
 
+        // P0-3 增强：加 Cookie 头绕过 Bing 部分反爬检测
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(15))
+                .timeout(Duration.ofSeconds(5))
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
                 .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                 .header("Accept", "text/html,application/xhtml+xml")
+                .header("Cookie", "SRCHHPGUSR=AH=" + System.currentTimeMillis() / 1000 + "&V=1&N=1")
                 .GET()
                 .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             log.warn("Bing 搜索请求失败: status={}, query={}", response.statusCode(), query);
-            return "{\"error\": \"Search backend temporarily unavailable (status: "
-                    + response.statusCode() + "). Please retry later.\"}";
+            throw new RuntimeException("Bing returned status " + response.statusCode());
         }
 
         Document doc = Jsoup.parse(response.body());
@@ -395,9 +531,34 @@ public class AegisBuiltinTools {
             }
         }
 
+        // P0-3 增强：Bing 返回非标准结构（被反爬）时，泛化提取所有 a[href] 链接
+        if (results.isEmpty()) {
+            log.warn("Bing 返回空结果（可能被反爬），回退泛化链接提取: query={}", query);
+            Elements links = doc.select("a[href]");
+            for (Element link : links) {
+                String href = link.attr("href");
+                String text = link.text().trim();
+                // 过滤导航链接、锚点、Bing 内部链接
+                if (href.isEmpty() || text.length() < 4 || href.startsWith("#")
+                        || href.contains("bing.com") || href.contains("microsoft.com")
+                        || href.startsWith("/") || href.contains("javascript:")) {
+                    continue;
+                }
+                // 只取 http(s) 外链
+                if (!href.startsWith("http://") && !href.startsWith("https://")) {
+                    continue;
+                }
+                Map<String, String> r = new HashMap<>(2);
+                r.put("title", text.length() > 80 ? text.substring(0, 80) + "..." : text);
+                r.put("url", href);
+                results.add(r);
+                if (results.size() >= 10) break;
+            }
+        }
+
         Map<String, Object> searchBlock;
         if (!results.isEmpty()) {
-            searchBlock = envelopeListBlock("搜索结果", results);
+            searchBlock = envelopeListBlock("搜索结果（Bing）", results);
         } else {
             searchBlock = envelopeTextBlock("搜索结果", "未找到相关结果");
         }

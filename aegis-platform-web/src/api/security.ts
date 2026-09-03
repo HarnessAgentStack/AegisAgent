@@ -176,6 +176,44 @@ export function deleteOutboundPolicy(id: string): Promise<void> {
   return http.delete<void>(`${SECURITY_BASE}/outbound-policies/${id}`);
 }
 
+
+// ==================== 沙箱命令策略 ====================
+
+/** 沙箱命令策略（对齐后端 SandboxPolicyVO） */
+export interface SandboxPolicy {
+  id?: string;
+  tenantId?: string;
+  toolCode?: string;
+  sandboxExecution?: boolean | null;
+  description?: string;
+  enabled?: boolean;
+  createTime?: string;
+  updateTime?: string;
+  [key: string]: unknown;
+}
+
+// ---- Sandbox Policies ----
+
+/** 沙箱策略分页查询 */
+export function getSandboxPolicies(params?: PageQuery): Promise<Page<SandboxPolicy>> {
+  return http.get<Page<SandboxPolicy>>(`${SECURITY_BASE}/sandbox-policies`, { params });
+}
+
+/** 新建沙箱策略 */
+export function createSandboxPolicy(data: Partial<SandboxPolicy>): Promise<SandboxPolicy> {
+  return http.post<SandboxPolicy>(`${SECURITY_BASE}/sandbox-policies`, data);
+}
+
+/** 更新沙箱策略 */
+export function updateSandboxPolicy(id: string, data: Partial<SandboxPolicy>): Promise<SandboxPolicy> {
+  return http.put<SandboxPolicy>(`${SECURITY_BASE}/sandbox-policies/${id}`, data);
+}
+
+/** 删除沙箱策略 */
+export function deleteSandboxPolicy(id: string): Promise<void> {
+  return http.delete<void>(`${SECURITY_BASE}/sandbox-policies/${id}`);
+}
+
 // ==================== HITL 审批 ====================
 
 const HITL_BASE = '/admin/hitl';

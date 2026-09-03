@@ -2,18 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![AgentScope](https://img.shields.io/badge/AgentScope-2.0.2-blue)](https://github.com/agentscope-ai/agentscope-java)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.0.0-green)](https://spring.io/projects/spring-boot)
+[![Java](https://img.shields.io/badge/Java-21-orange)](https://openjdk.org/)
 
-企业级多租户 AI Agent 平台。
-
----
-
-## 产品概览
+企业级多租户 AI Agent 平台。执行内核为 AgentScope 2.0.2 `HarnessAgent`，上层叠加多租户隔离、工具安全策略、沙箱执行与全链路追踪。
 
 ![工作台对话](docs/images/workbench-chat.png)
-![智能体管理](docs/images/agent-list.png)
-![沙箱池管理](docs/images/sandbox.png)
-![安全策略](docs/images/security-policy.png)
-![可观测链路追踪](docs/images/observability.png)
 
 ---
 
@@ -21,151 +15,122 @@
 
 ### 前置依赖
 
-**运行脚本会自动探测**（Docker → JDK → Maven → Node），无需配置即可跑通。
-探测失败或有多个版本时，可通过两种方式覆盖（优先级：脚本默认 < 环境变量 < `aegis.conf`）：
+脚本自动探测（Docker → JDK → Maven → Node）。探测失败时在根目录 `aegis.conf` 覆盖，优先级：**脚本默认值 < 环境变量 < `aegis.conf`**。
 
-| 依赖 | 最低版本 | 脚本如何发现 | 可覆盖的配置 |
-|------|---------|-------------|-------------|
-| Docker Desktop / Engine + Compose v2 | 24+ | `docker info` 直连 | — |
-| JDK | 21+ | `$env:JAVA_HOME\bin\java` 或 PATH 中 `java` | `aegis.conf` → `JAVA_HOME` |
-| Maven | 3.9+ | `$env:MVN_CMD` 或 PATH 中 `mvn` | `aegis.conf` → `MVN_CMD` |
-| Node.js | 18+ | PATH 中 `node` / `npm` | — |
+| 依赖 | 版本 | 探测方式 | 覆盖配置 |
+|---|---|---|---|
+| Docker + Compose v2 | 24+ | `docker info` | — |
+| JDK | 21+ | `JAVA_HOME` 或 PATH `java` | `aegis.conf` → `JAVA_HOME` |
+| Maven | 3.9+ | `MVN_CMD` 或 PATH `mvn` | `aegis.conf` → `MVN_CMD` |
+| Node.js | 18+ | PATH `node` / `npm` | — |
 
-> **`aegis.conf`** 位于项目根目录，跨平台通用（bash 风格，Windows PowerShell 也能解析）。留空/注释掉 = 自动探测，取消注释 = 强制覆盖。常见场景：
-> - JDK / Maven 没进 PATH：取消注释 `JAVA_HOME` / `MVN_CMD`
-> - Sandbox 用远程 Docker：取消注释 `SANDBOX_DOCKER_HOST=tcp://127.0.0.1:2375`
+> Windows 下 Git Bash 无法调用 `mvn` 启动器，用 `aegis.ps1`（PowerShell）。
 
 ### 一键启动
 
-**一个脚本搞定**——基础设施 (Docker Compose) + 应用层 (本机进程) 全自动：
-
 ```powershell
-# Windows PowerShell
-.\aegis.ps1 start
-
-# macOS / Linux bash
-./aegis.sh start
+.\aegis.ps1 start              # Windows
+./aegis.sh start               # macOS / Linux
 ```
 
-脚本自动完成：
-1. 探测前置依赖 (Docker / JDK / Maven / Node)，缺失则打印错误并退出
-2. `docker compose up` 启动 MySQL / Redis / Nacos / MinIO / etcd / Milvus / PaddleOCR
-3. **首次启动 MySQL 空数据卷时**，容器自动执行 `infra/ddl/01_schema_init.sql` + `02_seed_data.sql`（后续重启跳过）
-4. `mvn clean package -DskipTests` 构建后端 JAR
-5. 本机启动 gateway (:8080) / admin (:8082) / runtime (:8081) / mcp-demo (:8084)
-6. 本机启动前端 (默认 vite dev :5173，加 `frontend=prod` 切静态 serve)
-7. mcp-demo 启动时自动向 admin 注册自身（REST endpoint=`http://127.0.0.1:8084/api/mcp/tools`），**数据库中不需要预置 MCP 服务种子数据**
+脚本执行顺序：
 
-首次 `mvn package` 约 2-5 min，后续 `restart` 走增量构建。
+1. 探测依赖，缺失即报错退出
+2. `docker compose up -d` 起 6 个核心容器：mysql / redis / nacos / minio / etcd / milvus
+3. MySQL 数据卷为空时自动执行 `infra/ddl/01_schema_init.sql` + `02_seed_data.sql`（后续重启跳过）
+4. `mvn clean package -DskipTests` 构建后端（**`start` 与 `restart` 都走 clean 构建，无增量**）
+5. 本机启动 gateway / admin / runtime / mcp-demo，均带 `--spring.profiles.active=local`
+6. 启动前端（默认 `vite dev`，前端依赖缺失时自动 `npm install`）
+7. mcp-demo 启动后自动向 admin 注册自身，数据库无需预置 MCP 种子数据
 
-### 常用命令
+首次全量构建约 2–5 分钟。
+
+### 命令
 
 | 命令 | 说明 |
-|------|------|
-| `./aegis.ps1 start` | 全栈启动（后端增量构建 + 前端 dev） |
-| `./aegis.ps1 start -Frontend prod` | 前端 build + serve 静态产物 |
-| `./aegis.sh start frontend=prod` | 同上（bash 版用参数位置传） |
-| `./aegis.ps1 stop` | 停全部（本机应用 + 基础设施容器） |
-| `./aegis.ps1 appstop` | 仅停本机应用，**保留**基础设施容器 |
-| `./aegis.ps1 restart` | appstop → clean build → start |
-| `./aegis.ps1 build` | 仅构建后端 JAR + 前端 dist |
-| `./aegis.ps1 status` | 查看全部容器/进程状态 |
-| `./aegis.ps1 infra` | 仅起/停基础设施 |
-| `./aegis.ps1 help` | 打印帮助 |
+|---|---|
+| `.\aegis.ps1 start` | 全栈启动（clean 构建 + 前端 dev） |
+| `.\aegis.ps1 start -Frontend prod` | 前端 `vite build` + `serve`（:80，占用则 :8088） |
+| `.\aegis.ps1 stop` | 停全部（本机应用 + 基础设施容器） |
+| `.\aegis.ps1 appstop` | 仅停本机应用，保留容器 |
+| `.\aegis.ps1 restart` | appstop → clean 构建 → 启动 |
+| `.\aegis.ps1 build` | 仅构建后端 JAR + 前端 dist |
+| `.\aegis.ps1 status` | 查看容器与进程状态 |
+| `.\aegis.ps1 infra` | 仅操作基础设施 |
+| `.\aegis.ps1 help` | 打印帮助 |
 
 ### 访问入口
 
-| 入口 | URL |
-|------|-----|
-| **前端工作台** | http://localhost:5173 |
+| 入口 | 地址 |
+|---|---|
+| 前端工作台 | http://localhost:5173 （prod 模式 http://localhost:80） |
 | 网关 | http://localhost:8080 |
 | 管理后台 | http://localhost:8082 |
 | 运行时 | http://localhost:8081 |
-| MCP-Demo | http://localhost:8084/api/mcp/tools （工具列表）<br>http://localhost:8084/api/mcp/tools/{code}/invoke （执行工具） |
-| Nacos | http://localhost:8848/nacos (nacos/nacos) |
-| MinIO | http://localhost:9001 (aegis/aegis12345) |
-| MySQL | localhost:3306 (root/root123, aegis/aegis123) |
+| MCP-Demo | http://localhost:8084/sse |
+| Nacos 控制台 | http://localhost:8083 |
+| MinIO 控制台 | http://localhost:9001 |
+| MySQL | localhost:3306 |
+| Milvus | localhost:19530 |
+| SearXNG（`web_search` 工具依赖） | http://localhost:8888 |
 
-**初始账号**：租户 `DEFAULT` / 用户名 `admin` / 密码 `aegis@123`（首次登录请修改）
+可选 profile：`docker compose --profile observability up -d`（Prometheus :9090 / Grafana :3000 / OTel :4317,:4318）、`--profile ocr up -d`（PaddleOCR :8098，默认不启用）。
 
----
-
-## 定位
-
-面向企业 AI Agent 落地，解决三个实际问题：智能体分类治理、工具/技能安全可控、运行时可追溯。
-
-### 智能体双维度模型
-
-Aegis 用两个正交字段描述智能体，二者各司其职：
-
-| 维度 | 字段 | 取值 | 决定什么 |
-|------|------|------|----------|
-| **智能体类型**（agent_type） | agent_type | UNIVERSAL / APPLICATION / SYSTEM | 资源装载轨道（开放订阅 vs 封闭绑定）、实例池粒度、沙箱池路由 |
-| **治理档位**（governance_tier） | governance_tier | STANDARD / ENHANCED / STRICT | 沙箱隔离强度、模型路由策略、系统提示词安全指令注入 |
-
-#### 三类智能体（按 agent_type 划分）
-
-| 类型 | 创建者 | 面向 | 运行时资源装载逻辑 |
-|------|--------|------|---------------------|
-| **通用智能体** (UNIVERSAL) | 系统内置 | 所有用户 | 开放轨道：平台内置能力 + **用户主动订阅和创建的**（技能/MCP/知识库，含草稿） |
-| **应用智能体** (APPLICATION) | 业务人员 | 租户内业务团队 | 封闭轨道：仅限智能体显式绑定的资源，严格控制不越权 |
-| **系统智能体** (SYSTEM) | 技术人员 | 系统集成方 | 严格封闭：仅限绑定的高安全等级资源，对外暴露 API 供自动化调用 |
-
-#### 治理档位（按 governance_tier 划分）
-
-| 档位 | 隔离强度 | 模型路由策略 |
-|------|----------|--------------|
-| **STANDARD** | 默认共享沙箱 | 普通模型（如 doubao-lite） |
-| **ENHANCED** | 独立沙箱命名空间 | 增强模型（如 doubao-pro） |
-| **STRICT** | 独立沙箱 + 网络隔离 | 严格模型（如加密推理），L4 工具必须本地加密模型 |
+**初始账号**：租户 `DEFAULT` / 用户名 `admin` / 密码 `aegis@123`。登录后必须先配置模型 Provider，否则对话不可用。
 
 ---
 
 ## 架构
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     React 18 SPA · Workbench + Admin                 │
-└───────────────────────────┬─────────────────────────────────────────┘
-                            │ HTTP / SSE
-                            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Spring Cloud Gateway :8080                                          │  │   TraceId → Auth → Session粘性 → 租户解析 → 路由（无 Redis 依赖）      │
-└───────────────┬──────────────────────┬──────────────────────────────┘
-                │ WebClient             │
-        ┌───────▼───────┐        ┌─────▼───────┐
-        │ Runtime :8081 │        │ Admin :8082  │
-        │ 运行时引擎     │        │ 管理后台      │
-        └───────┬───────┘        └─────┬───────┘
-                │                      │
-        ┌───────▼──────────────────────▼───────┐
-        │         AgentScope 2.0.2 内核          │
-        │  ┌─────────────────────────────────┐  │
-        │  │   洋葱链中间件（11 层）                │  │
-        │  │ Trace → Security → Tenant        │  │
-        │  │   → BindingSync → Intent → RAG   │  │
-        │  │   → ContentFilter → Audit        │  │
-        │  │   → SandboxHeartbeat → Memory    │  │
-        │  │   → Mask                         │  │
-        │  └─────────────────────────────────┘  │
-        │  HarnessAgent · RuntimeContext SPI    │
-        └───┬──────────┬──────────┬────────────┘
-            │          │          │
-        ┌───▼───┐ ┌───▼───┐ ┌───▼────┐
-        │ MySQL │ │ Redis │ │ Milvus │  MinIO
-        └───────┘ └───────┘ └────────┘
+React 18 + Ant Design 5 + Vite           :5173 (dev) / :80 (prod)
+        │  dev 代理：/api/admin→8082  /api/runtime→8081  /api→8082
+        ▼
+Spring Cloud Gateway                      :8080
+  AuditEntryFilter(-100) → AuthFilter(0) → SessionIdFilter(+50) → TenantResolveFilter(+100)
+  路由：/api/admin/**·/api/resource/**→lb://aegis-admin，/api/runtime/**→lb://aegis-runtime
+        │                    │
+        ▼                    ▼
+   aegis-runtime :8081   aegis-admin :8082
+   WebFlux              WebFlux
+   AgentScope 2.0.2      CRUD / RBAC / 审核 / 沙箱池 / 安全策略
+        │                    │
+        ▼                    ▼
+   aegis-mcp-demo :8084（启动自注册到 admin）
+        │
+        ▼
+   MySQL 8 · Redis 7 · Milvus 2.5 · MinIO · Nacos 3（仅服务发现）· etcd
 ```
+
+### 运行时中间件
+
+5 个中间件实现 `MiddlewareBase`，经 Spring 注入 `List<MiddlewareBase>` 按 `order()` 降序装配到 `HarnessAgent.Builder`。order 越大越外层：
+
+| order | 类 | 拦截点 | 作用 |
+|---|---|---|---|
+| 95 | `AegisTraceMiddleware` | onAgent / onReasoning / onActing / onModelCall | TraceId 贯穿、Span 记录 |
+| 85 | `SandboxRoutingMiddleware` | onActing | 读 `sec_sandbox_policy` 判定工具是否进沙箱，仅判定 + 审计 |
+| 70 | `AegisRagMiddleware` | onSystemPrompt | 知识库检索，片段注入系统提示词 |
+| 50 | `AegisMaskMiddleware` | — | 输出脱敏 |
+| 30 | `AegisAuditLogMiddleware` | onActing | 审计日志 |
+
+绑定同步（`BindingSyncMiddleware`）不在洋葱链内，位于 `integration/workspace` 包，在装配阶段由 `AgentAssemblyService` 调用，用于绑定指纹比对与 Workspace 重物化。
+
+工具安全决策不在中间件，由 AgentScope 原生 `PermissionEngine` 承担，规则经 `AegisPermissionRuleLoader` 从 `sec_tool_policy` 装载（未命中时等级直映：L1/L2→ALLOW，L3→ASK，L4→DENY）。
 
 ### 技术栈
 
-| 层           | 选型                                                                          | 为什么                                                                 |
-| ----------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| AI Agent 内核 | [AgentScope 2.0.2 (Java)](https://github.com/agentscope-ai/agentscope-java) | 阿里巴巴开源 JVM 原生 Agent 框架，HarnessAgent + ReAct 循环 + 中间件扩展点天然适配企业安全拦截需求 |
-| 后端          | Spring Boot 4 / WebFlux / MyBatis-Plus                                      | WebFlux 响应式适配 SSE 流式输出，多租户插件自动追加 tenant_id                          |
-| 前端          | React 18 / Zustand / Ant Design 5                                           | Zustand 轻量状态管理，Ant Design 提供企业级表单表格组件                               |
-| 中间件         | MySQL 8 / Redis 7 / Nacos 3 / Milvus 2.5 / MinIO                            | MySQL 58 表主存储，Redis 会话态+分布式锁，Nacos 服务发现（配置中心预留未启用），Milvus 分租户向量索引，MinIO 对象存储  |
-| 可观测         | OTel Collector / Prometheus / Grafana                                       | TraceId 贯穿全链路，TraceStore 落 MySQL 支持会话级聚合查询                          |
-| 部署          | Docker Compose + Maven 3.9 + Node 18 + 跨平台启动脚本 `aegis.ps1` / `aegis.sh` | 基础设施 (MySQL/Redis/Nacos/Milvus/MinIO) 用 Docker Compose，应用层 (gateway/admin/runtime/mcp-demo/web) 本机进程 — 避免沙箱 unix socket 污染和容器网络隔离问题 |
+| 层 | 选型 | 说明 |
+|---|---|---|
+| Agent 内核 | AgentScope 2.0.2 | `agentscope-core` / `agentscope-harness` / `extensions-redis` / `extensions-oss` / `extensions-model-openai` |
+| 后端 | Spring Boot 4.0.0 · WebFlux · MyBatis-Plus | 四个服务全 WebFlux；MyBatis-Plus 租户插件自动追加 `tenant_id` |
+| 前端 | React 18.3 · Ant Design 5.22 · Vite 6 · Zustand 5 · TanStack Query 5 | 包管理器 pnpm 11 |
+| 存储 | MySQL 8（61 表）· Redis 7 · Milvus 2.5 · MinIO | Redis 承载 AgentScope `DistributedStore`、HITL、限流 |
+| 服务发现 | Nacos 3.2.2 | 仅服务发现；配置中心各模块 `config.enabled=false` |
+| 沙箱 | K8s（`aegis.sandbox.backend=k8s`） | 三后端 SPI：docker / k8s / process |
+| 架构守护 | ArchUnit | `aegis-admin/src/test/java/com/aegis/admin/arch/ArchitectureGuardTest.java` |
+
+应用层跑本机进程、基础设施跑容器：避免容器内 unix socket 与网络隔离带来的沙箱挂载问题。
 
 ---
 
@@ -174,76 +139,83 @@ Aegis 用两个正交字段描述智能体，二者各司其职：
 ### 模块依赖
 
 ```
-aegis-core-domain   ←  所有模块依赖，零外部依赖
-      ↑
-aegis-core-spi      ←  SPI 接口 + 安全核心组件
-      ↑
-aegis-core-infra    ←  自动配置 + 通用组件
-      ↑
-aegis-dal           ←  MyBatis-Plus Mapper + TraceStore 实现
-      ↑
-┌─────┴─────┐
-aegis-admin  aegis-runtime    （runtime 额外依赖 AgentScope 2.0.2）
+aegis-core-domain   （POJO / 枚举 / DTO，零外部依赖）
+        ↑
+aegis-core-spi      （SPI 接口 + SkillContentScanner）
+        ↑
+aegis-core-infra    （自动配置 / Result / 租户上下文 / Milvus 适配）
+        ↑
+aegis-dal           （MyBatis-Plus Mapper + MysqlTraceStore）
+        ↑
+   ┌────┴─────┬──────────┬────────────┐
+aegis-gateway  aegis-admin  aegis-runtime   （runtime 额外依赖 AgentScope 2.0.2）
+aegis-mcp-demo（独立，依赖 Spring AI MCP）
 ```
 
-### 模块职责
-
-| 模块                | 做什么                                                             | 不做什么                     |
-| ----------------- | --------------------------------------------------------------- | ------------------------ |
-| aegis-core-domain | 纯 POJO + 枚举 + DTO，所有模块共享                                        | 不引入 Spring / MyBatis     |
-| aegis-core-spi    | SPI 接口定义 + SkillContentScanner（技能八大维度安全扫描）                      | 不做数据库访问                  |
-| aegis-core-infra  | 自动配置、Result 封装、租户上下文、安全策略二级缓存                                   | 不做业务逻辑                   |
-| aegis-dal         | MyBatis-Plus Mapper + MysqlTraceStore + SkillSecurityScanner 门面 | 不包含业务 Service            |
-| aegis-gateway     | JWT 鉴权、TraceId 生成、租户解析、SSE 路由、Fallback                          | 不调用 admin/runtime 内部 API |
-| aegis-admin       | 管理端 CRUD、审核流程、启动注入 universal 智能体                                | 不承载对话执行                  |
-| aegis-runtime     | AgentScope 内核装配、洋葱链中间件、沙箱管理、会话执行                                | 不承载管理端 CRUD              |
+依赖方向单向：`gateway → core`、`admin → dal → core`、`runtime → dal → core`。
 
 ### 目录
 
 ```
 aegis/
-├── aegis-platform-backend/         Spring Boot 多模块 (Maven)
-│   ├── aegis-gateway/              网关 · :8080
-│   ├── aegis-admin/                管理后台 · :8082
-│   ├── aegis-runtime/              运行时引擎 · :8081
-│   ├── aegis-core/                 domain / spi / infra
-│   ├── aegis-dal/                  MyBatis-Plus Mapper + TraceStore
-│   └── aegis-mcp-demo/             MCP 协议示例
-│
-├── aegis-platform-web/             React 18 + Ant Design 5
-│   ├── pages/workbench/            对话工作台
-│   ├── pages/admin/                管理后台
-│   ├── pages/resource/             资源治理（技能/工具/知识库/MCP）
-│   └── pages/security/             安全治理
-│
-├── infra/                          基础设施
-│   ├── docker-compose.yml          MySQL/Redis/Nacos/Milvus/MinIO/PaddleOCR
-│   ├── ddl/                        01_schema_init.sql + 02_seed_data.sql
-│   └── init/docker/                OTel / Prometheus 配置
-│
-├── docs/                           文档
-├── aegis.ps1                       跨平台统一启动脚本 (Windows PowerShell)
-├── aegis.sh                        跨平台统一启动脚本 (macOS/Linux bash)
+├── aegis-platform-backend/          Maven 聚合，version 0.1.0-alpha.1
+│   ├── aegis-gateway/               网关 :8080
+│   ├── aegis-admin/                 管理平面 :8082
+│   ├── aegis-runtime/               运行时 :8081
+│   ├── aegis-core/                  domain / spi / infra
+│   ├── aegis-dal/
+│   └── aegis-mcp-demo/              MCP 示例 :8084
+├── aegis-platform-web/              React 18 + Ant Design 5
+│   └── src/{api,components,hooks,pages,router,stores,types,utils}
+├── infra/
+│   ├── docker-compose.yml           6 核心 + 3 个 profile 服务
+│   ├── ddl/                         01_schema_init.sql（61 表）+ 02_seed_data.sql
+│   ├── init/docker/                 prometheus.yml + otel-collector-config.yaml
+│   ├── paddleocr/ · searxng/
+│   ├── .env.example · ENV_VARS.md
+├── models/ocr/                      ONNX OCR 模型（进程内推理）
+├── docs/
+├── aegis.ps1 · aegis.sh · aegis.conf
 └── README.md
 ```
 
 ---
 
+## 核心模型
+
+智能体由两个正交字段描述，创建后不可修改：
+
+| 字段 | 取值 | 决定 |
+|---|---|---|
+| `agent_type` | UNIVERSAL / APPLICATION / SYSTEM | 资源装载轨道、实例池粒度 |
+| `governance_tier` | STANDARD / ENHANCED / STRICT | 沙箱隔离强度与模型路由档位 |
+
+| agent_type | 轨道 | 运行时装载内容 |
+|---|---|---|
+| UNIVERSAL | 开放 | 平台内置 + 用户订阅/自建的技能、知识库、MCP（含 DRAFT） |
+| APPLICATION | 封闭 | 平台内置 + `agent_binding` 显式绑定，忽略订阅表 |
+| SYSTEM | 严格封闭 | 平台内置 + `agent_binding` 显式绑定，可经 `agent_api` 对外暴露 |
+
+---
+
 ## 文档
 
-| 文档模块   | 文档                                                                                                                                                                                                      |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 产品功能说明 | [product.md](docs/product.md)                                                                                                                                                                           |
-| 系统部署文档 | [deployment.md](docs/deployment.md)                                                                                                                                                                     |
-| 技术架构说明 | [architecture.md](docs/architecture.md)                                                                                                                                                                 |
-| 核心数据模型 | [data-model.md](docs/data-model.md)                                                                                                                                                                     |
-| 核心流程剖析 | [runtime-execution-flow.md](docs/runtime-execution-flow.md)<br>[sandbox-allocation-and-recycling.md](docs/sandbox-allocation-and-recycling.md)<br>[resource-management.md](docs/resource-management.md) |
+| 主题 | 文档 |
+|---|---|
+| 产品功能 | [product.md](docs/product.md) |
+| 系统部署 | [deployment.md](docs/deployment.md) |
+| 技术架构 | [architecture.md](docs/architecture.md) |
+| 核心数据模型 | [data-model.md](docs/data-model.md) |
+| 运行时执行流程 | [runtime-execution-flow.md](docs/runtime-execution-flow.md) |
+| 沙箱分配与回收 | [sandbox-allocation-and-recycling.md](docs/sandbox-allocation-and-recycling.md) |
+| 资源管理机制 | [resource-management.md](docs/resource-management.md) |
+| 参与开发 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ---
 
 ## 版本状态
 
-alpha 阶段，核心链路（对话执行 / 沙箱分配回收 / 安全策略引擎）已完成并通过集成测试。产品功能和企业特性（RBAC / 审核流程 / 可观测面板）持续迭代中。
+`0.1.0-alpha.1`。核心链路（对话执行、沙箱分配回收、安全策略引擎、资源分轨装载）已跑通；企业特性（RBAC 细化、审核流程、可观测面板）持续迭代。
 
 ---
 

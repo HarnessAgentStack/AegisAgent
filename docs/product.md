@@ -1,6 +1,6 @@
 # Aegis 产品功能说明
 
-> 最后更新：2026-08-31
+> 最后更新：2026-09-03（源码核实）
 
 ---
 
@@ -233,8 +233,8 @@ MCP 服务在会话期间按需加载，不污染全局。智能体可以像调�
     │  ③ 创建会话快照，记录版本
     │  ④ 构建运行时上下文（租户 + 用户 + @技能 + 会话资源）
     ▼
-洋葱链中间件（从外到内）
-    │  Trace → 安全策略 → 租户隔离 → 意图识别 → RAG 检索 → 内容过滤 → 审计 → 跨会话记忆 → 数据脱敏
+HarnessAgent 中间件链（5 个，从外到内：Trace → SandboxRouting → RAG → Mask → Audit）
+    │  工具安全决策不在这条链内，由 AgentScope PermissionEngine 在 onActing 实时评估 sec_tool_policy
     ▼
 HarnessAgent ReAct 循环
     │  Think → Act（调工具）→ Observe → Think ...
@@ -283,9 +283,9 @@ SSE 事件流推送到前端
 
 | 决策               | 含义    | 场景                |
 | ---------------- | ----- | ----------------- |
-| ALLOW            | 放行    | 普通工具调用、公开知识库检索    |
-| REQUIRE_APPROVAL | 挂起等审批 | 调 L3 工具、出站外部域名 |
-| BLOCK            | 拦截    | 敏感词命中、IP 不在白名单    |
+| ALLOW | 放行    | 普通工具调用、公开知识库检索    |
+| ASK   | 挂起等审批 | 调 L3 工具、出站外部域名（对应策略 APPROVE） |
+| DENY  | 拦截    | 敏感词命中、IP 不在白名单（对应策略 REJECT） |
 
 ![安全策略配置](images/security-policy.png)
 
@@ -293,7 +293,7 @@ SSE 事件流推送到前端
 
 | 配置   | 说明                               |
 | ---- | -------------------------------- |
-| 工具策略 | 按工具类型（READONLY/WRITE/EXTERNAL_NETWORK/...）× 安全等级（L1-L4）配 ALLOW / 审批 / BLOCK；等级直映兜底：L1/L2→ALLOW, L3→ASK, L4→REJECT |
+| 工具策略 | 按工具类型（READONLY/WRITE/EXTERNAL_NETWORK/...）× 安全等级（L1-L4）配 ALLOW / APPROVE / REJECT；等级直映兜底：L1/L2→ALLOW, L3→ASK, L4→DENY |
 | 出站策略 | 域名黑白名单 + SSRF 校验                 |
 | 敏感词  | BLOCK（直接拦）/ REPLACE（标记后放行）       |
 | 脱敏规则 | 正则匹配 → 替换为 `******`              |
@@ -307,7 +307,7 @@ SSE 事件流推送到前端
 
 ### 链路追踪
 
-网关为每条请求生成唯一 TraceId，贯穿全链路。运行时每个中间件节点 + 每次工具调用 + 每次 RAG 检索各产生一条 Span。
+网关为每条请求生成唯一 TraceId，贯穿全链路。运行时 `AegisTraceMiddleware` 为每次工具调用、模型调用、RAG 检索各产生一条 Span（AGENT / REASONING / TOOL_CALL / MODEL_CALL）。
 
 查询维度：按会话聚合、按用户查、按智能体查、按 TraceId 精确查。
 

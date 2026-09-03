@@ -18,6 +18,14 @@ import base64
 import time
 from typing import List, Optional
 
+# P0-2 修复：在导入 paddleocr 前关闭 MKLDNN/IR 算子融合，规避 SelfAttentionFusePass
+# 在不支持 AVX2/FMA 的宿主 CPU 上触发的 SIGILL（Illegal instruction）死循环。
+# 必须在 import paddleocr / paddle 之前设置 flags 才能生效。
+import paddle
+paddle.set_flags({'FLAGS_use_mkldnn': False,
+                  'FLAGS_enable_self_attention_fuse': False,
+                  'FLAGS_enable_ir_optimization': False})
+
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -29,7 +37,9 @@ app = FastAPI(title="PaddleOCR Service", version="1.0.0")
 # 全局 OCR 实例（CPU 模式）
 # use_angle_cls=True: 启用方向分类（0/90/180/270），提升旋转文字识别率
 # lang='ch': 中文（含英文数字符号），如需纯英文改 lang='en'
-ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)
+# use_gpu=False: 强制 CPU 模式；enable_mkldnn=False: 与 flags 一致关闭 MKLDNN
+ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False,
+                use_gpu=False, enable_mkldnn=False)
 
 
 class OcrRequest(BaseModel):

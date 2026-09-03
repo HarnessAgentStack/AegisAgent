@@ -12,6 +12,7 @@ import com.aegis.core.enums.session.SessionStatus;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
 import com.aegis.runtime.service.agent.AgentAssemblyService;
 import com.aegis.runtime.service.policy.HitlFlowService;
+import com.aegis.runtime.service.sandbox.SandboxSessionHolder;
 import com.aegis.runtime.integration.agent.HarnessEventConverter;
 import com.aegis.runtime.integration.skill.AegisSkillRepository;
 import io.agentscope.core.agent.RuntimeContext;
@@ -86,6 +87,8 @@ public class TaskExecutionService {
     private final SessionManageService sessionManageService;
     /** HITL 流程服务 — 管理审批状态（Redis 持久化 ConfirmResult） */
     private final HitlFlowService hitlFlowService;
+    /** 周期3：会话级沙箱持有器（会话真正结束时释放沙箱实例） */
+    private final SandboxSessionHolder sandboxSessionHolder;
 
 
     /** 可重试的网络异常类型集合 */
@@ -217,6 +220,14 @@ public class TaskExecutionService {
                                     ? SessionStatus.EXCEPTION
                                     : SessionStatus.INTERRUPTED;
                             projectionService.onForceTerminate(sid, terminal);
+                            // 周期4-2：外层兜底释放沙箱（内层 doFinally 已在终态路径释放过，
+                            // 此处幂等 no-op；但 assemble 抛错等内层未触发的场景仍能正确释放）
+                            try {
+                                sandboxSessionHolder.releaseOnSessionEnd(sid);
+                            } catch (Exception sandEx) {
+                                log.warn("外层 doFinally 兜底沙箱释放异常: sessionId={}, error={}",
+                                        sid, sandEx.getMessage());
+                            }
                         }
                     } catch (Exception e) {
                         log.error("外层 doFinally 异常: signal={}", signal, e);
@@ -435,6 +446,17 @@ public class TaskExecutionService {
                                         reasoningText, tokenStats[0], tokenStats[1], signalType);
                                 // 注销中断信号 sink（CAS 语义，避免误删新请求的 sink）
                                 interruptSignalManager.unregister(ctx.getSessionId(), registration);
+                                // 周期4-2：会话真正结束时（非 HITL PAUSED）释放沙箱实例（OCCUPIED→IDLE 复用不杀 Pod）。
+                                // HITL 暂停时沙箱保留，等待用户审批后恢复执行。
+                                if (!hitlPaused[0]) {
+                                    try {
+                                        sandboxSessionHolder.releaseOnSessionEnd(ctx.getSessionId());
+                                    } catch (Exception sandEx) {
+                                        // 沙箱释放异常不影响会话生命周期（沙箱由 admin Reconcile 兜底清理）
+                                        log.warn("streamExecution doFinally 沙箱释放异常: sessionId={}, error={}",
+                                                ctx.getSessionId(), sandEx.getMessage());
+                                    }
+                                }
                             } catch (Exception e) {
                                 log.error("streamExecution doFinally 异常: sessionId={}, signal={}",
                                         ctx.getSessionId(), signalType, e);

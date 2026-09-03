@@ -13,6 +13,9 @@ import com.aegis.core.dto.security.OutboundPolicyVO;
 import com.aegis.core.dto.security.SensitiveWordCreateRequest;
 import com.aegis.core.dto.security.SensitiveWordUpdateRequest;
 import com.aegis.core.dto.security.SensitiveWordVO;
+import com.aegis.core.dto.security.SandboxPolicyCreateRequest;
+import com.aegis.core.dto.security.SandboxPolicyUpdateRequest;
+import com.aegis.core.dto.security.SandboxPolicyVO;
 import com.aegis.core.dto.security.ToolPolicyCreateRequest;
 import com.aegis.core.dto.security.ToolPolicyUpdateRequest;
 import com.aegis.core.dto.security.ToolPolicyVO;
@@ -207,4 +210,44 @@ public class SecurityAdminController {
         securityService.deleteOutboundPolicy(id, tenantId);
         return Result.success(null);
     }
+
+    // ==================== 沙箱命令策略 ====================
+
+    @GetMapping("/sandbox-policies")
+    public Result<Page<SandboxPolicyVO>> listSandboxPolicies(
+            @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
+            @RequestParam(required = false) String toolCode,
+            @RequestParam(required = false) Boolean enabled,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        TenantContextHolder.bind(tenantId);
+        return Result.success(securityService.listSandboxPolicies(toolCode, enabled, tenantId, page, size));
+    }
+
+    @PostMapping("/sandbox-policies")
+    @Auditable(operation = "CREATE_SANDBOX_POLICY", resourceType = "SANDBOX_POLICY")
+    public Result<SandboxPolicyVO> createSandboxPolicy(@Valid @RequestBody SandboxPolicyCreateRequest req,
+                                                        @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        TenantContextHolder.bind(tenantId);
+        return Result.success(securityService.createSandboxPolicy(req, tenantId));
+    }
+
+    @PutMapping("/sandbox-policies/{id}")
+    @Auditable(operation = "UPDATE_SANDBOX_POLICY", resourceType = "SANDBOX_POLICY", resourceIdParam = "id")
+    public Result<Void> updateSandboxPolicy(@PathVariable Long id, @Valid @RequestBody SandboxPolicyUpdateRequest req,
+                                             @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        TenantContextHolder.bind(tenantId);
+        securityService.updateSandboxPolicy(id, req, tenantId);
+        return Result.success(null);
+    }
+
+    @DeleteMapping("/sandbox-policies/{id}")
+    @Auditable(operation = "DELETE_SANDBOX_POLICY", resourceType = "SANDBOX_POLICY", resourceIdParam = "id")
+    public Result<Void> deleteSandboxPolicy(@PathVariable Long id,
+                                             @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        TenantContextHolder.bind(tenantId);
+        securityService.deleteSandboxPolicy(id, tenantId);
+        return Result.success(null);
+    }
+
 }

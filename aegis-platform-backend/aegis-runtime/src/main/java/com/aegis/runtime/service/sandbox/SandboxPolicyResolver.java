@@ -1,0 +1,79 @@
+package com.aegis.runtime.service.sandbox;
+
+import com.aegis.core.common.tenant.TenantContextHolder;
+import com.aegis.core.domain.security.SandboxPolicy;
+import com.aegis.dal.mapper.security.SandboxPolicyMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 沙箱命令策略解析器。
+ * <p>
+ * 按 tenantId + toolCode 判定工具是否强制进沙箱。
+ * Caffeine 缓存 5min，通过 SecurityConfigPublisher 监听策略变更自动失效。
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class SandboxPolicyResolver {
+
+    private final SandboxPolicyMapper sandboxPolicyMapper;
+
+    /** tenantId -> (toolCode -> sandboxExecution) 缓存 */
+    private final Cache<Long, Map<String, Boolean>> policyCache = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofMinutes(5))
+            .maximumSize(100)
+            .build();
+
+    /**
+     * 判定工具是否进沙箱。
+     *
+     * @param tenantId 租户ID
+     * @param toolCode 工具编码
+     * @return true=强制进沙箱 / false=不进 / null=未配置走默认
+     */
+    public Boolean resolve(Long tenantId, String toolCode) {
+        if (tenantId == null || toolCode == null) return null;
+        Map<String, Boolean> tenantMap = policyCache.get(tenantId, this::loadTenantPolicies);
+        if (tenantMap == null) return null;
+        return tenantMap.get(toolCode);
+    }
+
+    /** 主动失效（供 SecurityConfigPublisher 事件回调） */
+    public void invalidate(Long tenantId) {
+        policyCache.invalidate(tenantId);
+        log.info("SandboxPolicyResolver: 缓存已失效 tenantId={}", tenantId);
+    }
+
+    private Map<String, Boolean> loadTenantPolicies(Long tenantId) {
+        // 双保险：WebFlux publishOn/subscribeOn 切换线程后 ThreadLocal 租户上下文会丢失，
+        // SandboxPolicyResolver 被 Reactor boundedElastic 线程池中的 ToolExecutor 触发时，
+        // MyBatis-Plus 租户插件 fail-closed 抛 IllegalStateException 导致所有工具执行链路崩溃。
+        // 即使 sec_sandbox_policy 已加入 TENANT_IGNORE_TABLES（插件不拦截），也显式 bind/clear
+        // 防止未来改表结构后再次踩同样的坑。
+        TenantContextHolder.bind(tenantId);
+        try {
+            List<SandboxPolicy> list = sandboxPolicyMapper.selectList(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SandboxPolicy>()
+                            .eq(SandboxPolicy::getTenantId, tenantId)
+                            .eq(SandboxPolicy::getEnabled, true)
+            );
+            Map<String, Boolean> map = new HashMap<>();
+            for (SandboxPolicy p : list) {
+                map.put(p.getToolCode(), p.getSandboxExecution());
+            }
+            log.debug("SandboxPolicyResolver: 加载 tenantId={} 策略 {} 条", tenantId, map.size());
+            return map.isEmpty() ? null : map;
+        } finally {
+            TenantContextHolder.clear();
+        }
+    }
+}

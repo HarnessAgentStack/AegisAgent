@@ -43,6 +43,7 @@ public class CoreMybatisAutoConfiguration {
             "sbx_lease",
             "sec_sensitive_word",
             "sec_tool_policy",
+            "sec_sandbox_policy",
             "sec_outbound_policy",
             "sec_mask_rule",
             // P0: 权限字典表为平台级共享数据（tenant_id=0 表示全租户可见，tenant_id>0 表示租户自定义），

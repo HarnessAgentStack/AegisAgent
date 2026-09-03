@@ -84,6 +84,10 @@ aegis:
       enabled: true
       backend: k8s  # docker | k8s | process（K8s 沙箱池，生产/开发环境统一使用）
       image: python:3.11-slim
+      # 周期4灰度开关：沙箱工具改经 SandboxSessionHolder + SandboxManager 驱动
+      # 默认 false：关闭回退旧路径 AegisSandboxPoolExecutor.exec
+      framework-drive:
+        enabled: true
       cpu: 1.0
       memoryMb: 512
       # T1 沙箱惰性分配：构建期不分配 Pod，推迟到首次沙箱工具调用经 SandboxReadinessGate 分配
@@ -145,15 +149,29 @@ aegis:
     enabled: true
     host: localhost
     port: 19530
-  # P2: PaddleOCR 图片文字识别服务（扫描件/截图 OCR 兜底）
-  # 容器: docker compose up paddleocr → http://localhost:8098
-  # 禁用设为 false，此时图片直接走 vision LLM 路径
+  # OCR：默认 ONNX Runtime Java 进程内推理（零外部服务依赖）
+  # 模型文件：./models/ocr/det.onnx + rec.onnx + ppocr_keys_v1.txt（download-ocr-models.ps1 下载）
   ocr:
-    paddle:
+    onnx:
       enabled: true
+      det-model-path: ./models/ocr/det.onnx
+      rec-model-path: ./models/ocr/rec.onnx
+      char-dict-path: ./models/ocr/ppocr_keys_v1.txt
+      det-input-width: 960
+      det-input-height: 960
+      det-threshold: 0.3
+      rec-input-height: 48
+      rec-input-width: 320
+      max-image-bytes: 10485760      # 10MB
+      min-text-length-threshold: 3    # OCR 识别结果 ≥ 3 字符视为有效
+      num-threads: 0                  # 0=自动（CPU核数-1）
+      graph-optimize: true
+
+    # PaddleOCR HTTP fallback（已弃用，保留向后兼容；ONNX 失败且 enabled=true 时才调用）
+    paddle:
+      enabled: false                    # 默认关闭；ONNX 足够时无需 fallback
       endpoint: http://localhost:8098
       connect-timeout-ms: 3000
       read-timeout-ms: 30000
-      max-image-bytes: 10485760      # 10MB
-      min-text-length-threshold: 3    # OCR 识别结果 ≥ 3 字符视为有效
+      max-image-bytes: 10485760
 
