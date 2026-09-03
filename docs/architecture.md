@@ -153,28 +153,22 @@ AgentScope 的 SPI 通过 Java `ServiceLoader` 发现，Aegis 通过 Spring Boot
 
 ### 3.4 中间件链
 
-Aegis 中间件全部继承 `MiddlewareBase`，实现 `OrderedMiddleware` 接口声明执行顺序，由 `AegisMiddlewareChain` 统一装配注入 `HarnessAgent.Builder.middlewares()`。
+Aegis 中间件全部继承 `MiddlewareBase`，实现 `OrderedMiddleware` 接口声明执行顺序，经 Spring 注入 `List<MiddlewareBase>` 排序后传入 `HarnessAgent.Builder.middlewares()`。
 
 ```
 洋葱链（从外到内执行，按 AgentScope 降序 = order 值大的先执行）
 │
 ├── AegisTraceMiddleware           ← order=95  TraceId 贯穿全链路
-├── AegisSecurityMiddleware        ← order=90  运行时安全策略评估（ALLOW / 审批 / BLOCK）
-├── AegisTenantIsolationMiddleware ← order=80  租户隔离上下文注入
 ├── AegisBindingSyncMiddleware     ← order=75  绑定指纹比对 + Workspace 重物化
-├── AegisIntentMiddleware          ← order=67  用户意图识别（路由到合适的工具集）
-├── AegisRagMiddleware             ← order=65  RAG 检索，注入相关知识片段到系统提示词
-├── AegisContentFilterMiddleware   ← order=60  内容过滤（敏感词 / 越狱模式检测）
-├── AegisAuditLogMiddleware        ← order=20  审计日志（所有关键操作自动记录）
-├── AegisSandboxHeartbeatMiddleware← order=15  沙箱租约心跳续约
-├── AegisMemoryMiddleware          ← order=10  跨会话记忆
-└── AegisMaskMiddleware            ← order=10  数据脱敏
+├── AegisRagMiddleware             ← order=70  RAG 检索，注入相关知识片段到系统提示词
+├── AegisMaskMiddleware            ← order=50  数据脱敏
+└── AegisAuditLogMiddleware        ← order=30  审计日志（所有关键操作自动记录）
     │
     ▼
 HarnessAgent ReAct 循环（AgentScope 2.0.2 内核）
 ```
 
-> 注：AegisMiddlewareChain 收集 Spring Bean 时是按 order() 升序排列，AgentScope Builder 注入时降序重排，最终"值越大越外层、越先执行"。
+> 注：Phase 2 精简后仅保留 5 层。Security/TenantIsolation/Intent/ContentFilter/SandboxHeartbeat/Memory 中间件已删除——工具安全决策收敛到 AgentScope 原生 PermissionEngine（`AegisPermissionRuleLoader` 从 sec_tool_policy 映射），记忆由 HarnessAgent 原生 MemoryConfig 承载。
 
 每个中间件可以在 5 个拦截点独立挂载逻辑，常见挂载：
 
@@ -334,8 +328,8 @@ Runtime AgentAssemblyService
 AegisAgentInstanceManager.acquireOrBuild
     │  算 poolKey → 实例池查询 → 懒刷新判定 → 构建 / 复用 HarnessAgent
     ▼
-AegisMiddlewareChain.build()
-    │  10 个中间件按 order 排序装配
+Spring 注入 List<MiddlewareBase>
+    │  5 个中间件按 order 排序装配
     ▼
 HarnessAgent.replyAsync()
     │  ReAct 循环 → AgentEvent 事件流
@@ -352,42 +346,38 @@ SseEmitter 推送到前端
 ToolCall: aegis_execute（需要沙箱）
     │
     ▼
-HarnessAgent 触发 SandboxFilesystemSpec
+AegisExecuteTool（Python 脚本包装 + Base64 传输）
     │
     ▼
-AegisSandboxCoordinator
-    │  算沙箱池 key（档位 × 租户 × 用户 × 隔离范围）
-    ▼
-SandboxPoolMatcher
-    │  池查询 → 命中复用 / 未命中创建
+AegisSandboxPoolExecutor
+    │  查池（sbx_pool: 租户 STANDARD ENABLED）→ 探活复用实例（sbx_instance）
+    │  无可用实例时池内扩容（createInPool）
     ▼
 ISandboxBackend（SPI）
     │  Docker: docker-java create container
     │  K8s: fabric8 create pod in namespace
     ▼
-沙箱就绪 → 绑定到 Agent → 执行代码 → 返回结果
+执行代码 → 成功回写心跳 / 失败标记 ABNORMAL → 返回结果
+    │
     ▼
-IdleReleaseTracker 刷新最后使用时间
+admin SandboxReconcileScheduler（预热补充/缩容销毁/异常修复）
 ```
 
 ### 5.3 安全策略评估链路
 
 ```
-运行时中间件 AegisSecurityMiddleware
-    │  拦截点: onActing（工具调用前）、onModelCall（模型输出前）
-    ▼
-AegisSecurityPolicyEngine.evaluate()
-    │  输入: SecurityPolicyContext（主体 + 客体 + 动作 + 内容 + 环境）
+AgentScope PermissionEngine（原生内核）
+    │  评估序: deny → ask → 工具自检 → allow
+    │  规则来源: AegisPermissionRuleLoader（sec_tool_policy → PermissionRule）
     ▼
 策略评估
-    │  ToolPolicy（档位 × 工具等级）
+    │  ToolPolicy（工具类型 × 安全等级 → ALLOW/ASK/DENY）
     │  OutboundPolicy（出站域名黑白名单 + SSRF）
-    │  SensitiveWord（敏感词检测）
     ▼
 决策
     │  ALLOW → 继续执行
-    │  REQUIRE_APPROVAL → 会话挂起 + 前端弹窗（HITL）
-    │  BLOCK → 拦截 + 审计日志
+    │  ASK → HitlFlowService 会话挂起 + 前端弹窗（HITL）
+    │  DENY → 拦截 + 审计日志
 ```
 
 ### 5.4 安全与权限架构

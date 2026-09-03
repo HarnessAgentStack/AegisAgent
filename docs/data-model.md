@@ -386,10 +386,9 @@ sequenceDiagram
         AS->>AS: onModelCall → LLM调用
         AS->>MySQL: INSERT sess_message (USER→ASSISTANT)
         AS->>AS: onActing → 触发工具调用
-        AS->>AS: AegisSecurityMiddleware 拦截<br/>sec_tool_policy (tool_type, security_level) 查表
+        AS->>AS: PermissionEngine 评估<br/>sec_tool_policy (tool_type, security_level) 规则
         alt 需要沙箱(tool=aegis_execute)
-            AS->>MySQL: SELECT sbx_pool → sbx_instance
-            AS->>MySQL: INSERT sbx_lease
+            AS->>MySQL: SELECT sbx_pool → sbx_instance（池内复用）
         end
         AS->>MySQL: INSERT sess_message (TOOL_CALL→TOOL_RESULT)
     end
@@ -566,7 +565,7 @@ flowchart TD
 
 ## 五、安全策略域：运行时的实时防线 ★★★★
 
-四张策略配置表 + 两张 HITL 流程表。**运行时安全中间件（AegisSecurityMiddleware）在每次工具调用前和每次模型输出前实时评估**。
+四张策略配置表 + 两张 HITL 流程表。**AgentScope PermissionEngine（规则由 AegisPermissionRuleLoader 装载）在每次工具调用前实时评估**。
 
 ### ER 关系
 
@@ -623,19 +622,21 @@ erDiagram
 ```mermaid
 sequenceDiagram
     participant AS as AgentScope内核
-    participant MW as AegisSecurityMiddleware
+    participant PE as PermissionEngine
+    participant HF as HitlFlowService
     participant Redis as Redis
     participant MySQL as MySQL
     participant FE as 前端
     participant User as 审批人
 
-    AS->>MW: onActing 拦截点
-    MW->>MySQL: sec_tool_policy 查表 → action=APPROVE
-    MW->>MW: sec_hitl_node 查 trigger_condition 匹配节点
-    MW->>Redis: aegis:hitl:req:{sessionId} ← 存 toolCall 请求JSON
-    MW->>Redis: aegis:session:{userId}/{sessionId}:status ← 标挂起
-    MW->>MySQL: INSERT sec_hitl_history (PENDING)
-    MW-->>AS: 抛出 HITL 异常 → 会话挂起
+    AS->>PE: onActing 拦截点
+    PE->>MySQL: sec_tool_policy 查表 → action=ASK
+    PE->>HF: 触发 HITL 流程
+    HF->>HF: sec_hitl_node 查 trigger_condition 匹配节点
+    HF->>Redis: aegis:hitl:req:{sessionId} ← 存 toolCall 请求JSON
+    HF->>Redis: aegis:session:{userId}/{sessionId}:status ← 标挂起
+    HF->>MySQL: INSERT sec_hitl_history (PENDING)
+    HF-->>AS: 抛出 HITL 异常 → 会话挂起
 
     AS-->>FE: SSE 推送 hitl.request 事件
     FE->>User: 弹窗："Agent 想调用工具 X(敏感等级 L3)，参数为...，是否批准？"
@@ -858,5 +859,5 @@ TraceStore SPI 是 AgentScope 2.0.2 原生接口，Aegis 的 `MysqlTraceStore` �
 
 ### 双锁分工（保留，不可删）
 
-- **IDistributedLock + RedisDistributedLock + Redisson 依赖** → 有活跃消费方。`AegisSandboxCoordinator` 沙箱分配核心路径注入它，`allocateSlot` 全程持 `sandbox:lock:{slotKey}` 分布式锁（AegisSandboxCoordinator.java:79、:166）；admin 侧 SandboxReconcileLockService 也依赖。与 AgentScope 的 RedisSandboxExecutionGuard（内核锁）是"分配互斥（业务锁）"与"执行互斥（内核锁）"两层设计。
+- **IDistributedLock + RedisDistributedLock + Redisson 依赖** → 有活跃消费方。admin 侧 SandboxReconcileLockService 依赖它实现 Reconcile 领导者锁（防多 admin 实例并发巡检）。与 AgentScope 的 RedisSandboxExecutionGuard（内核锁）是"巡检互斥（业务锁）"与"执行互斥（内核锁）"两层设计。（注：原 AegisSandboxCoordinator 分配锁已随 Phase 2 减法删除，runtime 侧 aegis_execute 走 AegisSandboxPoolExecutor 无锁复用路径）
 - Gateway 进程的 RedisConfig → AuthFilter 纯 JWT 不查 Redis，整个 gateway 不做 Redis 读写，**可安全删除**（见审计报告 E-06）。

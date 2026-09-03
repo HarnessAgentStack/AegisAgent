@@ -3,6 +3,7 @@ package com.aegis.runtime.integration.tool;
 import com.aegis.core.spi.ISandboxBackend;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
 import com.aegis.runtime.integration.agent.ToolResultCache;
+import com.aegis.runtime.service.sandbox.AegisSandboxPoolExecutor;
 import com.alibaba.fastjson2.JSON;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.TextBlock;
@@ -26,12 +27,13 @@ import java.util.Map;
  * execute 工具（AgentScope 2.0 ToolBase 子类模式）。
  *
  * <p>在沙箱环境中执行代码（主要是 Python），用于计算、数据处理等场景。
- * 优先使用 K8s 沙箱执行，沙箱不可用时降级为本地执行。
+ * 沙箱组件不可用时 fail-closed 拒绝执行（P0-3：禁止降级裸跑宿主）。
  *
- * <h3>Phase 2 减法：沙箱链路移交</h3>
- * <p>自建沙箱池体系（Coordinator/ReadinessGate/SlotKeyParser 等）已删除，沙箱 acquire/release/persist
- * 语义交由 AgentScope SandboxManager + SandboxLifecycleMiddleware 原生承载。aegis_execute 暂未接入
- * 新的 sandbox 句柄获取路径，调用即 fail-closed 返回错误（sandboxEnabled 默认 false，可接受降级）。
+ * <h3>Phase 2 减法后的补完链路</h3>
+ * <p>自建沙箱池协调体系（Coordinator/ReadinessGate/SlotKeyParser 等）已删除；
+ * aegis_execute 经 {@link AegisSandboxPoolExecutor} 直连 ISandboxBackend：
+ * 查池（sbx_pool）→ 探活复用实例（sbx_instance）→ exec；无可用实例时池内扩容
+ * （createInPool + 登记）。实例状态修复/回收/预热由 admin Reconcile 统一纳管。
  *
  * <h3>功能</h3>
  * <p>执行 Python 代码，返回执行结果和标准输出。
@@ -44,6 +46,8 @@ public class AegisExecuteTool extends ToolBase {
 
     private final ToolResultCache toolResultCache;
     private final ISandboxBackend sandboxBackend;
+    /** 沙箱池极简执行器：查池 → 探活复用实例 → exec（Phase 2 减法后的补完路径） */
+    private final AegisSandboxPoolExecutor sandboxPoolExecutor;
 
     /** A5：资源装载等待超时（秒），超时降级为按需语义 */
     private static final long RESOURCE_LOAD_TIMEOUT_SEC = 10;
@@ -78,7 +82,8 @@ public class AegisExecuteTool extends ToolBase {
      * @param sandboxBackend       沙箱后端（用于在沙箱中执行命令）
      */
     public AegisExecuteTool(ToolResultCache toolResultCache,
-                             ISandboxBackend sandboxBackend) {
+                             ISandboxBackend sandboxBackend,
+                             AegisSandboxPoolExecutor sandboxPoolExecutor) {
         super(ToolBase.builder()
                 .name("aegis_execute")
                 .description("【Aegis 代码执行 - Python 计算与数据处理】\n"
@@ -91,6 +96,7 @@ public class AegisExecuteTool extends ToolBase {
                 .inputSchema(INPUT_SCHEMA));
         this.toolResultCache = toolResultCache;
         this.sandboxBackend = sandboxBackend;
+        this.sandboxPoolExecutor = sandboxPoolExecutor;
     }
 
     /**
@@ -223,12 +229,28 @@ public class AegisExecuteTool extends ToolBase {
                     "Unsupported language: " + language + ". Currently only Python is supported.");
         }
 
-        // Phase 2 减法：SandboxReadinessGate/awaitSandboxReady 与 SlotKeyParser 已移除，
-        // 沙箱 acquire/release/persist 语义交由 AgentScope SandboxManager 原生承载。
-        // aegis_execute 暂未接入新的 sandbox 句柄获取路径，fail-closed 拒绝执行
-        // （sandboxEnabled 默认 false，沙箱功能暂时降级，可接受）。
-        throw new IllegalStateException(
-                "沙箱分配链路已移交 AgentScope SandboxManager（Phase 2 减法），aegis_execute 暂未接入新句柄获取路径");
+        // 1. 包装脚本：Base64 用户代码 + stdout 捕获 + 无输出时表达式求值回退
+        String wrapped = wrapPythonCode(code);
+        // 2. 二次 Base64 传输，规避 shell 引号转义
+        String b64Script = java.util.Base64.getEncoder()
+                .encodeToString(wrapped.getBytes(StandardCharsets.UTF_8));
+        String command = "echo " + b64Script + " | base64 -d | python3 -";
+
+        // 3. 沙箱池内执行（slotKey 隔离选取 → 原子占用（后台联动落痕）→ exec；无可用实例时池内扩容）
+        ISandboxBackend.ExecResult result =
+                sandboxPoolExecutor.exec(tenantId, userId, agentId, sessionId, agentType,
+                        command, EXEC_TIMEOUT_SEC);
+        if (result == null) {
+            throw new IllegalStateException("沙箱执行返回空结果");
+        }
+
+        String stdout = result.stdout != null ? result.stdout.trim() : "";
+        String stderr = result.stderr != null ? result.stderr.trim() : "";
+        if (result.exitCode != 0) {
+            throw new IllegalStateException("沙箱执行退出码 " + result.exitCode + ": "
+                    + (stderr.isEmpty() ? stdout : stderr));
+        }
+        return stdout.isEmpty() ? stderr : stdout;
     }
 
     /**

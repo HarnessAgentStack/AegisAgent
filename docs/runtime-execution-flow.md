@@ -146,11 +146,9 @@ HarnessAgent agent = HarnessAgent.builder()
     .distributedStore(distributedStore)        // → RedisDistributedStore
     .isolationScope(isolationScope)            // USER / AGENT
     .memoryConfig(memoryConfig)                // 记忆策略
-    .filesystemSpec(remoteFsSpec)               // → 沙箱文件系统
-    .sandboxSpec(sandboxSpec)                  // 沙箱配置（含懒分配）
-    .snapshotSpec(snapshotSpec)                // → MinioSnapshotClient
+    .filesystemSpec(remoteFsSpec)               // → RemoteFS（Phase 2 减法后纯 Remote 路径）
     .permissionContextState(permissionCtx)     // → sec_tool_policy 运行时权限
-    .middlewares(middlewareChain.build())       // ← 11 层洋葱链
+    .middlewares(middlewareChain.build())       // ← 5 层洋葱链
     .tools(toolkit)                            // → AegisSkillRepository 装载的 Toolkit
     .build();
 ```
@@ -167,91 +165,84 @@ HarnessAgent agent = HarnessAgent.builder()
 | `aegis:session:{userId}/{sessionId}:agent_state:list` | List | 上下文历史 |
 | `aegis:session:{userId}/{sessionId}:_keys` | Set | 本会话全部 Redis Key 索引（删主 key 须连带清） |
 
-**② 沙箱隔离 slotKey**——由 `IsolationScope` 决定粒度，落 `sbx_instance.isolation_scope`（枚举 `USER`/`AGENT`/`GLOBAL`/`SESSION`）：
+**② 沙箱隔离**——Phase 2 减法后由 AgentScope 原生承载：工作区走 `RemoteFilesystemSpec` + IsolationScope（`USER`/`AGENT`），代码执行走 `AegisSandboxPoolExecutor` 池化复用（详见 [sandbox-allocation-and-recycling.md](sandbox-allocation-and-recycling.md)）：
 
-| governance_tier | IsolationScope（slotKey 粒度） | slotKey 模板 |
+| agent_type | IsolationScope | 语义 |
 |---|---|---|
-| UNIVERSAL | USER | `aegis:{tenantId}:user:{userId}` |
-| APPLICATION | AGENT | `aegis:{tenantId}:agent:{agentId}` |
-| SYSTEM | GLOBAL（常驻） | `aegis:resident:sys:{agentId}`（RESIDENT 是实例状态+前缀，**非** IsolationScope 枚举值） |
+| UNIVERSAL | USER | 同一用户跨会话共享工作区 |
+| APPLICATION | AGENT | 同一智能体跨会话共享 |
+| SYSTEM | AGENT | 对外 API 场景（RESIDENT 常驻实例，**实例状态**而非 IsolationScope 枚举值） |
 
-### 懒分配沙箱机制
+### 代码执行沙箱池路径（aegis_execute）
 
 ```mermaid
 sequenceDiagram
-    participant AAM as AegisAgentInstanceManager
-    participant SC as SandboxCoordinator
-    participant AS as LazyAegisSandboxClient
+    participant LLM as 大模型
+    participant ET as AegisExecuteTool
+    participant PE as AegisSandboxPoolExecutor
+    participant SB as ISandboxBackend(K8s)
 
-    AAM->>AS: new LazyAegisSandboxClient()
-    Note over AS: 此时不创建任何容器/Pod<br/>只存一个空壳引用
-
-    loop ReAct 循环
-        AS->>AS: 拦截点触发
-        AS->>SC: 首次需要执行代码时<br/>请求真实沙箱
-        SC->>SC: SandboxPoolRouter 匹配池
-        SC->>SC: SandboxLifecycleManager 分配实例
-        SC-->>AS: 返回真实 sandbox handle
-    end
+    LLM->>ET: tool_call(aegis_execute, code)
+    ET->>ET: wrapPythonCode + Base64 包装
+    ET->>PE: exec(tenantId, agentType, command, 30s)
+    PE->>PE: findPool（STANDARD ENABLED）
+    PE->>PE: 探活复用池内实例<br/>（IDLE/OCCUPIED/RESIDENT, initialized=1）
+    PE->>SB: exec(namespace/podName, cmd)
+    SB-->>PE: stdout + exitCode
+    PE-->>ET: ExecResult（成功回写心跳/失败标记 ABNORMAL）
 ```
 
 ---
 
-## 四、洋葱链中间件（11 层）
+## 四、洋葱链中间件（5 层）
 
 AgentScope 2.0.2 的 Middleware 有 **5 个拦截点**：4 个**洋葱型**（`onAgent` / `onReasoning` / `onActing` / `onModelCall`）+ 1 个**管道型变换**（`onSystemPrompt`）。order 值越大越外层、越先执行，对 4 个洋葱型统一生效；`onSystemPrompt` 按 order 排序后串联改写系统提示词。
 
-### order 值（从源码 `AegisMiddlewareChain.java` + 各中间件 `order()` 方法）
+### order 值（各中间件 `order()` 方法，经 Spring 注入 `List<MiddlewareBase>` 排序装配）
+
+Phase 2 精简后保留 5 层（Trace/BindingSync/RAG/Mask/Audit），Security/TenantIsolation/Intent/ContentFilter/SandboxHeartbeat/Memory 等中间件已删除——安全决策收敛到 AgentScope 原生 PermissionEngine（`AegisPermissionRuleLoader` 从 sec_tool_policy 映射规则），记忆由 HarnessAgent 原生 MemoryConfig 承载：
 
 ```mermaid
 flowchart TD
     subgraph "外层（先执行）"
         M1["order=95  AegisTraceMiddleware<br/>链路追踪 + Span 创建"]
-        M2["order=90  AegisSecurityMiddleware<br/>工具策略查表 + HITL 触发"]
-        M3["order=80  AegisTenantIsolationMiddleware<br/>租户隔离校验"]
-        M3_5["order=75  AegisBindingSyncMiddleware<br/>绑定同步校验"]
-        M4["order=67  AegisIntentMiddleware<br/>意图识别 + 查询改写"]
-        M5["order=65  AegisRagMiddleware<br/>知识库检索 + 知识片段注入系统提示词"]
-        M6["order=60  AegisContentFilterMiddleware<br/>敏感词检测 + 内容过滤"]
+        M2["order=75  AegisBindingSyncMiddleware<br/>绑定同步校验"]
+        M3["order=70  AegisRagMiddleware<br/>知识库检索 + 知识片段注入系统提示词"]
     end
     subgraph "内层（后执行）"
-        M7["order=20  AegisAuditLogMiddleware<br/>审计日志落库"]
-        M8["order=15  AegisSandboxHeartbeatMiddleware<br/>沙箱心跳 + IdleReleaseTracker"]
-        M9["order=10  AegisMemoryMiddleware<br/>跨会话记忆摘要"]
-        M10["order=10  AegisMaskMiddleware<br/>输出脱敏（手机号/身份证/银行卡）"]
+        M4["order=50  AegisMaskMiddleware<br/>输出脱敏（手机号/身份证/银行卡）"]
+        M5["order=30  AegisAuditLogMiddleware<br/>审计日志落库"]
     end
 
-    M1 --> M2 --> M3 --> M3_5 --> M4 --> M5 --> M6 --> M7 --> M8 --> M9 --> M10
+    M1 --> M2 --> M3 --> M4 --> M5
     style M1 fill:#e3f2fd
-    style M2 fill:#ffebee
-    style M5 fill:#fff3e0
-    style M10 fill:#f3e5f5
+    style M3 fill:#fff3e0
+    style M4 fill:#f3e5f5
 ```
 
 ### 洋葱链在 5 个拦截点分别做什么
 
 | 拦截点 | 类型 / 触发时机 | 主要中间件 | 做什么 |
 |---|---|---|---|
-| **onAgent** | 洋葱·最外层，进入 Agent 时 | SecurityMiddleware(order=90) | 输入初筛、租户边界、HITL 规则预载 |
-| **onSystemPrompt** | 管道·发给 LLM 之前 | RagMiddleware / IntentMiddleware / ContentFilterMiddleware / SecurityMiddleware(55) | 串联改写系统提示词：RAG 片段、意图约束、敏感词指令、安全策略 |
-| **onModelCall** | 洋葱·每次调 LLM 时 | TraceMiddleware(95) / SecurityMiddleware(40) | 创建 MODEL_CALL Span 记录 I/O；安全路由（STRICT+L4→本地加密） |
-| **onReasoning** | 洋葱·LLM 返回 CoT 时 | TraceMiddleware | 创建 REASONING Span |
-| **onActing** | 洋葱·LLM 决定调工具时 | SecurityMiddleware(30) **最关键** | `(tool_type, security_level)` 查 sec_tool_policy → 无命中按等级直映（L1/L2→ALLOW, L3→ASK/HITL, L4→REJECT） |
+| **onAgent** | 洋葱·最外层，进入 Agent 时 | TraceMiddleware(95) | 创建 Agent Span，开启链路追踪 |
+| **onSystemPrompt** | 管道·发给 LLM 之前 | RagMiddleware(70) | RAG 知识片段注入系统提示词 |
+| **onModelCall** | 洋葱·每次调 LLM 时 | TraceMiddleware(95) | 创建 MODEL_CALL Span 记录 I/O |
+| **onReasoning** | 洋葱·LLM 返回 CoT 时 | TraceMiddleware | 创建 REASONING / tool_call Span |
+| **onActing** | 洋葱·LLM 决定调工具时 | TraceMiddleware + AgentScope PermissionEngine | 工具权限评估（sec_tool_policy → ALLOW/ASK/DENY），结果记入 trace |
 
-### 最关键：AegisSecurityMiddleware.onActing()
+### 工具权限评估（AgentScope PermissionEngine）
 
 ```mermaid
 flowchart TD
-    A["onActing 拦截点触发"] --> B["取 res_tool.security_level"]
-    B --> C["取 res_tool.tool_type"]
-    C --> D["查 sec_tool_policy<br/>(tool_type, level) → action（无命中时按等级直映）"]
-    D --> E{action}
-    E -->|ALLOW| F["直接放行 → 执行工具"]
-    E -->|APPROVE| G["HitlFlowService 触发"]
+    A["onActing 拦截点触发"] --> B["AegisPermissionRuleLoader<br/>从 sec_tool_policy 装载规则"]
+    B --> C["评估序: deny → ask → 工具自检 → allow"]
+    C --> D{决策}
+    D -->|ALLOW| F["直接放行 → 执行工具"]
+    D -->|ASK| G["HitlFlowService 触发"]
     G --> G1["sec_hitl_node 匹配 trigger_condition"]
     G1 --> G2["Redis: aegis:hitl:req:{sessionId} = toolCall JSON"]
     G2 --> G3["抛出 HITL 异常 → 会话挂起"]
-    E -->|REJECT| H["拦截 + mon_audit_log 落库 → 告诉 LLM '工具被拒绝'"]
+    D -->|DENY| H["拦截 + 告诉 LLM '工具被拒绝'"]
 
     style F fill:#c8e6c9
     style G fill:#fff9c4
@@ -331,11 +322,11 @@ sequenceDiagram
     AS-->>SSE: SSE: event:reasoning  data:{delta:"用户要查业绩..."}
 
     Note over AS,Tool: 第 1 轮 Act (onActing 拦截)
-    AS->>AS: AegisSecurityMiddleware.onActing<br/>查 sec_tool_policy → APPROVE
-    alt 需要 HITL
+    AS->>AS: PermissionEngine 评估<br/>AegisPermissionRuleLoader 装载 sec_tool_policy 规则
+    alt 需要 HITL (ASK)
         AS-->>SSE: SSE: event:hitl.request data:{tool:"execute", params:{...}}
         Note over Client,User: 用户审批后恢复
-    else 直接通过
+    else 直接通过 (ALLOW)
         AS->>Tool: execute({sql:"SELECT amount FROM sales WHERE month=..."})
         Tool-->>AS: { result: [{amount:52800}, {amount:61200}] }
         AS-->>SSE: SSE: event:tool_call data:{tool:"execute", params:{...}}
@@ -489,29 +480,31 @@ stateDiagram-v2
 
 ## 八、HITL 审批流（完整闭环）
 
-当 AegisSecurityMiddleware.onActing() 判定策略为 APPROVE 时触发。会话进入 PAUSED 状态，等待用户审批。
+当 AgentScope PermissionEngine 评估工具策略为 ASK 时触发（规则由 `AegisPermissionRuleLoader` 从 sec_tool_policy 装载）。会话进入 PAUSED 状态，等待用户审批。
 
 ### 全流程时序
 
 ```mermaid
 sequenceDiagram
     participant AS as HarnessAgent
-    participant MW as SecurityMiddleware
+    participant PE as PermissionEngine
+    participant HF as HitlFlowService
     participant Redis as Redis
     participant MySQL as MySQL
     participant FE as 前端
     participant User as 审批人
 
-    AS->>MW: onActing 拦截点
-    MW->>MySQL: sec_tool_policy 查表
-    Note over MySQL: tool_type 匹配, level=L3<br/>→ action=APPROVE
-    MW->>MySQL: sec_hitl_node 匹配 trigger_condition<br/>toolSecurityLevel>=3 → 命中
+    AS->>PE: onActing 拦截点
+    PE->>MySQL: sec_tool_policy 查表
+    Note over MySQL: tool_type 匹配, level=L3<br/>→ action=ASK
+    PE->>HF: 触发 HITL 流程
+    HF->>MySQL: sec_hitl_node 匹配 trigger_condition<br/>toolSecurityLevel>=3 → 命中
 
-    MW->>Redis: SET aegis:hitl:req:{sessionId} = {toolCall JSON}
+    HF->>Redis: SET aegis:hitl:req:{sessionId} = {toolCall JSON}
     Note right of Redis: TTL=48h（等审批）
 
-    MW->>MySQL: INSERT sec_hitl_history (PENDING)
-    MW-->>AS: 抛出 HitlRequiredException
+    HF->>MySQL: INSERT sec_hitl_history (PENDING)
+    HF-->>AS: 抛出 HitlRequiredException
     AS-->>FE: SSE: event:hitl.request data:{tool:"execute", level:"L3", ...}
 
     FE->>MySQL: UPDATE sess_session SET status=PAUSED
@@ -631,10 +624,10 @@ flowchart TD
 | `ChatRequestValidator` | agentId/sessionId 校验 | 阶段 1 |
 | `TaskExecutionService` | 编排：装配 → 流式执行 → 异常处理 → doFinally 兜底 | 阶段 2+5+6 |
 | `AgentAssemblyService` | 同步装配：查库 → 创建 session → 构建 context | 阶段 2 |
-| `AegisAgentInstanceManager` | 实例池管理 + Lazy 沙箱 + Middleware 装配 | 阶段 3 |
-| `AegisMiddlewareChain` | 按 order() 排序 11 层中间件 → Builder.middlewares() | 阶段 3 |
+| `AegisAgentInstanceManager` | 实例池管理 + RemoteFS + Middleware 装配 | 阶段 3 |
+| `List<MiddlewareBase>` | Spring 注入按 order() 排序的 5 层中间件 → Builder.middlewares() | 阶段 3 |
 | `AegisSkillRepository` | 按档位分轨装载 Toolkit（技能/MCP/知识库） | 阶段 2+3 |
-| `AegisSecurityPolicyEngine` | (tool_type, level) → action 查表，无命中时等级直映兜底 | onActing 拦截点 |
+| `AegisPermissionRuleLoader` | sec_tool_policy → PermissionRule 装载给 AgentScope PermissionEngine | onActing 拦截点 |
 | `HitlFlowService` | Redis 存 req → 恢复时注入 ConfirmResult | onActing + 恢复 |
 | `SessionProjectionService` | fire-and-forget 投影：工具消息 / 终态落库 / 状态流转 | 流式中 + 终态 |
 | `InterruptSignalManager` | register → sink → trigger 中断 | 流式中 |
