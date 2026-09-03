@@ -123,7 +123,7 @@ public class AegisAgentInstanceManager {
     private boolean sandboxEnabled;
 
     /** P2 周期2：框架驱动沙箱灰度开关，默认 false 走 RemoteFS（现状零差异），true 走 AegisSandboxFilesystemSpec */
-    @Value("${aegis.sandbox.framework-drive.enabled:false}")
+    @Value("${aegis.runtime.sandbox.framework-drive.enabled:false}")
     private boolean sandboxFrameworkDriveEnabled;
 
     /** P2 周期2：Aegis 沙箱客户端（桥接 admin 池 allocator），灰度开启时用于构建 SandboxFilesystemSpec */
@@ -686,12 +686,14 @@ public class AegisAgentInstanceManager {
                 .model(modelId)
                 .toolkit(toolkit)
                 .distributedStore(distributedStore)
-                // 禁用文件系统工具（list_files/glob_files/grep_files/read_file/write_file），
-                // 工作区中不存在知识库文档，避免 LLM 调用文件工具产生无效结果。
-                .disableFilesystemTools()
-                // 禁用 AgentScope 内置 ShellExecuteTool（execute），强制使用 aegis_execute，
-                // 后者集成 AegisSandboxCoordinator 以正确分配后台沙箱池资源。
-                .disableShellTool()
+                // Phase 1.2 收敛：启用框架内置 ShellExecuteTool("execute") + FilesystemTool("filesystem")。
+                // framework-drive.enabled=true 时文件系统是 SandboxBackedFilesystem（implements AbstractSandboxFilesystem），
+                // 框架 HarnessAgent.Builder 会自动注册这两个工具；
+                // 它们的 execute/read_file/write_file/list_files 全部走 SandboxLifecycleMiddleware -> AegisSandboxClient -> K8s Pod，
+                // 沙箱生命周期（acquire/release/session 复用）由框架原生管理。
+                // 自建 AegisExecuteTool / SandboxTrigger / SandboxToolHandler 已删除（与框架工具重复造轮子）。
+                // framework-drive.enabled=false 走 RemoteFilesystemSpec（CompositeFilesystem），框架本来就不会注册 shell/fs 工具，此处无副作用。
+                // 不调用 .disableShellTool() / .disableFilesystemTools()
                 // 注册 Aegis 技能仓库 + 启用技能中间件，
                 // HarnessSkillMiddleware 会自动把可见技能注入系统提示词的 <available_skills> 段落。
                 .skillRepository(skillRepository)

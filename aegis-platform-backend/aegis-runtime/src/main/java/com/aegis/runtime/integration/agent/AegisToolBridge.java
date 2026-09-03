@@ -19,7 +19,6 @@ import com.aegis.runtime.service.agent.ResourceQueryService;
 import com.aegis.runtime.integration.mcp.McpInvoker;
 import com.aegis.runtime.integration.skill.SkillCreatorOrchestrator;
 import com.aegis.runtime.integration.tool.AegisBuiltinTools;
-import com.aegis.runtime.integration.tool.AegisExecuteTool;
 import com.aegis.runtime.integration.tool.AegisGenerateFileTool;
 import com.aegis.runtime.integration.tool.AegisHttpTool;
 import com.aegis.runtime.integration.tool.AegisMcpTool;
@@ -74,7 +73,6 @@ public class AegisToolBridge {
     private final AegisBuiltinTools aegisBuiltinTools;
     private final AegisGenerateFileTool aegisGenerateFileTool;
     private final AegisHttpTool aegisHttpTool;
-    private final AegisExecuteTool aegisExecuteTool;
     private final McpInvoker mcpInvoker;
     private final ToolResultCache toolResultCache;
     private final SkillExecutor skillExecutor;
@@ -87,11 +85,7 @@ public class AegisToolBridge {
     /** AegisBuiltinTools 提供的工具编码集合（@Tool 注解方法） */
     private static final Set<String> BUILTIN_ANNOTATED_TOOLS = Set.of(
             "web_search",
-            "image_search",
-            "memory_search",
-            "session_search",
-            "search_history",
-            "image_generation"
+            "image_search"
     );
 
     /**
@@ -205,8 +199,6 @@ public class AegisToolBridge {
         boolean builtinRegistered = false;
         boolean generateFileRegistered = false;
         boolean httpRegistered = false;
-        boolean networkRegistered = false;
-        boolean executeRegistered = false;
 
         for (Tool tool : tools) {
             String toolCode = tool.getToolCode();
@@ -244,26 +236,6 @@ public class AegisToolBridge {
                 continue;
             }
 
-            // 注册 network_request 作为 http_request 的别名
-            if ("network_request".equals(toolCode)) {
-                if (!networkRegistered) {
-                    AegisHttpTool networkRequestTool = new AegisHttpTool("network_request");
-                    toolkit.registerAgentTool(networkRequestTool);
-                    networkRegistered = true;
-                    log.debug("注册 AegisHttpTool（network_request 别名）: toolCode={}", toolCode);
-                }
-                continue;
-            }
-
-            // 注册 aegis_execute 工具（AegisExecuteTool，支持 code + language 参数，兼容 command 模式）
-            if ("aegis_execute".equals(toolCode)) {
-                if (!executeRegistered) {
-                    toolkit.registerAgentTool(aegisExecuteTool);
-                    executeRegistered = true;
-                    log.debug("注册 AegisExecuteTool（ToolBase 子类模式）: toolCode={}", toolCode);
-                }
-                continue;
-            }
 
             // 注册 MCP 工具：通过 McpInvoker.listTools 获取 MCP 服务暴露的工具列表
             if (ToolSourceType.MCP.equals(tool.getSourceType()) && tool.getMcpServiceId() != null) {

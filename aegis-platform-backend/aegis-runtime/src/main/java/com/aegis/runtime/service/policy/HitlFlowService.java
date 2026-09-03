@@ -84,7 +84,10 @@ public class HitlFlowService {
                 }
 
                 Map<String, Object> inputMap = input != null ? new HashMap<>(input) : Collections.emptyMap();
-                ToolUseBlock toolUseBlock = new ToolUseBlock(toolCallId, toolName, inputMap);
+                // content 为框架 ToolExecutor 参数校验的数据源（ToolValidator.validateInput(toolCall.getContent(), ...)），
+                // 若仅填 input 则恢复轮重放时 content=null，校验必失败（argument "content" is null）
+                ToolUseBlock toolUseBlock = new ToolUseBlock(
+                        toolCallId, toolName, inputMap, JSON.toJSONString(inputMap), null);
 
                 ConfirmResult cr = new ConfirmResult(true, toolUseBlock);
                 results.add(cr);
@@ -153,10 +156,13 @@ public class HitlFlowService {
                 JSONObject input = tc.getJSONObject("input");
                 Map<String, Object> inputMap = input != null ? new HashMap<>(input) : Collections.emptyMap();
 
+                // 同 markApproved：content 为框架参数校验数据源，恢复轮重放时必须填充
                 ToolUseBlock block = new ToolUseBlock(
                         toolCallId,
                         tc.getString("name"),
-                        inputMap);
+                        inputMap,
+                        JSON.toJSONString(inputMap),
+                        null);
                 results.add(new ConfirmResult(true, block));
             }
         }

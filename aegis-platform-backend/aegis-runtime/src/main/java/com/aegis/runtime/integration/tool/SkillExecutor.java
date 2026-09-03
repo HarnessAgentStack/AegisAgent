@@ -311,9 +311,10 @@ public class SkillExecutor {
         }
 
         // 构造 ToolCallParam 并调用
+        // content 为框架 ToolExecutor 参数校验数据源（validateInput(toolCall.getContent(), ...)），必须填充
         String callId = "skill-exec-" + System.nanoTime();
         ToolCallParam param = ToolCallParam.builder()
-                .toolUseBlock(new ToolUseBlock(callId, toolCode, input))
+                .toolUseBlock(new ToolUseBlock(callId, toolCode, input, arguments, null))
                 .input(input)
                 .build();
 

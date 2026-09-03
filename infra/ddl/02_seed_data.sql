@@ -74,7 +74,55 @@ INSERT IGNORE INTO `org_user_role` (`id`, `tenant_id`, `user_id`, `role_id`, `re
 -- -----------------------------------------------------------------------------
 -- 11. 内置工具 res_tool：BUILTIN 工具（tenant_id=0 平台内置）
 -- -----------------------------------------------------------------------------
-INSERT IGNORE INTO `res_tool` (`id`, `tenant_id`, `tool_code`, `tool_name`, `description`, `tool_type`, `source_type`, `mcp_service_id`, `read_only`, `input_schema`, `output_schema`, `security_level`, `status`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`) VALUES (3001,0,'data_query','数据查询工具','查询业务数据库返回结构化结果','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"table\"], \"properties\": {\"sql\": {\"type\": \"string\"}, \"table\": {\"type\": \"string\"}}}','{\"type\": \"object\", \"properties\": {\"rows\": {\"type\": \"array\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3002,0,'chart_gen','图表生成工具','根据数据生成可视化图表','INTERNAL_API','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"data\", \"type\"], \"properties\": {\"data\": {\"type\": \"array\"}, \"type\": {\"type\": \"string\"}}}','{\"type\": \"object\", \"properties\": {\"chartUrl\": {\"type\": \"string\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3003,0,'report_write','报告撰写工具','基于数据与图表生成分析报告','INTERNAL_API','BUILTIN',NULL,0,'{\"type\": \"object\", \"required\": [\"data\"], \"properties\": {\"data\": {\"type\": \"object\"}, \"chart\": {\"type\": \"string\"}}}','{\"type\": \"object\", \"properties\": {\"report\": {\"type\": \"string\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3101,0,'file_read','文件读取','读取本地文件或已上传附件的内容。支持通过路径或fileId读取文本、Markdown、JSON等文件。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\", \"description\": \"本地文件路径，如 /workspace/user_files/resume.docx\"}, \"fileId\": {\"type\": \"string\", \"description\": \"已上传附件的fileId\"}}}','{\"type\": \"object\", \"properties\": {\"fileId\": {\"type\": \"string\"}, \"content\": {\"type\": \"string\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3102,0,'file_write','文件写入','将内容写入文件并返回下载链接。支持生成docx、md、txt、json等格式的文件。','WRITE','BUILTIN',NULL,0,'{\"type\": \"object\", \"required\": [\"filename\", \"content\"], \"properties\": {\"content\": {\"type\": \"string\", \"description\": \"文件内容\"}, \"filename\": {\"type\": \"string\", \"description\": \"文件名，如 optimized_resume.md\"}}}','{\"type\": \"object\", \"properties\": {\"fileId\": {\"type\": \"string\"}, \"filename\": {\"type\": \"string\"}, \"downloadUrl\": {\"type\": \"string\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3103,0,'file_list','文件列表','列出指定目录下的文件列表，默认列出用户文件目录。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"properties\": {\"dir\": {\"type\": \"string\", \"description\": \"目录路径，可选，默认为用户文件目录\"}}}','{\"type\": \"object\", \"properties\": {\"files\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}, \"size\": {\"type\": \"number\"}}}}}}','L1','NORMAL',1,NOW(),NULL,NOW(),0),(3104,0,'generate_file','生成文件','生成文件并返回下载链接。可指定文件名、内容和MIME类型，适用于生成简历、报告等文档。','WRITE','BUILTIN',NULL,0,'{\"type\": \"object\", \"required\": [\"filename\", \"content\"], \"properties\": {\"content\": {\"type\": \"string\", \"description\": \"文件内容\"}, \"filename\": {\"type\": \"string\", \"description\": \"文件名，如 optimized_resume.docx\"}, \"contentType\": {\"type\": \"string\", \"description\": \"MIME类型，如 text/markdown、application/vnd.openxmlformats-officedocument.wordprocessingml.document\"}}}','{\"type\": \"object\", \"properties\": {\"size\": {\"type\": \"number\"}, \"fileId\": {\"type\": \"string\"}, \"filename\": {\"type\": \"string\"}, \"downloadUrl\": {\"type\": \"string\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3105,0,'web_search','联网搜索','联网搜索，返回搜索结果摘要。用于查询实时信息，如天气、新闻、知识等。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"query\"], \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"搜索关键词，如 天津天气预报\"}}}','{\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}, \"result\": {\"type\": \"string\"}, \"status\": {\"type\": \"number\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3106,0,'http_request','HTTP请求','发起 HTTP GET/POST 请求，获取指定 URL 的内容。内置 SSRF 防护，禁止访问内网地址。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"url\"], \"properties\": {\"url\": {\"type\": \"string\", \"description\": \"请求 URL，如 https://api.example.com/data\"}, \"body\": {\"type\": \"string\", \"description\": \"POST 请求体\"}, \"method\": {\"type\": \"string\", \"description\": \"HTTP 方法：GET 或 POST，默认 GET\"}, \"headers\": {\"type\": \"object\", \"description\": \"自定义请求头\"}}}','{\"type\": \"object\", \"properties\": {\"url\": {\"type\": \"string\"}, \"result\": {\"type\": \"string\"}, \"status\": {\"type\": \"number\"}}}','L3','NORMAL',1,NOW(),NULL,NOW(),0),(3107,0,'aegis_execute','代码执行','在Aegis K8s沙箱环境中执行Python代码，支持数学计算、数据处理等编程任务。代码在隔离Pod中执行，不影响宿主系统。','CODE_EXEC','BUILTIN',NULL,0,'{\"type\": \"object\", \"anyOf\": [{\"required\": [\"code\"]}, {\"required\": [\"command\"]}], \"properties\": {\"code\": {\"type\": \"string\", \"description\": \"要执行的Python代码片段\"}, \"command\": {\"type\": \"string\", \"description\": \"Python代码片段（兼容参数，等同于code）\"}, \"language\": {\"type\": \"string\", \"description\": \"编程语言，默认python\"}}}','{\"type\": \"object\", \"properties\": {\"result\": {\"type\": \"string\"}, \"stderr\": {\"type\": \"string\"}, \"stdout\": {\"type\": \"string\"}, \"success\": {\"type\": \"boolean\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3108,0,'image_search','图片搜索','联网搜索图片，返回图片URL、标题和缩略图。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"query\"], \"properties\": {\"count\": {\"type\": \"integer\", \"description\": \"返回数量，默认5\"}, \"query\": {\"type\": \"string\", \"description\": \"搜索关键词\"}}}','{\"type\": \"object\", \"properties\": {\"images\": {\"type\": \"array\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3109,0,'memory_search','记忆搜索','检索历史对话中的记忆内容。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"query\"], \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"搜索关键词\"}, \"scope\": {\"type\": \"string\", \"description\": \"搜索范围：session=当前会话，all=所有会话，默认all\"}}}','{\"type\": \"object\", \"properties\": {\"results\": {\"type\": \"array\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3110,0,'session_search','会话搜索','在当前会话中查找之前讨论过的内容。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"query\"], \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"搜索关键词\"}}}','{\"type\": \"object\", \"properties\": {\"results\": {\"type\": \"array\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3111,0,'search_history','历史搜索','检索历史搜索记录和对话记录。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"query\"], \"properties\": {\"days\": {\"type\": \"integer\", \"description\": \"最近几天，默认7\"}, \"query\": {\"type\": \"string\", \"description\": \"搜索关键词\"}}}','{\"type\": \"object\", \"properties\": {\"history\": {\"type\": \"array\"}}}','L2','NORMAL',1,NOW(),NULL,NOW(),0),(3112,0,'image_generation','图片生成','AI生成图片，支持多种风格和尺寸。','WRITE','BUILTIN',NULL,0,'{\"type\": \"object\", \"required\": [\"prompt\"], \"properties\": {\"size\": {\"type\": \"string\", \"description\": \"图片尺寸，如1024x1024\"}, \"prompt\": {\"type\": \"string\", \"description\": \"图片描述\"}}}','{\"type\": \"object\", \"properties\": {\"imageUrl\": {\"type\": \"string\"}, \"description\": {\"type\": \"string\"}}}','L3','NORMAL',1,NOW(),NULL,NOW(),0),(3113,0,'network_request','网络请求','发起HTTP GET/POST请求，获取指定URL内容。http_request别名。内置SSRF防护。','READONLY','BUILTIN',NULL,1,'{\"type\": \"object\", \"required\": [\"url\"], \"properties\": {\"url\": {\"type\": \"string\", \"description\": \"请求URL\"}, \"body\": {\"type\": \"string\", \"description\": \"POST请求体\"}, \"method\": {\"type\": \"string\", \"description\": \"HTTP方法：GET或POST\"}, \"headers\": {\"type\": \"object\", \"description\": \"自定义请求头\"}}}','{\"type\": \"object\", \"properties\": {\"url\": {\"type\": \"string\"}, \"result\": {\"type\": \"string\"}, \"status\": {\"type\": \"number\"}}}','L3','NORMAL',1,NOW(),NULL,NOW(),0);
+-- 权威对齐源：BuiltinToolRiskConfig（与 HarnessAgent 装配时框架实际注册的工具全集一致，
+-- 见 runtime 日志 "Toolkit: Registered tool '...'"），共 27 项：
+--   Aegis 自建（4）    ：web_search / image_search / generate_file / http_request
+--   框架 Shell（1）    ：execute（framework-drive=true 时经 K8s 沙箱 Pod 执行）
+--   框架 Filesystem（6）：read_file / write_file / list_files / grep_files / glob_files / edit_file
+--   框架 Subagent/Task（7）：agent_spawn / agent_list / agent_send / task_list / task_cancel / task_output / wait_async_results
+--   框架 Memory/Session（6）：memory_search / memory_get / memory_save / session_search / session_list / session_history
+--   框架 Skill（2）    ：skill_creator / load_skill_through_path
+--   MCP 场景兜底（1）  ：browser_use（浏览器 MCP 接入时注册）
+--
+-- security_level 与 mapToolLevel 语义对齐：needApproval=true → L3（审批）；
+-- LOW → L1（放行）；MEDIUM → L2；http_request 保守标 L3（外网访问，运行时按方法动态评估）。
+-- 物理清理 + 全量重建保证幂等（uk_tenant_tool_code 唯一，INSERT IGNORE 兜底）。
+DELETE FROM res_tool WHERE tenant_id = 0 AND source_type = 'BUILTIN';
+INSERT IGNORE INTO res_tool (id, tenant_id, tool_code, tool_name, description, tool_type, source_type, read_only, security_level, status, create_by, create_time, deleted) VALUES
+-- ===== Aegis 自建差异化（4） =====
+(3101, 0, 'web_search',    '联网搜索', 'SearXNG/Bing 多引擎聚合 + SSRF 防护 + 结构化返回', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3102, 0, 'image_search',  '图片搜索', 'Bing 图片搜索 + Jsoup 结构化解析', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3103, 0, 'generate_file', '生成文件', 'Apache POI 格式化 Word + MinIO 持久化 + sess_artifact 关联', 'WRITE', 'BUILTIN', 0, 'L1', 'NORMAL', 1, NOW(), 0),
+(3104, 0, 'http_request',  'HTTP请求', 'Java HttpClient + SSRF 内网拦截；GET 只读放行 / 写方法需审批', 'EXTERNAL_NETWORK', 'BUILTIN', 1, 'L3', 'NORMAL', 1, NOW(), 0),
+-- ===== 框架 ShellExecuteTool（1，K8s 沙箱 Pod 内执行） =====
+(3110, 0, 'execute', '代码执行', '框架 ShellExecuteTool，shell/python 命令走 K8s 沙箱 Pod，需审批', 'CODE_EXEC', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0),
+-- ===== 框架 FilesystemTool 拆分（6，沙箱文件系统） =====
+(3111, 0, 'read_file',  '读文件',   '框架 FilesystemTool，读取沙箱工作区文件内容', 'FILE_OPS', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3112, 0, 'write_file', '写文件',   '框架 FilesystemTool，写入沙箱工作区文件，需审批', 'FILE_OPS', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0),
+(3113, 0, 'list_files', '文件列表', '框架 FilesystemTool，列出沙箱工作区文件', 'FILE_OPS', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3114, 0, 'grep_files', '文件搜索', '框架 FilesystemTool，沙箱工作区文件内容搜索', 'FILE_OPS', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3115, 0, 'glob_files', '模式匹配', '框架 FilesystemTool，沙箱工作区文件模式搜索', 'FILE_OPS', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3116, 0, 'edit_file',  '编辑文件', '框架 FilesystemTool，编辑沙箱工作区已有文件，需审批', 'FILE_OPS', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0),
+-- ===== 框架 Subagent / Task（7） =====
+(3120, 0, 'agent_spawn',        '子智能体创建', '框架 AgentSpawnTool，内部子智能体调度', 'AGENT', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3121, 0, 'agent_list',         '子智能体列表', '框架 AgentListTool，列出子智能体', 'AGENT', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3122, 0, 'agent_send',         '子智能体消息', '框架 AgentSendTool，向子智能体发送消息', 'AGENT', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3123, 0, 'task_list',          '任务列表',     '框架 TaskListTool，列出后台任务', 'ASYNC', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3124, 0, 'task_cancel',        '任务取消',     '框架 TaskCancelTool，取消后台任务，需审批', 'ASYNC', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0),
+(3125, 0, 'task_output',        '任务输出',     '框架 TaskOutputTool，读取后台任务输出', 'ASYNC', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3126, 0, 'wait_async_results', '异步结果等待', '框架 WaitAsyncResultsTool，等待异步任务结果', 'ASYNC', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+-- ===== 框架 Memory / Session（6） =====
+(3130, 0, 'memory_search',  '记忆搜索', '框架 MemorySearchTool，检索历史记忆', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3131, 0, 'memory_get',     '记忆读取', '框架 MemoryGetTool，读取记忆条目', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3132, 0, 'memory_save',    '记忆保存', '框架 MemorySaveTool，保存会话记忆', 'WRITE', 'BUILTIN', 0, 'L1', 'NORMAL', 1, NOW(), 0),
+(3133, 0, 'session_search', '会话搜索', '框架 SessionSearchTool，检索历史会话', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3134, 0, 'session_list',   '会话列表', '框架 SessionListTool，列出历史会话', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+(3135, 0, 'session_history', '会话历史', '框架 SessionHistoryTool，读取会话历史', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+-- ===== 框架 Skill（2） =====
+(3140, 0, 'skill_creator',            '技能创建', '框架 skill_creator 元技能，创建技能会注册新工具，需审批', 'WRITE', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0),
+(3141, 0, 'load_skill_through_path', '技能加载', '框架 LoadSkillThroughPathTool，按路径加载技能', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
+-- ===== MCP 场景兜底（1） =====
+(3150, 0, 'browser_use', '浏览器操作', '浏览器 MCP 接入时的自动化操作工具，需审批', 'EXTERNAL_NETWORK', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0);
 
 
 -- -----------------------------------------------------------------------------
@@ -98,7 +146,24 @@ INSERT IGNORE INTO `sbx_pool` (`id`, `tenant_id`, `pool_code`, `namespace`, `min
 -- -----------------------------------------------------------------------------
 -- 13. 工具策略 sec_tool_policy：工具安全策略
 -- -----------------------------------------------------------------------------
+-- 决策矩阵 (toolType × securityLevel) → action(ALLOW/APPROVE/REJECT)，
+-- 经 AegisPermissionRuleLoader 装载为 AgentScope PermissionEngine 规则。
+-- 低风险免审批：READONLY/AGENT/ASYNC L1~L3 全部 ALLOW（只读查询/内部调度）；
+-- FILE_OPS L1/L2 ALLOW（沙箱内文件读写），L3 APPROVE（write_file/edit_file 映射 L3 需审批）。
 INSERT IGNORE INTO `sec_tool_policy` (`id`, `tenant_id`, `tool_type`, `security_level`, `governance_tier_min`, `action`, `description`, `enabled`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`) VALUES (11001,1,'READONLY',1,NULL,'ALLOW','只读工具 L1：公开级直接放行',1,1,NOW(),1,NOW(),0),(11002,1,'READONLY',2,NULL,'ALLOW','只读工具 L2：内部级直接放行',1,1,NOW(),1,NOW(),0),(11003,1,'READONLY',3,NULL,'ALLOW','只读工具 L3：机密级直接放行',1,1,NOW(),1,NOW(),0),(11004,1,'READONLY',4,NULL,'APPROVE','只读工具 L4：绝密级需审批',1,1,NOW(),1,NOW(),0),(11005,1,'INTERNAL_API',1,NULL,'ALLOW','内部API L1：公开级直接放行',1,1,NOW(),1,NOW(),0),(11006,1,'INTERNAL_API',2,NULL,'ALLOW','内部API L2：内部级直接放行',1,1,NOW(),1,NOW(),0),(11007,1,'INTERNAL_API',3,NULL,'ALLOW','内部API L3：机密级直接放行',1,1,NOW(),1,NOW(),0),(11008,1,'INTERNAL_API',4,NULL,'REJECT','内部API L4：绝密级拒绝',1,1,NOW(),1,NOW(),0),(11009,1,'WRITE',1,NULL,'ALLOW','写入工具 L1：公开级直接放行',1,1,NOW(),1,NOW(),0),(11010,1,'WRITE',2,NULL,'ALLOW','写入工具 L2：内部级直接放行',1,1,NOW(),1,NOW(),0),(11011,1,'WRITE',3,NULL,'APPROVE','写入工具 L3：机密级需审批',1,1,NOW(),1,NOW(),0),(11012,1,'WRITE',4,NULL,'REJECT','写入工具 L4：绝密级拒绝',1,1,NOW(),1,NOW(),0),(11013,1,'EXTERNAL_NETWORK',1,NULL,'ALLOW','外网工具 L1：公开级放行（白名单域名）',1,1,NOW(),1,NOW(),0),(11014,1,'EXTERNAL_NETWORK',2,NULL,'ALLOW','外网工具 L2：内部级放行',1,1,NOW(),1,NOW(),0),(11015,1,'EXTERNAL_NETWORK',3,NULL,'APPROVE','外网工具 L3：机密级需审批',1,1,NOW(),1,NOW(),0),(11016,1,'EXTERNAL_NETWORK',4,NULL,'REJECT','外网工具 L4：绝密级禁止出网',1,1,NOW(),1,NOW(),0),(11017,1,'CODE_EXEC',1,NULL,'ALLOW','代码执行 L1：公开级放行（沙箱隔离）',1,1,NOW(),1,NOW(),0),(11018,1,'CODE_EXEC',2,NULL,'ALLOW','代码执行 L2：内部级放行',1,1,NOW(),1,NOW(),0),(11019,1,'CODE_EXEC',3,NULL,'APPROVE','代码执行 L3：机密级需审批',1,1,NOW(),1,NOW(),0),(11020,1,'CODE_EXEC',4,NULL,'REJECT','代码执行 L4：绝密级禁止',1,1,NOW(),1,NOW(),0),(11021,1,'HIGH_RISK',1,NULL,'ALLOW','高危工具 L1：公开级放行（沙箱隔离）',1,1,NOW(),1,NOW(),0),(11022,1,'HIGH_RISK',2,NULL,'ALLOW','高危工具 L2：内部级放行',1,1,NOW(),1,NOW(),0),(11023,1,'HIGH_RISK',3,NULL,'APPROVE','高危工具 L3：机密级需审批',1,1,NOW(),1,NOW(),0),(11024,1,'HIGH_RISK',4,NULL,'REJECT','高危工具 L4：绝密级禁止',1,1,NOW(),1,NOW(),0);
+INSERT IGNORE INTO `sec_tool_policy` (`id`, `tenant_id`, `tool_type`, `security_level`, `governance_tier_min`, `action`, `description`, `enabled`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`) VALUES
+(11025,1,'AGENT',1,NULL,'ALLOW','智能体调度 L1：公开级直接放行（内部调度无外部副作用）',1,1,NOW(),1,NOW(),0),
+(11026,1,'AGENT',2,NULL,'ALLOW','智能体调度 L2：内部级直接放行',1,1,NOW(),1,NOW(),0),
+(11027,1,'AGENT',3,NULL,'APPROVE','智能体调度 L3：机密级需审批',1,1,NOW(),1,NOW(),0),
+(11028,1,'AGENT',4,NULL,'REJECT','智能体调度 L4：绝密级禁止',1,1,NOW(),1,NOW(),0),
+(11029,1,'ASYNC',1,NULL,'ALLOW','异步任务 L1：公开级直接放行（内部任务调度）',1,1,NOW(),1,NOW(),0),
+(11030,1,'ASYNC',2,NULL,'ALLOW','异步任务 L2：内部级直接放行',1,1,NOW(),1,NOW(),0),
+(11031,1,'ASYNC',3,NULL,'APPROVE','异步任务 L3：机密级需审批',1,1,NOW(),1,NOW(),0),
+(11032,1,'ASYNC',4,NULL,'REJECT','异步任务 L4：绝密级禁止',1,1,NOW(),1,NOW(),0),
+(11033,1,'FILE_OPS',1,NULL,'ALLOW','文件操作 L1：公开级放行（沙箱工作区内）',1,1,NOW(),1,NOW(),0),
+(11034,1,'FILE_OPS',2,NULL,'ALLOW','文件操作 L2：内部级放行（沙箱工作区内）',1,1,NOW(),1,NOW(),0),
+(11035,1,'FILE_OPS',3,NULL,'APPROVE','文件操作 L3：机密级需审批',1,1,NOW(),1,NOW(),0),
+(11036,1,'FILE_OPS',4,NULL,'REJECT','文件操作 L4：绝密级禁止',1,1,NOW(),1,NOW(),0);
 
 
 -- -----------------------------------------------------------------------------
@@ -119,13 +184,51 @@ INSERT IGNORE INTO `sec_sensitive_word` (`id`, `tenant_id`, `word`, `category`, 
 INSERT IGNORE INTO `sec_outbound_policy` (`id`, `tenant_id`, `policy_type`, `domain`, `ip_cidr`, `port_limit`, `applicable_scope`, `scope_config`, `valid_hours`, `description`, `enabled`, `create_by`, `create_time`, `update_by`, `update_time`, `deleted`) VALUES (17001,1,'BLACKLIST_IP',NULL,'127.0.0.0/8',NULL,'ALL',NULL,NULL,'禁止访问回环地址（SSRF 防护）',1,1,NOW(),1,NOW(),0),(17002,1,'BLACKLIST_IP',NULL,'10.0.0.0/8',NULL,'ALL',NULL,NULL,'禁止访问 A 类内网 10.0.0.0/8（SSRF 防护）',1,1,NOW(),1,NOW(),0),(17003,1,'BLACKLIST_IP',NULL,'172.16.0.0/12',NULL,'ALL',NULL,NULL,'禁止访问 B 类内网 172.16.0.0/12（SSRF 防护）',1,1,NOW(),1,NOW(),0),(17004,1,'BLACKLIST_IP',NULL,'192.168.0.0/16',NULL,'ALL',NULL,NULL,'禁止访问 C 类内网 192.168.0.0/16（SSRF 防护）',1,1,NOW(),1,NOW(),0),(17005,1,'BLACKLIST_IP',NULL,'169.254.0.0/16',NULL,'ALL',NULL,NULL,'禁止访问链路本地 169.254.0.0/16（含云元数据服务）',1,1,NOW(),1,NOW(),0),(17006,1,'BLACKLIST_IP',NULL,'0.0.0.0/8',NULL,'ALL',NULL,NULL,'禁止访问当前网络 0.0.0.0/8（SSRF 防护）',1,1,NOW(),1,NOW(),0),(17010,1,'WHITELIST_DOMAIN','api.openai.com',NULL,443,'ALL',NULL,NULL,'允许调用 OpenAI API（HTTPS 443）',1,1,NOW(),1,NOW(),0),(17011,1,'WHITELIST_DOMAIN','*.volces.com',NULL,443,'ALL',NULL,NULL,'允许调用火山引擎（豆包）API（HTTPS 443）',1,1,NOW(),1,NOW(),0),(17012,1,'WHITELIST_DOMAIN','*.aliyuncs.com',NULL,443,'ALL',NULL,NULL,'允许访问阿里云 OSS（HTTPS 443）',1,1,NOW(),1,NOW(),0),(17013,1,'WHITELIST_DOMAIN','*.tencentcloudapi.com',NULL,443,'ALL',NULL,NULL,'允许调用腾讯云 API（HTTPS 443）',1,1,NOW(),1,NOW(),0),(17014,1,'WHITELIST_DOMAIN','*.baidu.com',NULL,443,'ALL',NULL,NULL,'允许访问百度系 API（HTTPS 443）',1,1,NOW(),1,NOW(),0),(17015,1,'WHITELIST_DOMAIN','weixin.qq.com',NULL,443,'ALL',NULL,NULL,'允许访问微信开放平台（HTTPS 443）',1,1,NOW(),1,NOW(),0);
 
 
-SET FOREIGN_KEY_CHECKS = 1;
+-- -----------------------------------------------------------------------------
+-- 17. 沙箱策略 sec_sandbox_policy：系统工具沙箱执行策略（tenant_id=0 全局）
+-- -----------------------------------------------------------------------------
+-- 与 BuiltinToolRiskConfig.sandboxExecution 精确对齐（27 工具全覆盖）：
+--   sandbox_execution=1 → 框架 SandboxLifecycleMiddleware 驱动 K8s 沙箱 Pod
+--                         （execute + 6 个文件工具，共 7 项）
+--   sandbox_execution=0 → 宿主安全执行（自建工具走 Java 实现 + SSRF 防护；
+--                         内部调度/检索无外部副作用，无需沙箱开销）
+-- 物理清理：tenant_id=0 全删重建 + 幽灵工具编码兜底清理（保证幂等）。
+DELETE FROM sec_sandbox_policy WHERE tenant_id = 0;
+DELETE FROM sec_sandbox_policy WHERE tool_code IN ('aegis_execute','aegis_generate_file','shell','run_script','build_test','exec_attachment','filesystem','agent_generate','task_spawn','skill_manage');
+INSERT INTO sec_sandbox_policy (id, tenant_id, tool_code, sandbox_execution, description, enabled, create_by, create_time, deleted) VALUES
+-- ===== 框架 ShellExecuteTool（强制沙箱） =====
+(101, 0, 'execute',     1, '框架 ShellExecuteTool - shell/python 命令走 K8s 沙箱 Pod', 1, 1, NOW(), 0),
+-- ===== 框架 FilesystemTool（沙箱文件系统） =====
+(102, 0, 'read_file',   1, '框架 FilesystemTool - 读取沙箱工作区文件', 1, 1, NOW(), 0),
+(103, 0, 'write_file',  1, '框架 FilesystemTool - 写入沙箱工作区文件', 1, 1, NOW(), 0),
+(104, 0, 'list_files',  1, '框架 FilesystemTool - 列出沙箱工作区文件', 1, 1, NOW(), 0),
+(105, 0, 'grep_files',  1, '框架 FilesystemTool - 沙箱工作区内容搜索', 1, 1, NOW(), 0),
+(106, 0, 'glob_files',  1, '框架 FilesystemTool - 沙箱工作区模式搜索', 1, 1, NOW(), 0),
+(107, 0, 'edit_file',   1, '框架 FilesystemTool - 编辑沙箱工作区文件', 1, 1, NOW(), 0),
+-- ===== Aegis 自建（宿主安全执行） =====
+(201, 0, 'web_search',    0, '自建 - SearXNG/Bing 直连 + SSRF 防护', 1, 1, NOW(), 0),
+(202, 0, 'image_search',  0, '自建 - Bing 直连 + SSRF 防护',         1, 1, NOW(), 0),
+(203, 0, 'generate_file', 0, '自建 - 宿主 POI 生成 + MinIO 持久化',   1, 1, NOW(), 0),
+(204, 0, 'http_request',  0, '自建 - 宿主 HttpClient + SSRF 内网拦截（GET 只读/写方法审批）', 1, 1, NOW(), 0),
+-- ===== 框架 Subagent / Task（内部调度，无外部副作用） =====
+(301, 0, 'agent_spawn',        0, '框架 AgentSpawnTool - 内部子智能体调度', 1, 1, NOW(), 0),
+(302, 0, 'agent_list',         0, '框架 AgentListTool - 列出子智能体',      1, 1, NOW(), 0),
+(303, 0, 'agent_send',         0, '框架 AgentSendTool - 子智能体消息',      1, 1, NOW(), 0),
+(304, 0, 'task_list',          0, '框架 TaskListTool - 列出后台任务',       1, 1, NOW(), 0),
+(305, 0, 'task_cancel',        0, '框架 TaskCancelTool - 取消后台任务',     1, 1, NOW(), 0),
+(306, 0, 'task_output',        0, '框架 TaskOutputTool - 读取任务输出',     1, 1, NOW(), 0),
+(307, 0, 'wait_async_results', 0, '框架 WaitAsyncResultsTool - 等待异步结果', 1, 1, NOW(), 0),
+-- ===== 框架 Memory / Session（内部向量库/会话存储） =====
+(401, 0, 'memory_search',   0, '框架 MemorySearchTool - 内部记忆检索', 1, 1, NOW(), 0),
+(402, 0, 'memory_get',      0, '框架 MemoryGetTool - 内部记忆读取',    1, 1, NOW(), 0),
+(403, 0, 'memory_save',     0, '框架 MemorySaveTool - 内部记忆写入',   1, 1, NOW(), 0),
+(404, 0, 'session_search',  0, '框架 SessionSearchTool - 内部会话检索', 1, 1, NOW(), 0),
+(405, 0, 'session_list',    0, '框架 SessionListTool - 列出历史会话',   1, 1, NOW(), 0),
+(406, 0, 'session_history', 0, '框架 SessionHistoryTool - 读取会话历史', 1, 1, NOW(), 0),
+-- ===== 框架 Skill / MCP 兜底 =====
+(501, 0, 'skill_creator',           0, '框架 skill_creator - 技能创建编排（需审批）', 1, 1, NOW(), 0),
+(502, 0, 'load_skill_through_path', 0, '框架技能加载 - 按路径只读加载',               1, 1, NOW(), 0),
+(503, 0, 'browser_use',             0, '浏览器 MCP - 外部浏览器服务执行（需审批）',   1, 1, NOW(), 0);
 
--- ===== sec_sandbox_policy: 存量执行类工具默认进沙箱 =====
-INSERT INTO sec_sandbox_policy (id, tenant_id, tool_code, sandbox_execution, description, enabled) VALUES
-(2095418000000000000, 1, 'aegis_execute', 1, '存量执行类工具默认进沙箱', 1),
-(2095418000000000001, 1, 'aegis_generate_file', 1, '存量执行类工具默认进沙箱', 1),
-(2095418000000000002, 1, 'shell', 1, '存量执行类工具默认进沙箱', 1),
-(2095418000000000003, 1, 'run_script', 1, '存量执行类工具默认进沙箱', 1),
-(2095418000000000004, 1, 'build_test', 1, '存量执行类工具默认进沙箱', 1),
-(2095418000000000005, 1, 'exec_attachment', 1, '存量执行类工具默认进沙箱', 1);
+
+SET FOREIGN_KEY_CHECKS = 1;

@@ -157,7 +157,7 @@ public class AegisSandbox implements Sandbox {
     }
 
     /**
-     * 暴露实例（供 AegisSandboxClient/AegisExecuteTool 获取 podName 等）。
+     * 暴露实例（供 AegisSandboxClient 获取 podName 等）。
      */
     public SandboxInstance getInstance() {
         return instance;

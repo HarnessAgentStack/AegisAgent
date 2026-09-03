@@ -404,7 +404,7 @@ public class SecurityService {
                                                      Long tenantId, int page, int size) {
         Page<SandboxPolicy> pageObj = new Page<>(page, size);
         LambdaQueryWrapper<SandboxPolicy> wrapper = new LambdaQueryWrapper<SandboxPolicy>()
-                .eq(tenantId != null, SandboxPolicy::getTenantId, tenantId)
+                .in(SandboxPolicy::getTenantId, 0L, tenantId != null ? tenantId : 0L)
                 .eq(toolCode != null && !toolCode.isEmpty(), SandboxPolicy::getToolCode, toolCode)
                 .eq(enabled != null, SandboxPolicy::getEnabled, enabled)
                 .orderByDesc(SandboxPolicy::getId);

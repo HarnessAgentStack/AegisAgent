@@ -464,8 +464,8 @@ public class AegisRagMiddleware implements MiddlewareBase {
         sb.append("\n【重要约束】\n");
         sb.append("1. 严禁使用文件工具（list_files/glob_files/grep_files/read_file 等）在工作区搜索文档——"
                 + "工作区中不存在知识库文档。知识库内容仅通过本检索结果提供。\n");
-        sb.append("2. 代码执行必须使用 aegis_execute 工具（描述为\"Aegis 代码执行 - Python 计算与数据处理\"），"
-                + "该工具使用 Aegis 后台沙箱池，具备安全隔离和超时保护。\n");
+        sb.append("2. 代码执行必须使用 execute 工具（AgentScope ShellExecuteTool，可执行 Python/Bash/Node），"
+                + "该工具走框架 K8s 沙箱 Pod，具备安全隔离和超时保护。\n");
         sb.append("3. 必须参考以上【知识库检索结果】回答用户问题，明确引用检索结果中的观点和数据。"
                 + "若检索结果与问题无关，请直接基于自身知识回答，并说明检索未命中。\n");
         return sb.toString();
@@ -475,8 +475,8 @@ public class AegisRagMiddleware implements MiddlewareBase {
         return "\n\n【重要约束】"
                 + "1. 严禁使用文件工具（list_files/glob_files/grep_files/read_file 等）在工作区搜索文档——"
                 + "工作区中不存在知识库文档。"
-                + "2. 代码执行必须使用 aegis_execute 工具（描述为\"Aegis 代码执行 - Python 计算与数据处理\"），"
-                + "该工具使用 Aegis 后台沙箱池，具备安全隔离和超时保护。\n";
+                + "2. 代码执行必须使用 execute 工具（AgentScope ShellExecuteTool，可执行 Python/Bash/Node），"
+                + "该工具走框架 K8s 沙箱 Pod，具备安全隔离和超时保护。\n";
     }
 
     private static String detectSensitive(String text) {

@@ -10,6 +10,7 @@ import lombok.Getter;
 @Getter
 public enum ToolSourceType {
     BUILTIN("平台内置"),
+    HARNESS_FRAMEWORK("AgentScope框架内置"),
     MCP("MCP工具");
 
     private final String desc;

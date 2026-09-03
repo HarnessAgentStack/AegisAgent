@@ -61,16 +61,20 @@ public class SandboxPolicyResolver {
         // 防止未来改表结构后再次踩同样的坑。
         TenantContextHolder.bind(tenantId);
         try {
+            // 平台基线（tenant_id=0，种子预置 27 工具）+ 租户覆盖（tenant_id=X，管理页创建）合并：
+            // 先装平台行再装租户行，租户行按 toolCode 覆盖平台基线（与 admin 列表
+            // "in (0, tenantId)" 的展示语义及 update/delete 仅限本级行的权限语义对齐）。
             List<SandboxPolicy> list = sandboxPolicyMapper.selectList(
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SandboxPolicy>()
-                            .eq(SandboxPolicy::getTenantId, tenantId)
+                            .in(SandboxPolicy::getTenantId, 0L, tenantId)
                             .eq(SandboxPolicy::getEnabled, true)
+                            .orderByAsc(SandboxPolicy::getTenantId)
             );
             Map<String, Boolean> map = new HashMap<>();
             for (SandboxPolicy p : list) {
                 map.put(p.getToolCode(), p.getSandboxExecution());
             }
-            log.debug("SandboxPolicyResolver: 加载 tenantId={} 策略 {} 条", tenantId, map.size());
+            log.debug("SandboxPolicyResolver: 加载 tenantId={} 策略 {} 条（含平台基线）", tenantId, map.size());
             return map.isEmpty() ? null : map;
         } finally {
             TenantContextHolder.clear();

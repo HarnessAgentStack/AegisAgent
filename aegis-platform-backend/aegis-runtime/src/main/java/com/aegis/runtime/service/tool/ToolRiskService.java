@@ -261,6 +261,15 @@ public class ToolRiskService {
         switch (toolType) {
             case READONLY:
                 return RiskLevel.LOW;
+            case AGENT:
+                // 内部子智能体调度，无外部副作用
+                return RiskLevel.LOW;
+            case ASYNC:
+                // 内部后台任务调度（readOnly 短路已覆盖只读类，此处为写类默认）
+                return RiskLevel.LOW;
+            case FILE_OPS:
+                // 沙箱工作区内文件写操作（readOnly 短路已覆盖读类）
+                return RiskLevel.MEDIUM;
             case INTERNAL_API:
                 return RiskLevel.MEDIUM;
             case WRITE:

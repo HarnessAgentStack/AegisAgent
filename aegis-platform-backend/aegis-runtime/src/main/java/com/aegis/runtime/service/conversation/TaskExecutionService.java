@@ -519,6 +519,19 @@ public class TaskExecutionService {
                 if (toolCalls instanceof List) {
                     @SuppressWarnings("unchecked")
                     List<Map<String, Object>> tcList = (List<Map<String, Object>>) toolCalls;
+
+                    // 低风险自动放行：转换器判定全部工具无需审批（autoApproved=true）时，
+                    // 不置 PAUSED、不透传前端弹窗；直接构造 ConfirmResult（全 approve），
+                    // 下一轮对话经 buildResumeMessages 自然恢复执行。
+                    if (Boolean.TRUE.equals(data.get("autoApproved"))) {
+                        hitlFlowService.saveHitlRequest(ctx.getSessionId(),
+                                replyId != null ? String.valueOf(replyId) : null, tcList);
+                        hitlFlowService.markApproved(ctx.getSessionId());
+                        log.info("HITL 低风险自动放行（不弹审批卡）: sessionId={}, toolCount={}, maxRiskLevel={}",
+                                ctx.getSessionId(), tcList.size(), data.get("maxRiskLevel"));
+                        return Mono.empty();
+                    }
+
                     hitlFlowService.saveHitlRequest(ctx.getSessionId(),
                             replyId != null ? String.valueOf(replyId) : null, tcList);
                 }

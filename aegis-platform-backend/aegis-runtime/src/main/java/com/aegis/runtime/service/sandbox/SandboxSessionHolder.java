@@ -36,8 +36,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 跳过框架 create；未命中（首次沙箱工具）才调 {@code AegisSandboxClient.create}。
  * 会话结束 {@code releaseOnSessionEnd} 调 {@code AegisSandboxAllocator.release}（IDLE 复用不杀 Pod）。</p>
  *
- * <p>注：当前灰度 {@code aegis.sandbox.framework-drive.enabled=false} 默认关闭，
- * 本类缓存不激活（走 RemoteFS 现状）；灰度开启后由 {@code AegisExecuteTool} 等沙箱工具调用本类。</p>
+ * <p>注：{@code aegis.runtime.sandbox.framework-drive.enabled=true}（生产默认）时，
+ * 框架工具（execute / read_file / write_file 等）经 SandboxBackedFilesystem 走本类
+ * 委托的 AegisSandboxClient；自建 aegis_execute 已删除（与框架 ShellExecuteTool 重复）。</p>
  *
  * @author wang.zhen
  */
@@ -56,7 +57,8 @@ public class SandboxSessionHolder {
     /**
      * 按需获取沙箱：首次需沙箱才 create，会话内复用。
      *
-     * <p>纯对话会话永不调用本方法（由 {@link SandboxTrigger} 判定白名单工具才触发），
+     * <p>纯对话会话永不调用本方法（仅沙箱能力工具触发：execute / read_file /
+     * write_file / list_files / grep_files / glob_files / edit_file），
      * 因此纯对话真零容器。</p>
      *
      * @param sessionId 会话 ID

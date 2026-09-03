@@ -3,10 +3,8 @@ package com.aegis.core.dto.security;
 import com.aegis.core.dto.security.ToolRiskInfo.RiskLevel;
 import com.aegis.core.enums.resource.ToolType;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -16,11 +14,26 @@ import java.util.regex.Pattern;
  * <p>集中管理平台内置工具的静态风险配置，供 {@link com.aegis.runtime.service.ToolRiskService}
  * 查询与评估。内置工具的风险等级为代码硬编码，确保核心工具的风险基线不可被数据库配置覆盖。</p>
  *
- * <h3>内置工具风险分级</h3>
+ * <h3>工具清单来源（唯一权威对齐源）</h3>
+ * <p>与 HarnessAgent 装配时框架实际注册的工具全集精确对齐（见 runtime 日志
+ * {@code Toolkit: Registered tool '...'}），共 27 项：</p>
  * <ul>
- *   <li>read_file / search / list_files → LOW，无需审批</li>
- *   <li>write_file / network_request → MEDIUM，需审批</li>
- *   <li>execute_command / delete_file → HIGH，需审批</li>
+ *   <li>Aegis 自建（4）：web_search / image_search / generate_file / http_request</li>
+ *   <li>框架 Shell（1）：execute（framework-drive=true 时经沙箱执行）</li>
+ *   <li>框架 FilesystemTool 拆分（6）：read_file / write_file / list_files / grep_files / glob_files / edit_file</li>
+ *   <li>框架 Subagent/Task（7）：agent_spawn / agent_list / agent_send / task_list / task_cancel / task_output / wait_async_results</li>
+ *   <li>框架 Memory/Session（6）：memory_search / memory_get / memory_save / session_search / session_list / session_history</li>
+ *   <li>框架 Skill（2）：skill_creator / load_skill_through_path</li>
+ *   <li>MCP 场景兜底（1）：browser_use</li>
+ * </ul>
+ *
+ * <h3>风险分级原则</h3>
+ * <ul>
+ *   <li>只读查询（READONLY）→ LOW，无需审批</li>
+ *   <li>内部调度（AGENT/ASYNC 只读类）→ LOW，无需审批</li>
+ *   <li>写操作（write_file / edit_file / task_cancel / skill_creator）→ MEDIUM，需审批</li>
+ *   <li>代码执行（execute）→ MEDIUM + 审批（沙箱内执行，破坏性命令升级 CRITICAL）</li>
+ *   <li>HTTP 写方法 / browser_use → MEDIUM，需审批</li>
  * </ul>
  *
  * @author wang.zhen
@@ -35,77 +48,7 @@ public final class BuiltinToolRiskConfig {
     static {
         Map<String, ToolRiskInfo> map = new HashMap<>();
 
-        map.put("read_file", ToolRiskInfo.builder()
-                .toolName("read_file")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("读取文件内容，只读操作，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        map.put("search", ToolRiskInfo.builder()
-                .toolName("search")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("搜索查询，只读操作，无数据变更风险")
-                .category("query")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        map.put("list_files", ToolRiskInfo.builder()
-                .toolName("list_files")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("列出文件列表，只读操作，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        map.put("write_file", ToolRiskInfo.builder()
-                .toolName("write_file")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.MEDIUM)
-                .riskReason("写入文件，产生数据变更，需用户确认")
-                .category("file")
-                .needApproval(true)
-                .sandboxExecution(true)
-                .build());
-
-        map.put("execute_command", ToolRiskInfo.builder()
-                .toolName("execute_command")
-                .toolType(ToolType.CODE_EXEC)
-                .riskLevel(RiskLevel.HIGH)
-                .riskReason("执行系统命令，可能影响系统环境，需审批")
-                .category("system")
-                .needApproval(true)
-                .sandboxExecution(true)
-                .build());
-
-        map.put("delete_file", ToolRiskInfo.builder()
-                .toolName("delete_file")
-                .toolType(ToolType.HIGH_RISK)
-                .riskLevel(RiskLevel.HIGH)
-                .riskReason("删除文件，不可逆操作，需审批")
-                .category("file")
-                .needApproval(true)
-                .sandboxExecution(true)
-                .build());
-
-        map.put("network_request", ToolRiskInfo.builder()
-                .toolName("network_request")
-                .toolType(ToolType.EXTERNAL_NETWORK)
-                .riskLevel(RiskLevel.MEDIUM)
-                .riskReason("网络请求，存在数据出境风险，需审批")
-                .category("network")
-                .needApproval(true)
-                .sandboxExecution(false)
-                .build());
-
-        // ============ AgentScope 框架内置工具 ============
+        // ============ Aegis 自建工具（4） ============
 
         map.put("web_search", ToolRiskInfo.builder()
                 .toolName("web_search")
@@ -114,7 +57,7 @@ public final class BuiltinToolRiskConfig {
                 .riskReason("互联网搜索，只读查询，无数据变更风险")
                 .category("search")
                 .needApproval(false)
-                .sandboxExecution(true)
+                .sandboxExecution(false)
                 .build());
 
         map.put("image_search", ToolRiskInfo.builder()
@@ -124,7 +67,7 @@ public final class BuiltinToolRiskConfig {
                 .riskReason("图片搜索，只读查询，无数据变更风险")
                 .category("search")
                 .needApproval(false)
-                .sandboxExecution(true)
+                .sandboxExecution(false)
                 .build());
 
         // generate_file: 文档产出工具，用户主动请求，安全写操作
@@ -138,129 +81,6 @@ public final class BuiltinToolRiskConfig {
                 .sandboxExecution(false)
                 .build());
 
-        // file_write: 与 generate_file 类似，产出文件，安全写操作
-        map.put("file_write", ToolRiskInfo.builder()
-                .toolName("file_write")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("文件产出工具，安全写操作，无需审批")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // file_read: 读取文件内容，只读操作
-        map.put("file_read", ToolRiskInfo.builder()
-                .toolName("file_read")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("读取文件内容，只读操作，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // file_list: 列出文件列表，只读操作
-        map.put("file_list", ToolRiskInfo.builder()
-                .toolName("file_list")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("列出文件列表，只读操作，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // write_file: AgentScope 内置写入工具
-        map.put("write_file", ToolRiskInfo.builder()
-                .toolName("write_file")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("文件产出工具，安全写操作，无需审批")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // ============ AgentScope 框架内置工具 ============
-
-        // glob_files: 只读文件搜索
-        map.put("glob_files", ToolRiskInfo.builder()
-                .toolName("glob_files")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("文件搜索，只读查询，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // list_dir: 列出目录内容
-        map.put("list_dir", ToolRiskInfo.builder()
-                .toolName("list_dir")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("列出目录内容，只读操作，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // read_file_content: 读取文件内容
-        map.put("read_file_content", ToolRiskInfo.builder()
-                .toolName("read_file_content")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("读取文件内容，只读操作，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // write_file_content: 写入文件内容
-        map.put("write_file_content", ToolRiskInfo.builder()
-                .toolName("write_file_content")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("文件产出工具，安全写操作，无需审批")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // create_directory: 创建目录
-        map.put("create_directory", ToolRiskInfo.builder()
-                .toolName("create_directory")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("创建目录，安全操作，无需审批")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // move_file: 移动/重命名文件
-        map.put("move_file", ToolRiskInfo.builder()
-                .toolName("move_file")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("移动文件位置，无内容变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // copy_file: 复制文件
-        map.put("copy_file", ToolRiskInfo.builder()
-                .toolName("copy_file")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("复制文件，安全操作")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
         // http_request: 基础LOW，参数评估会根据HTTP方法动态调整
         map.put("http_request", ToolRiskInfo.builder()
                 .toolName("http_request")
@@ -272,6 +92,240 @@ public final class BuiltinToolRiskConfig {
                 .sandboxExecution(false)
                 .build());
 
+        // ============ 框架 ShellExecuteTool（1，framework-drive=true 时经沙箱 Pod 执行） ============
+
+        // execute: AgentScope ShellExecuteTool，K8s 沙箱 Pod 内执行 shell/python 命令。
+        // MEDIUM + 审批：沙箱隔离了宿主风险，但任意代码执行仍需用户知情确认。
+        map.put("execute", ToolRiskInfo.builder()
+                .toolName("execute")
+                .toolType(ToolType.CODE_EXEC)
+                .riskLevel(RiskLevel.MEDIUM)
+                .riskReason("AgentScope ShellExecuteTool，在 K8s 沙箱 Pod 内执行命令，需用户确认")
+                .category("code")
+                .needApproval(true)
+                .sandboxExecution(true)
+                .build());
+
+        // ============ 框架 FilesystemTool 拆分（6，走沙箱文件系统） ============
+
+        map.put("read_file", ToolRiskInfo.builder()
+                .toolName("read_file")
+                .toolType(ToolType.FILE_OPS)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("读取沙箱工作区文件内容，只读操作，无数据变更风险")
+                .category("file")
+                .needApproval(false)
+                .sandboxExecution(true)
+                .build());
+
+        map.put("list_files", ToolRiskInfo.builder()
+                .toolName("list_files")
+                .toolType(ToolType.FILE_OPS)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("列出沙箱工作区文件，只读操作，无数据变更风险")
+                .category("file")
+                .needApproval(false)
+                .sandboxExecution(true)
+                .build());
+
+        map.put("grep_files", ToolRiskInfo.builder()
+                .toolName("grep_files")
+                .toolType(ToolType.FILE_OPS)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("沙箱工作区文件内容搜索，只读查询，无数据变更风险")
+                .category("file")
+                .needApproval(false)
+                .sandboxExecution(true)
+                .build());
+
+        map.put("glob_files", ToolRiskInfo.builder()
+                .toolName("glob_files")
+                .toolType(ToolType.FILE_OPS)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("沙箱工作区文件模式搜索，只读查询，无数据变更风险")
+                .category("file")
+                .needApproval(false)
+                .sandboxExecution(true)
+                .build());
+
+        map.put("write_file", ToolRiskInfo.builder()
+                .toolName("write_file")
+                .toolType(ToolType.FILE_OPS)
+                .riskLevel(RiskLevel.MEDIUM)
+                .riskReason("写入沙箱工作区文件，产生数据变更，需用户确认")
+                .category("file")
+                .needApproval(true)
+                .sandboxExecution(true)
+                .build());
+
+        map.put("edit_file", ToolRiskInfo.builder()
+                .toolName("edit_file")
+                .toolType(ToolType.FILE_OPS)
+                .riskLevel(RiskLevel.MEDIUM)
+                .riskReason("编辑沙箱工作区已有文件内容，产生数据变更，需审批")
+                .category("file")
+                .needApproval(true)
+                .sandboxExecution(true)
+                .build());
+
+        // ============ 框架 Subagent / Task 工具（7） ============
+
+        map.put("agent_spawn", ToolRiskInfo.builder()
+                .toolName("agent_spawn")
+                .toolType(ToolType.AGENT)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("框架内部子智能体生成调度，无外部副作用，无需审批")
+                .category("agent")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("agent_list", ToolRiskInfo.builder()
+                .toolName("agent_list")
+                .toolType(ToolType.AGENT)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("列出子智能体，只读查询，无数据变更风险")
+                .category("agent")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("agent_send", ToolRiskInfo.builder()
+                .toolName("agent_send")
+                .toolType(ToolType.AGENT)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("向子智能体发送消息，内部调度，无外部副作用")
+                .category("agent")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("task_list", ToolRiskInfo.builder()
+                .toolName("task_list")
+                .toolType(ToolType.ASYNC)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("列出后台任务，只读查询，无数据变更风险")
+                .category("task")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("task_output", ToolRiskInfo.builder()
+                .toolName("task_output")
+                .toolType(ToolType.ASYNC)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("读取后台任务输出，只读查询，无数据变更风险")
+                .category("task")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("task_cancel", ToolRiskInfo.builder()
+                .toolName("task_cancel")
+                .toolType(ToolType.ASYNC)
+                .riskLevel(RiskLevel.MEDIUM)
+                .riskReason("取消正在运行的后台任务，产生执行中断副作用，需用户确认")
+                .category("task")
+                .needApproval(true)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("wait_async_results", ToolRiskInfo.builder()
+                .toolName("wait_async_results")
+                .toolType(ToolType.ASYNC)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("等待异步任务结果，内部调度，无外部副作用")
+                .category("task")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        // ============ 框架 Memory / Session 工具（6） ============
+
+        map.put("memory_search", ToolRiskInfo.builder()
+                .toolName("memory_search")
+                .toolType(ToolType.READONLY)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("记忆搜索，只读查询，无数据变更风险")
+                .category("memory")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("memory_get", ToolRiskInfo.builder()
+                .toolName("memory_get")
+                .toolType(ToolType.READONLY)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("读取记忆条目，只读查询，无数据变更风险")
+                .category("memory")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("memory_save", ToolRiskInfo.builder()
+                .toolName("memory_save")
+                .toolType(ToolType.WRITE)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("保存会话记忆，仅写入内部记忆库，不影响用户数据")
+                .category("memory")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("session_search", ToolRiskInfo.builder()
+                .toolName("session_search")
+                .toolType(ToolType.READONLY)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("会话搜索，只读查询，无数据变更风险")
+                .category("session")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("session_list", ToolRiskInfo.builder()
+                .toolName("session_list")
+                .toolType(ToolType.READONLY)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("列出历史会话，只读查询，无数据变更风险")
+                .category("session")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("session_history", ToolRiskInfo.builder()
+                .toolName("session_history")
+                .toolType(ToolType.READONLY)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("读取会话历史，只读查询，无数据变更风险")
+                .category("session")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        // ============ 框架 Skill 工具（2） ============
+
+        map.put("skill_creator", ToolRiskInfo.builder()
+                .toolName("skill_creator")
+                .toolType(ToolType.WRITE)
+                .riskLevel(RiskLevel.MEDIUM)
+                .riskReason("创建技能会注册新工具到系统，扩大后续执行能力，需审批")
+                .category("skill")
+                .needApproval(true)
+                .sandboxExecution(false)
+                .build());
+
+        map.put("load_skill_through_path", ToolRiskInfo.builder()
+                .toolName("load_skill_through_path")
+                .toolType(ToolType.READONLY)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("按路径加载技能，只读加载，无数据变更风险")
+                .category("skill")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        // ============ MCP 场景兜底（1） ============
+
         map.put("browser_use", ToolRiskInfo.builder()
                 .toolName("browser_use")
                 .toolType(ToolType.EXTERNAL_NETWORK)
@@ -280,114 +334,6 @@ public final class BuiltinToolRiskConfig {
                 .category("browser")
                 .needApproval(true)
                 .sandboxExecution(false)
-                .build());
-
-        map.put("code_interpreter", ToolRiskInfo.builder()
-                .toolName("code_interpreter")
-                .toolType(ToolType.CODE_EXEC)
-                .riskLevel(RiskLevel.HIGH)
-                .riskReason("代码解释器，在沙箱中执行代码，存在资源风险")
-                .category("code")
-                .needApproval(true)
-                .sandboxExecution(true)
-                .build());
-
-        map.put("task", ToolRiskInfo.builder()
-                .toolName("task")
-                .toolType(ToolType.INTERNAL_API)
-                .riskLevel(RiskLevel.MEDIUM)
-                .riskReason("子代理调度，消耗额外资源，需确认")
-                .category("agent")
-                .needApproval(true)
-                .sandboxExecution(false)
-                .build());
-
-        // grep_files: 只读内容搜索（框架内置）
-        map.put("grep_files", ToolRiskInfo.builder()
-                .toolName("grep_files")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("文件内容搜索，只读查询，无数据变更风险")
-                .category("file")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // edit_file: 修改已有文件内容，变更用户数据
-        map.put("edit_file", ToolRiskInfo.builder()
-                .toolName("edit_file")
-                .toolType(ToolType.WRITE)
-                .riskLevel(RiskLevel.MEDIUM)
-                .riskReason("编辑已有文件内容，产生数据变更，需审批")
-                .category("file")
-                .needApproval(true)
-                .sandboxExecution(true)
-                .build());
-
-        // aegis_execute: Aegis 代码执行入口（在 Aegis 后台沙箱池中执行，无高危风险，无需审批）
-        map.put("aegis_execute", ToolRiskInfo.builder()
-                .toolName("aegis_execute")
-                .toolType(ToolType.CODE_EXEC)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("在 Aegis 后台沙箱池中执行代码，环境隔离，无高危风险")
-                .category("code")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // execute: AgentScope 内置 shell 执行工具（保留配置，标记为低风险）
-        map.put("execute", ToolRiskInfo.builder()
-                .toolName("execute")
-                .toolType(ToolType.CODE_EXEC)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("AgentScope 内置 shell 执行工具，用于通用命令执行")
-                .category("code")
-                .needApproval(false)
-                .sandboxExecution(false)
-                .build());
-
-        // image_generation: AI 图像生成，只产出内容无外部副作用
-        map.put("image_generation", ToolRiskInfo.builder()
-                .toolName("image_generation")
-                .toolType(ToolType.INTERNAL_API)
-                .riskLevel(RiskLevel.MEDIUM)
-                .riskReason("AI 图像生成，消耗算力资源，只产出内容无外部副作用")
-                .category("media")
-                .needApproval(false)
-                .sandboxExecution(false)
-                .build());
-
-        // memory_search: 记忆搜索，只读查询（LLM可能产生的工具名）
-        map.put("memory_search", ToolRiskInfo.builder()
-                .toolName("memory_search")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("记忆搜索，只读查询，无数据变更风险")
-                .category("search")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // session_search: 会话搜索，只读查询（LLM可能产生的工具名）
-        map.put("session_search", ToolRiskInfo.builder()
-                .toolName("session_search")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("会话搜索，只读查询，无数据变更风险")
-                .category("search")
-                .needApproval(false)
-                .sandboxExecution(true)
-                .build());
-
-        // search_history: 历史搜索，只读查询（LLM可能产生的工具名）
-        map.put("search_history", ToolRiskInfo.builder()
-                .toolName("search_history")
-                .toolType(ToolType.READONLY)
-                .riskLevel(RiskLevel.LOW)
-                .riskReason("历史搜索，只读查询，无数据变更风险")
-                .category("search")
-                .needApproval(false)
-                .sandboxExecution(true)
                 .build());
 
         BUILTIN_TOOLS = Collections.unmodifiableMap(map);
@@ -431,7 +377,7 @@ public final class BuiltinToolRiskConfig {
      * <p>在基础风险信息上叠加参数级规则评估，例如：
      * <ul>
      *   <li>write_file 覆盖写配置文件 → 升级为 CRITICAL</li>
-     *   <li>execute_command 包含 rm/del → 升级为 CRITICAL</li>
+     *   <li>execute 包含 rm/del 等破坏性命令 → 升级为 CRITICAL</li>
      * </ul>
      *
      * @param name   工具名称
@@ -468,7 +414,8 @@ public final class BuiltinToolRiskConfig {
             }
         }
 
-        if ("execute_command".equals(name)) {
+        // execute（框架 ShellExecuteTool）：破坏性命令升级 CRITICAL
+        if ("execute".equals(name)) {
             Object cmdValue = params.get("command");
             if (cmdValue != null) {
                 String cmd = String.valueOf(cmdValue).toLowerCase();
