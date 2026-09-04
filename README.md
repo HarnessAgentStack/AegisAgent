@@ -1,4 +1,4 @@
-# Aegis
+# AegisAgent
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
@@ -26,8 +26,6 @@
 | JDK                 | 21+  | `JAVA_HOME` 或 PATH `java` | `aegis.conf` → `JAVA_HOME` |
 | Maven               | 3.9+ | `MVN_CMD` 或 PATH `mvn`    | `aegis.conf` → `MVN_CMD`   |
 | Node.js             | 18+  | PATH `node` / `npm`       | —                          |
-
-
 
 > Windows 下 Git Bash 无法调用 `mvn` 启动器，用 `aegis.ps1`（PowerShell）。
 
