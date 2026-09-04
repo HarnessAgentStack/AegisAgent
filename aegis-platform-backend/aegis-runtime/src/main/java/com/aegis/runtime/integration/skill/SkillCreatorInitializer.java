@@ -55,10 +55,10 @@ public class SkillCreatorInitializer implements CommandLineRunner {
                 // instructions 版本升级：旧 instructions 未包含"禁止调用 generate_file"约束，
                 // 导致 LLM 在 skill_creator 流程中误调 generate_file 生成文件。检测到旧版本时强制刷新。
                 String instr = existing.getInstructions();
-                if (instr == null || !instr.contains("禁止调用 generate_file")) {
+                if (instr == null || !instr.contains("SUBMIT 提交审核时机")) {
                     existing.setInstructions(buildDefaultInstructions());
                     needUpdate = true;
-                    log.info("skill_creator 检测到旧版 instructions，升级为含 generate_file 约束版本");
+                    log.info("skill_creator 检测到旧版 instructions，升级为含 SUBMIT 时机约束版本");
                 }
                 if (needUpdate) {
                     skillMapper.updateById(existing);

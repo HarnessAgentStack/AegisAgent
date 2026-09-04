@@ -278,6 +278,17 @@ public class SkillCreatorOrchestrator {
             return buildErrorResult("当前状态不可提交审核: " + skill.getLifeStatus());
         }
 
+        // 时间窗口保护：技能创建后 60 秒内拒绝自动提交审核。
+        // 防止 LLM 在 CREATE 后紧接着自动调 SUBMIT，导致用户还没看清草稿就被锁进 REVIEWING。
+        if (skill.getCreateTime() != null) {
+            long ageSec = java.time.Duration.between(skill.getCreateTime(), java.time.LocalDateTime.now()).getSeconds();
+            if (ageSec < 60) {
+                emitStage(events, "failed", "技能刚创建，请确认内容后再提交审核", 100);
+                log.warn("技能提交审核被时间窗口保护拦截: skillId={}, ageSec={}", skillId, ageSec);
+                return buildErrorResult("技能刚创建（" + ageSec + "秒前），请先确认内容无误后，由用户显式发起提交审核。");
+            }
+        }
+
         // 安全扫描（不静默，HIGH 风险阻断提交）
         SkillContentScanner.ScanResult scanResult = skillContentScanner.scan(skill);
         if (!scanResult.isPassed()) {

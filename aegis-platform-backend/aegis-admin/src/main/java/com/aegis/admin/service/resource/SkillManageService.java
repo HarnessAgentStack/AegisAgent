@@ -152,11 +152,17 @@ public class SkillManageService {
     @Transactional(rollbackFor = Exception.class)
     public void update(Long tenantId, Long userId, Long skillId, SkillUpdateRequest req) {
         Skill existing = requireSkill(skillId, tenantId, userId);
-        if (existing.getLifeStatus() == AgentLifeStatus.PUBLISHED
-                || existing.getLifeStatus() == AgentLifeStatus.REVIEWING
-                || existing.getLifeStatus() == AgentLifeStatus.ARCHIVED) {
+        // REVIEWING 状态：作者本人修改放行（创作者在审核期间仍可完善草稿）。
+        // PUBLISHED/ARCHIVED 仍严格阻断。
+        boolean isAuthor = existing.getAuthorUserId() != null && existing.getAuthorUserId().equals(userId);
+        AgentLifeStatus status = existing.getLifeStatus();
+        if (status == AgentLifeStatus.PUBLISHED || status == AgentLifeStatus.ARCHIVED) {
             throw new BusinessException(ResultCode.CONFLICT,
-                    "技能当前状态不可修改: " + existing.getLifeStatus());
+                    "技能当前状态不可修改: " + status);
+        }
+        if (status == AgentLifeStatus.REVIEWING && !isAuthor) {
+            throw new BusinessException(ResultCode.CONFLICT,
+                    "技能审核中，仅作者本人可修改: " + status);
         }
 
         LambdaUpdateWrapper<Skill> wrapper = new LambdaUpdateWrapper<Skill>()

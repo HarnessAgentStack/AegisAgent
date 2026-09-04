@@ -103,17 +103,17 @@ public class AgentApiRuntimeController {
             case "API_KEY" -> {
                 // 通过 X-API-Key 哈希查找
                 if (apiKey == null || apiKey.isBlank()) {
-                    return Result.fail(ResultCode.UNAUTHORIZED, "缺少 X-API-Key Header");
+                    return Result.fail(ResultCode.FORBIDDEN, "缺少 X-API-Key Header");
                 }
                 String hash = HashUtils.sha256(apiKey);
                 apiKeyEntity = agentApiKeyMapper.findActiveByHash(hash);
                 if (apiKeyEntity == null) {
                     log.warn("Invalid API key hash: {}", hash);
-                    return Result.fail(ResultCode.UNAUTHORIZED, "无效的 API Key");
+                    return Result.fail(ResultCode.FORBIDDEN, "无效的 API Key");
                 }
                 if (apiKeyEntity.getExpiresAt() != null && apiKeyEntity.getExpiresAt().isBefore(LocalDateTime.now())) {
                     log.warn("API key expired: keyId={}", apiKeyEntity.getId());
-                    return Result.fail(ResultCode.UNAUTHORIZED, "API Key 已过期");
+                    return Result.fail(ResultCode.FORBIDDEN, "API Key 已过期");
                 }
                 api = agentApiMapper.selectById(apiKeyEntity.getApiId());
                 if (api == null) {
@@ -149,14 +149,14 @@ public class AgentApiRuntimeController {
                 }
             }
             default -> {
-                return Result.fail(ResultCode.UNAUTHORIZED, "不支持的鉴权方式: " + authType);
+                return Result.fail(ResultCode.FORBIDDEN, "不支持的鉴权方式: " + authType);
             }
         }
 
         // 2. 检查 API 状态
         if (api.getStatus() != CommonStatus.NORMAL) {
             log.warn("API disabled: apiId={}, status={}", api.getId(), api.getStatus());
-            return Result.fail(ResultCode.UNAUTHORIZED, "API 已禁用");
+            return Result.fail(ResultCode.FORBIDDEN, "API 已禁用");
         }
 
         // 3. Schema 校验（如果配置了 requestSchema）
@@ -310,10 +310,10 @@ public class AgentApiRuntimeController {
             String hash = HashUtils.sha256(apiKey);
             AgentApiKey keyEntity = agentApiKeyMapper.findActiveByHash(hash);
             if (keyEntity == null) {
-                return Result.fail(ResultCode.UNAUTHORIZED, "无效的 API Key");
+                return Result.fail(ResultCode.FORBIDDEN, "无效的 API Key");
             }
             if (keyEntity.getExpiresAt() != null && keyEntity.getExpiresAt().isBefore(LocalDateTime.now())) {
-                return Result.fail(ResultCode.UNAUTHORIZED, "API Key 已过期");
+                return Result.fail(ResultCode.FORBIDDEN, "API Key 已过期");
             }
             api = agentApiMapper.selectById(keyEntity.getApiId());
         } else if (authorization != null && authorization.startsWith("Bearer ")) {
