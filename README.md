@@ -104,17 +104,16 @@ Spring Cloud Gateway                      :8080
 
 ### 运行时中间件
 
-5 个中间件实现 `MiddlewareBase`，经 Spring 注入 `List<MiddlewareBase>` 按 `order()` 降序装配到 `HarnessAgent.Builder`。order 越大越外层：
+6 个中间件实现 `MiddlewareBase`，经 Spring 注入 `List<MiddlewareBase>` 按 `order()` 降序装配到 `HarnessAgent.Builder`。order 越大越外层：
 
 | order | 类 | 拦截点 | 作用 |
 |---|---|---|---|
 | 95 | `AegisTraceMiddleware` | onAgent / onReasoning / onActing / onModelCall | TraceId 贯穿、Span 记录 |
-| 85 | `SandboxRoutingMiddleware` | onActing | 读 `sec_sandbox_policy` 判定工具是否进沙箱，仅判定 + 审计 |
-| 70 | `AegisRagMiddleware` | onSystemPrompt | 知识库检索，片段注入系统提示词 |
-| 50 | `AegisMaskMiddleware` | — | 输出脱敏 |
+| 85 | `SandboxRoutingMiddleware` | onActing | 读 `sec_sandbox_policy` 判定工具沙箱策略，审计"策略白配"（强制进但工具无沙箱路径） |
+| 75 | `BindingSyncMiddleware` | onAgent | 绑定指纹比对与 Workspace 重物化，Phase 2 精简后直接实现 `MiddlewareBase` 纳入洋葱链 |
+| 70 | `AegisRagMiddleware` | onSystemPrompt | 知识库 HYBRID 检索，片段注入系统提示词 |
+| 50 | `AegisMaskMiddleware` | — | 输出脱敏（唯一无替代的输出安全中间件） |
 | 30 | `AegisAuditLogMiddleware` | onActing | 审计日志 |
-
-绑定同步（`BindingSyncMiddleware`）不在洋葱链内，位于 `integration/workspace` 包，在装配阶段由 `AgentAssemblyService` 调用，用于绑定指纹比对与 Workspace 重物化。
 
 工具安全决策不在中间件，由 AgentScope 原生 `PermissionEngine` 承担，规则经 `AegisPermissionRuleLoader` 从 `sec_tool_policy` 装载（未命中时等级直映：L1/L2→ALLOW，L3→ASK，L4→DENY）。
 
