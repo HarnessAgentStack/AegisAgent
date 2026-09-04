@@ -22,11 +22,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 对话请求校验器（Web 层门控）。
+ * 对话请求前置校验（Web 层门控）。
  *
- * <p>收口所有请求前置校验：参数完整性、身份合法性、附件合法性、并发互斥、replyId 去重。
- * 校验通过返回 {@code Mono.empty()}，校验失败抛出 {@link ChatValidationException}。
- *
+ * <p>校验项：参数完整性 → 身份合法性 → 附件（数量/大小/归属）→ 用户状态 →
+ * 并发互斥 → replyId 去重。通过返回 {@code Mono.empty()}，失败抛 {@link ChatValidationException}。
  *
  * @author wang.zhen
  */
@@ -50,10 +49,7 @@ public class ChatRequestValidator {
     private static final int MAX_FILE_SIZE_KB = 50 * 1024;
 
     /**
-     * 校验请求。
-     *
-     * <p>校验顺序：参数完整性 → 身份合法性 → 附件合法性 → 并发互斥 → replyId 去重。
-     * 任一失败抛出 {@link ChatValidationException}。
+     * 执行全部校验。前 3 项纯内存同步执行；用户状态 / 并发 / 附件归属需查 DB，切 boundedElastic。
      *
      * @param request 对话请求
      * @return 校验通过返回 {@code Mono.empty()}
@@ -77,12 +73,11 @@ public class ChatRequestValidator {
             return Mono.error(new ChatValidationException(attachmentQuickError));
         }
 
-        // 4. 并发互斥 + 用户状态 + 附件归属校验 + replyId 去重（需 DB 查询，切到 boundedElastic）
+        // 4. 用户状态 + 并发互斥 + 附件归属（需 DB 查询，切到 boundedElastic）
         return Mono.fromCallable(() -> {
-                    // boundedElastic 线程无租户上下文（validate 早于 TaskExecutionService 绑定），
-                    // 手动绑定请求租户供 DB 校验读取；finally 清理防止线程池复用导致上下文泄漏。
-                    // 不绑定时 fail-closed 插件会抛异常：UserStatusCache 每次 fail-open（禁用拦截失效）、
-                    // 附件归属/并发校验直接报错
+                    // 本方法早于 TaskExecutionService 绑定租户，需手动绑定供 MyBatis 租户插件读取。
+                    // 不绑定时：fail-closed 插件直接报错，或 UserStatusCache fail-open 导致禁用拦截失效。
+                    // 必须 finally 清理，否则线程归还池后残留租户会污染下一请求。
                     TenantContextHolder.bind(request.getTenantId());
                     try {
                         checkUserStatus(request);
@@ -98,16 +93,13 @@ public class ChatRequestValidator {
     }
 
     /**
-     * 参数校验：agentId 非空。
-     *
-     * <p>HITL 审批恢复场景下，消息可以为空（由 TaskExecutionService 注入 ConfirmResult）；
-     * 仅在没有 sessionId 的新会话请求中要求消息非空。
+     * 参数校验：agentId 必填；message 仅在新会话（无 sessionId）时必填——
+     * HITL 恢复场景由 {@code HitlFlowService.buildResumeMessages} 注入内容，允许空消息。
      */
     private AgentEvent checkParameters(ChatRequest request) {
         if (request.getAgentId() == null) {
             return AgentEvent.of("error", Map.of("code", "PARAM_ERROR", "message", "agentId 不能为空"));
         }
-        // HITL 审批恢复场景：有 sessionId 时允许空消息（由 hitlFlowService.buildResumeMessages 注入 ConfirmResult）
         boolean isHitlResume = request.getSessionId() != null && !request.getSessionId().isEmpty();
         if (!isHitlResume && (request.getMessage() == null || request.getMessage().isEmpty())) {
             return AgentEvent.of("error", Map.of("code", "PARAM_ERROR", "message", "消息内容不能为空"));
@@ -168,13 +160,8 @@ public class ChatRequestValidator {
     }
 
     /**
-     * 附件归属校验（需要 DB 查询，在 boundedElastic 线程池执行）。
-     *
-     * <p>校验项：
-     * <ul>
-     *   <li>fileId 非空</li>
-     *   <li>FileStorageService.getRef(fileId, tenantId, userId) 返回非 null（即文件存在且归属匹配）</li>
-     * </ul>
+     * 附件归属校验：先按 (fileId, tenantId, userId) 精确匹配；失败时二次查询区分
+     * "不存在"与"跨租户/跨用户越权"，避免向客户端泄露归属信息。
      *
      * @throws ChatValidationException 校验失败时抛出
      */
@@ -187,7 +174,6 @@ public class ChatRequestValidator {
         Long userId = request.getUserId();
 
         for (AttachmentRef att : attachments) {
-            // fileId 非空
             if (att.getFileId() == null || att.getFileId().isEmpty()) {
                 log.warn("附件缺少 fileId: name={}", att.getName());
                 throw new ChatValidationException(AgentEvent.of("error", Map.of(
@@ -196,10 +182,9 @@ public class ChatRequestValidator {
                         "filename", att.getName() != null ? att.getName() : "unknown")));
             }
 
-            // 查询文件元数据 + 归属校验
+            // 精确匹配（存在 + 归属）；不匹配时二次查询区分错误类型
             AttachmentRef actualRef = fileStorageService.getRef(att.getFileId(), tenantId, userId);
             if (actualRef == null) {
-                // 判断是"文件不存在"还是"跨租户/跨用户"
                 AttachmentRef rawRef = fileStorageService.getRef(att.getFileId());
                 if (rawRef == null) {
                     log.warn("附件 fileId 不存在: fileId={}", att.getFileId());
@@ -220,15 +205,9 @@ public class ChatRequestValidator {
     /**
      * 并发互斥：同一会话已有活跃 SSE 流时拒绝新请求。
      *
-     * <p>判定逻辑（四层防御）：
-     * <ol>
-     *   <li>主动清理僵尸 sink（心跳超时的），清理后若 sink 不存在则放行</li>
-     *   <li>若 sink 存在但 DB 状态为非活跃态（PAUSED/ENDED/EXCEPTION/INTERRUPTED/EXPIRED），
-     *       清理残留 sink 后放行</li>
-     *   <li>若 sink 存在且心跳已停止更新超过 30 秒（可能是卡死或清理失败），
-     *       强制清理后放行</li>
-     *   <li>若 sink 存在、心跳正常且 DB 状态为活跃态，说明是真正运行中的任务，拒绝并返回可恢复信息</li>
-     * </ol>
+     * <p>放行条件（任一成立即放行）：无活跃 sink、DB 会话处于非活跃态、心跳超 30s 未更新。
+     * 三者皆不成立才判为真正运行中的任务并拒绝，返回 {@code recoverable=true}
+     * 供前端提示用户先中断。
      */
     private void checkConcurrency(ChatRequest request) {
         String existingSessionId = request.getSessionId();
@@ -236,14 +215,14 @@ public class ChatRequestValidator {
             return;
         }
 
-        // 1. 主动清理一次僵尸 sink（心跳超时的），防止客户端断连后 sink 残留误判
+        // 先清理一次僵尸 sink（心跳超时），防止客户端断连后 sink 残留误判
         interruptSignalManager.cleanupStaleSinks();
 
         if (!interruptSignalManager.isRunning(existingSessionId)) {
             return;
         }
 
-        // 2. 有活跃 sink，检查会话状态是否为非活跃
+        // 放行条件 1：sink 存在但 DB 会话已非活跃 → 清理残留 sink
         Session existingSession = sessionManageService.getSession(existingSessionId, request.getTenantId());
         if (existingSession != null && isInactiveStatus(existingSession.getStatus())) {
             log.warn("清理非活跃会话残留 sink 后放行: sessionId={}, status={}",
@@ -252,7 +231,7 @@ public class ChatRequestValidator {
             return;
         }
 
-        // 3. 检查心跳年龄，若超过 30 秒未更新，强制清理（防止清理失败导致的僵尸会话）
+        // 放行条件 2：心跳超 30s 未更新 → 视为卡死，强制清理
         long heartbeatAge = interruptSignalManager.getHeartbeatAgeMs(existingSessionId);
         if (heartbeatAge > 30_000) {
             log.warn("心跳超时（{}ms），强制清理残留 sink 后放行: sessionId={}",
@@ -261,7 +240,7 @@ public class ChatRequestValidator {
             return;
         }
 
-        // 4. sink 存在、心跳正常且 DB 为活跃态 → 真正运行中的任务，拒绝
+        // 三个条件都不成立 → 真正运行中的任务，拒绝
         log.warn("并发 SSE 流拒绝: sessionId={}, userId={}, agentId={}, heartbeatAge={}ms",
                 existingSessionId, request.getUserId(), request.getAgentId(), heartbeatAge);
         throw new ChatValidationException(AgentEvent.of("error", Map.of(
@@ -281,7 +260,7 @@ public class ChatRequestValidator {
         }
 
         String existingSessionId = request.getSessionId();
-        // P2-10：dedup key 插入 tenantId 段，新会话("new")场景下不同租户客户端撞 replyId 不再互相拒绝。
+        // dedup key 携带 tenantId 段：新会话（"new"）场景下不同租户撞 replyId 不再互相拒绝
         Long tenantId = request.getTenantId();
         String tenantSegment = tenantId != null ? "t" + tenantId + ":" : "";
         String dedupKey = REPLY_DEDUP_KEY_PREFIX + tenantSegment

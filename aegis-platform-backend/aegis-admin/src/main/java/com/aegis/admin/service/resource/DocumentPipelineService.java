@@ -175,45 +175,48 @@ public class DocumentPipelineService {
         float[][] vectors = embeddingService.embedBatch(chunks);
         boolean embeddingAvailable = vectors != null && vectors.length > 0 && vectors[0].length > 0;
 
+        // R-8 诚实状态：向量化失败的三种情形（嵌入服务不可用 / 向量库不可用 / upsert 异常）
+        // 一律标记 FAILED + 原因，不再"假成功"（原逻辑会标 CHUNKED+完成，导致"处理完成但检索不到"）。
+        // 切片仍落库供关键词检索 + 用户重试时复用。
+        boolean vectorOk = false;
         if (!embeddingAvailable) {
-            log.warn("嵌入服务不可用，文档将跳过向量化: docId={}", docId);
-            progressService.completeStep(docId, ProcessStep.EMBEDDING, "嵌入服务不可用，跳过");
-            saveChunks(docId, chunks, strategy, kb);
+            log.warn("嵌入服务不可用，文档将标记 FAILED: docId={}", docId);
+            progressService.failStep(docId, ProcessStep.EMBEDDING, "嵌入服务不可用");
+        } else {
+            progressService.completeStep(docId, ProcessStep.EMBEDDING, "嵌入完成");
+            // Step 5: 向量入库
+            progressService.startStep(docId, ProcessStep.VECTORING, "向量写入中...");
+            List<IVectorStore.VectorRecord> records = buildVectorRecords(docId, doc.getFileName(), kb.getKbName(), chunks, vectors);
+            if (!vectorStoreAvailable) {
+                log.warn("向量存储不可用，文档将标记 FAILED: docId={}", docId);
+                progressService.failStep(docId, ProcessStep.VECTORING, "向量存储不可用");
+            } else {
+                try {
+                    vectorStore.upsert(tenantId, collection, records);
+                    progressService.completeStep(docId, ProcessStep.VECTORING, "向量入库完成");
+                    vectorOk = true;
+                } catch (Exception e) {
+                    log.error("向量入库失败，文档将标记 FAILED（可重试）: docId={}, error={}", docId, e.getMessage(), e);
+                    progressService.failStep(docId, ProcessStep.VECTORING, e.getMessage());
+                }
+            }
+        }
+
+        // 持久化切片（无论向量化是否成功，切片落库供关键词检索 + 用户重试时复用）
+        saveChunks(docId, chunks, strategy, kb);
+
+        if (vectorOk) {
             updateStatus(docId, DocumentStatus.CHUNKED, chunks.size(), scanResult);
             updateKbDocCount(kbId, 1);
             progressService.markCompleted(docId, kbId);
-            log.info("文档处理完成（仅切片，无向量）: docId={}, chunks={}", docId, chunks.size());
-            return;
-        }
-        progressService.completeStep(docId, ProcessStep.EMBEDDING, "嵌入完成");
-
-        // Step 5: 向量入库
-        progressService.startStep(docId, ProcessStep.VECTORING, "向量写入中...");
-        List<IVectorStore.VectorRecord> records = buildVectorRecords(docId, doc.getFileName(), kb.getKbName(), chunks, vectors);
-
-        if (vectorStoreAvailable) {
-            try {
-                vectorStore.upsert(tenantId, collection, records);
-                progressService.completeStep(docId, ProcessStep.VECTORING, "向量入库完成");
-            } catch (Exception e) {
-                log.warn("向量入库失败，文档可手动重试: docId={}, error={}", docId, e.getMessage());
-                progressService.failStep(docId, ProcessStep.VECTORING, e.getMessage());
-            }
+            log.info("文档处理完成: tenantId={}, kbId={}, docId={}, chunks={}",
+                    tenantId, kbId, docId, chunks.size());
         } else {
-            log.warn("向量存储不可用，跳过向量入库: docId={}", docId);
-            progressService.failStep(docId, ProcessStep.VECTORING, "向量存储不可用");
+            markFailed(docId, "向量化未完成（嵌入服务或向量库不可用），该文档暂无法被语义检索，请重试");
+            progressService.markFailed(docId, kbId, "向量化失败");
+            log.warn("文档处理未完成（向量化失败，已诚实标记 FAILED）: tenantId={}, kbId={}, docId={}",
+                    tenantId, kbId, docId);
         }
-
-        // 持久化切片
-        saveChunks(docId, chunks, strategy, kb);
-
-        // 更新状态
-        updateStatus(docId, DocumentStatus.CHUNKED, chunks.size(), scanResult);
-        updateKbDocCount(kbId, 1);
-        progressService.markCompleted(docId, kbId);
-
-        log.info("文档处理完成: tenantId={}, kbId={}, docId={}, chunks={}",
-                tenantId, kbId, docId, chunks.size());
     }
 
     /**
@@ -305,6 +308,8 @@ public class DocumentPipelineService {
                     new String(bytes, StandardCharsets.UTF_8);
             case "DOCX" -> parseDocx(bytes);
             case "PDF" -> parsePdf(bytes);
+            // R-10: 补齐 Office 解析分支，杜绝落 extractPrintableText 生成乱码垃圾向量静默污染知识库
+            case "XLSX", "XLS", "PPTX", "PPT", "DOC" -> parseOffice(bytes, type);
             default -> {
                 String text = new String(bytes, StandardCharsets.UTF_8);
                 if (text.chars().filter(c -> (c > 31 && c < 127) || c > 160).count() > text.length() * 0.7) {
@@ -313,6 +318,27 @@ public class DocumentPipelineService {
                 yield extractPrintableText(bytes);
             }
         };
+    }
+
+    /**
+     * R-10: 统一 Office 文档解析（XLSX/XLS/PPTX/PPT/DOC）。
+     *
+     * <p>使用 POI ExtractorFactory 自动识别格式并提取文本，
+     * 需 poi-ooxml（OOXML）+ poi-scratchpad（老格式）双依赖。
+     * 失败时降级 extractPrintableText 并告警，便于运维介入。
+     */
+    private String parseOffice(byte[] bytes, String type) {
+        try (java.io.InputStream is = new java.io.ByteArrayInputStream(bytes)) {
+            org.apache.poi.extractor.POITextExtractor extractor =
+                    org.apache.poi.extractor.ExtractorFactory.createExtractor(is);
+            String text = extractor.getText();
+            if (text != null) text = text.trim();
+            log.info("Office 文本提取成功: type={}, chars={}", type, text != null ? text.length() : 0);
+            return text != null ? text : "";
+        } catch (Exception e) {
+            log.warn("Office 解析失败({}), 降级可打印字符提取: {}", type, e.getMessage());
+            return extractPrintableText(bytes);
+        }
     }
 
     /**

@@ -124,6 +124,12 @@
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
         </dependency>
+        <!-- R-10: poi-scratchpad 提供 HSSF(XLS)/HWPF(DOC)/HSLF(PPT) 老格式解析（poi-ooxml 只覆盖 OOXML） -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-scratchpad</artifactId>
+            <version>${poi.version}</version>
+        </dependency>
 
         <!-- Spring AI MCP Client (WebFlux) - 用于查询 MCP Server 工具列表 -->
         <dependency>

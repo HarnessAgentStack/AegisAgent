@@ -188,14 +188,13 @@ public class AegisRagMiddleware implements MiddlewareBase {
             kbEntityMap.put(kb.getId(), kb);
         }
 
-        // 9. 执行 RAG 检索
+        // 9. 执行 RAG 检索（R-7：QueryRewrite 已在本中间件 L172 单次完成，retrieve 不再内层改写）
         List<Map<String, Object>> allRefs = new ArrayList<>();
         Set<Long> pendingDocIds = new LinkedHashSet<>();
-        List<String> historyForRetrieve = recentHistory != null ? recentHistory : Collections.emptyList();
         for (Long kbId : kbIds) {
             try {
                 List<Map<String, Object>> results = ragRetrieveService.retrieve(
-                        tenantId, kbId, effectiveQuery, 0, historyForRetrieve);
+                        tenantId, kbId, effectiveQuery, 0);
                 if (results != null && !results.isEmpty()) {
                     KnowledgeBase kb = kbEntityMap.get(kbId);
                     String kbName = kb != null ? kb.getKbName() : null;
@@ -458,8 +457,15 @@ public class AegisRagMiddleware implements MiddlewareBase {
             String content = ref.get("content") != null ? ref.get("content").toString() : "";
             Double score = ref.get("score") instanceof Number n ? n.doubleValue() : null;
             Long kbId = ref.get("kbId") instanceof Number n ? n.longValue() : null;
-            sb.append(String.format("%d. [知识库#%s, 相似度=%.3f] %s\n",
-                    i + 1, kbId != null ? kbId : "?", score != null ? score : 0.0, truncate(content, 200)));
+            // R-1 量纲标签：rerankScore→重排分；rrfScore→融合分；否则相似度
+            // （RRF 分 ~0.016 量纲标注为"相似度"会令 LLM 判定完全不相关而忽略检索结果）
+            String scoreLabel = ref.containsKey("rerankScore") ? "重排分"
+                    : ref.containsKey("rrfScore") ? "融合分"
+                    : "相似度";
+            // R-2 单条截断 200→500（中文约 250 字，避免关键结论被腰斩）
+            sb.append(String.format("%d. [知识库#%s, %s=%.3f] %s\n",
+                    i + 1, kbId != null ? kbId : "?", scoreLabel,
+                    score != null ? score : 0.0, truncate(content, 500)));
         }
         sb.append("\n【重要约束】\n");
         sb.append("1. 严禁使用文件工具（list_files/glob_files/grep_files/read_file 等）在工作区搜索文档——"

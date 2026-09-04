@@ -26,11 +26,8 @@ import io.agentscope.core.message.ContentBlock;
 /**
  * Aegis 任务执行上下文。
  *
- * <p>贯穿中间件链路与任务执行全流程，承载请求、智能体配置、会话信息与运行时状态。
+ * <p>贯穿装配、中间件链路与流式执行全流程，承载请求、智能体配置、会话信息与运行时状态。
  * 中间件通过修改本上下文实现租户注入、配额预扣、内容过滤等能力。
- *
- * <p>重命名说明：原 {@code TaskContext} 与 AgentScope {@code RuntimeContext} 命名易混淆，
- * 已迁移至 {@code domain/context/} 包，重命名为 {@code AegisTaskContext}。
  *
  * @author wang.zhen
  */
@@ -108,56 +105,55 @@ public class AegisTaskContext implements Serializable {
     /** 沙箱实例ID（由 SandboxLifecycleMiddleware 注入） */
     private String sandboxInstanceId;
 
-    /** P5-5：沙箱隔离策略，由 ChatRequest 透传 */
+    /** 沙箱隔离策略（ChatRequest 透传） */
     private IsolationStrategy isolationStrategy;
 
-    /** P0：是否需要沙箱环境（仅标记，实际分配由 AgentScope 内部 Coordinator 完成） */
+    /** 是否需要沙箱环境（仅标记，实际分配由 AgentScope 内部 Coordinator 完成） */
     private boolean sandboxRequired;
 
     /** 是否被中间件拦截 */
     private boolean blocked;
-
     /** 拦截原因 */
     private String blockReason;
 
     /**
-     * P0 @SKILL：本次请求显式引用的技能列表（来自 {@link ChatRequest#getSkills()}）。
-     * 装配期写入 {@code RuntimeContext} 的 {@code aegis.requestedSkills} 属性，供
-     * {@code RuntimeContextSkillRepository} 强制包含。
+     * 本次请求显式引用的技能列表（{@link ChatRequest#getSkills()}）。
+     * 装配期写入 {@code RuntimeContext} 的 {@code aegis.requestedSkills} 属性，
+     * 供 {@code RuntimeContextSkillRepository} 强制包含。
      */
     private List<SkillRef> requestedSkills;
 
     /**
-     * P1 会话级资源引用（来自 {@link ChatRequest#getResources()}）。
-     * 允许用户在对话中临时选择知识库和MCP服务，仅本次会话生效。
+     * 会话级资源引用（{@link ChatRequest#getResources()}）：
+     * 用户在对话中临时选择的知识库与 MCP 服务，仅本次会话生效。
      */
     private SessionResourcesRef sessionResources;
 
     /**
-     * P0 @SKILL：被驳回（不可见/不存在/无权限）的技能 code 列表，
+     * 被驳回（不可见/不存在/无权限）的技能 code 列表，
      * 用于向用户发出 {@code skill.rejected} 事件反馈。
      */
     private List<String> rejectedSkillCodes;
 
-    /** NATIVE_PASS 图片多模态内容块（由 AgentAssemblyService 构造，供 TaskExecutionService 注入 UserMessage） */
+    /** 多模态图片内容块（AgentAssemblyService 构造，TaskExecutionService 注入 UserMessage） */
     private transient List<ContentBlock> multimodalBlocks;
 
-    /** 已构建的 HarnessAgent 实例（由 AgentAssemblyService 统一装配，消除 prepareContext 与 runLlmStream 的割裂） */
+    /** 已装配的 HarnessAgent 实例（AgentAssemblyService 装配产出） */
     private transient HarnessAgent agent;
 
-    /** AgentScope RuntimeContext（由 AgentAssemblyService 统一构建，供 streamEvents 直接使用） */
+    /** AgentScope 运行时上下文（AgentAssemblyService 构建产出，供 streamEvents 使用） */
     private transient RuntimeContext runtimeContext;
 
     /**
-     * 流式输出累积缓冲（由 AegisMemoryMiddleware 在 onAgent 创建并通过 doOnNext 累积 TextBlockDeltaEvent）。
-     * 供 AegisMaskMiddleware 在 doFinally 只读消费做输出安全审计，消除两中间件各自维护 StringBuilder
-     * 对同一份 delta 的重复累积。
+     * 流式输出累积缓冲：由 AegisMemoryMiddleware 在 onAgent 创建并累积 TextBlockDeltaEvent，
+     * 供 AegisMaskMiddleware 在 doFinally 只读消费做输出安全审计，
+     * 避免两个中间件各自维护 StringBuilder 重复累积同一份 delta。
      */
     private transient StringBuilder assistantReplyBuffer;
 
-    // ==================== 安全运行时治理（v4.0 新增） ====================
+    // ==================== 安全运行时治理 ====================
 
-    /** 治理档位（从 AgentDef.governanceTier 透传） */
+    /** 治理档位（AgentDef.governanceTier 透传） */
     private GovernanceTier governanceTier;
 
     /** 智能体安全等级（用于 level-matrix 评估） */
@@ -166,26 +162,20 @@ public class AegisTaskContext implements Serializable {
     /** 累计阻断次数（用于升级决策） */
     private int blockCount;
 
-    /** 工具安全等级元数据（toolCode → SecurityLevel，由 AegisToolBridge 注入） */
+    /** 工具安全等级元数据（toolCode → SecurityLevel，AegisToolBridge 注入） */
     private Map<String, SecurityLevel> toolSecurityLevels;
 
-    /**
-     * 获取治理档位，安全获取（兼容 null）。
-     */
+    /** 获取治理档位（null 时回退 {@link GovernanceTier#STANDARD}）。 */
     public GovernanceTier getGovernanceTier() {
         return governanceTier != null ? governanceTier : GovernanceTier.STANDARD;
     }
 
-    /**
-     * 获取智能体安全等级，安全获取。
-     */
+    /** 获取智能体安全等级（null 时回退 {@link SecurityLevel#L1}）。 */
     public SecurityLevel getAgentLevel() {
         return agentLevel != null ? agentLevel : SecurityLevel.L1;
     }
 
-    /**
-     * 获取工具安全等级。
-     */
+    /** 获取工具安全等级（未注册返回 null）。 */
     public SecurityLevel getToolSecurityLevel(String toolCode) {
         if (toolSecurityLevels == null || toolCode == null) return null;
         return toolSecurityLevels.get(toolCode);
@@ -194,25 +184,18 @@ public class AegisTaskContext implements Serializable {
     /**
      * onActing 直接发起的 HITL 审批请求（兜底落库用）。
      *
-     * <p>安全中间件 onActing 在命中未知/MCP 工具默认审批或通配符 HitlNode 时，
-     * 构造 hitl.request 事件并存入此处；{@code TaskExecutionService.streamExecution} 的
-     * doFinally 读取它统一落库 + 置 PAUSED，确保即使该事件未途经流事件转换也能可审批、可恢复。
-     * 旧版 {@code setPendingApproval} 为死字段（无消费者、导致会话卡死），已由本机制替代。
+     * <p>安全中间件 onActing 命中未知/MCP 工具默认审批或通配符 HitlNode 时，
+     * 构造 hitl.request 事件并存入此处；{@code TaskExecutionService} 的 doFinally
+     * 读取它统一落库 + 置 PAUSED，确保即使该事件未途经流事件转换也可审批、可恢复。
      */
     private transient Map<String, Object> pendingHitlRequest;
 
-    /**
-     * 暂存 onActing 直接发起的 HITL 审批请求（单次消费）。
-     */
+    /** 暂存 onActing 直接发起的 HITL 审批请求（单次写入）。 */
     public void setPendingHitlRequest(Map<String, Object> request) {
         this.pendingHitlRequest = request;
     }
 
-    /**
-     * 取出并清空 onActing 直接发起的 HITL 审批请求（幂等消费）。
-     *
-     * @return 审批请求 data（含 replyId/toolCalls），无则返回 null
-     */
+    /** 取出并清空 HITL 审批请求（幂等消费），无则返回 null。 */
     public Map<String, Object> takePendingHitlRequest() {
         Map<String, Object> r = this.pendingHitlRequest;
         this.pendingHitlRequest = null;

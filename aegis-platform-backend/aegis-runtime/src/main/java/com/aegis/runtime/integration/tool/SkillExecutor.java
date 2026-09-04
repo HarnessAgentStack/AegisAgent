@@ -68,9 +68,9 @@ public class SkillExecutor {
     private final AegisBuiltinTools aegisBuiltinTools;
     private final AegisHttpTool aegisHttpTool;
 
-    /** AegisBuiltinTools 提供的工具编码集合（@Tool 注解方法） */
+    /** AegisBuiltinTools 提供的工具编码集合（@Tool 注解方法，技能可调用） */
     private static final Set<String> BUILTIN_ANNOTATED_TOOLS = Set.of(
-            "generate_file", "web_search");
+            "generate_file", "web_search", "image_search", "web_fetch");
 
     /** P1 CMD-04 修复：当前线程的沙箱实例ID（供无法直接传参的调用链路透传） */
     private static final ThreadLocal<String> CURRENT_SANDBOX_INSTANCE_ID = new ThreadLocal<>();

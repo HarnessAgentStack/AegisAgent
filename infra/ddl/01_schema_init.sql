@@ -835,7 +835,7 @@ CREATE TABLE `res_knowledge_base` (
   `chunk_size` int DEFAULT NULL COMMENT '切片大小，每段最大字符数，取值范围100-4000，默认500',
   `chunk_overlap` int DEFAULT NULL COMMENT '切片重叠量，相邻切片重叠字符数，取值范围0-500，默认50',
   `embedding_model` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '嵌入模型标识，如doubao-embedding-vision、bge-large-zh、text-embedding-3-large，取值需为模型管理中已启用的EMBEDDING模型',
-  `retrieval_strategy` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'VECTOR' COMMENT '检索策略，取值：VECTOR（向量检索）/ KEYWORD（关键词）/ HYBRID（混合检索）',
+  `retrieval_strategy` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'HYBRID' COMMENT '检索策略，取值：VECTOR（向量检索）/ KEYWORD（关键词）/ HYBRID（混合检索，默认：向量+关键词 RRF 融合，专有名词兜底召回）',
   `top_k` int DEFAULT NULL COMMENT 'Top-K值，检索返回的最大切片数，取值范围1-20，默认5',
   `similarity_threshold` decimal(20,4) DEFAULT NULL COMMENT '相似度阈值，0-1之间，低于阈值的切片将被过滤；应用层默认0.40（COSINE量纲因嵌入模型而异：doubao系列建议0.40，BGE系列建议0.75）',
   `enable_rerank` tinyint(1) DEFAULT NULL COMMENT '是否启用Rerank重排序，true时对初步检索结果二次排序提升相关性',

@@ -75,8 +75,8 @@ INSERT IGNORE INTO `org_user_role` (`id`, `tenant_id`, `user_id`, `role_id`, `re
 -- 11. 内置工具 res_tool：BUILTIN 工具（tenant_id=0 平台内置）
 -- -----------------------------------------------------------------------------
 -- 权威对齐源：BuiltinToolRiskConfig（与 HarnessAgent 装配时框架实际注册的工具全集一致，
--- 见 runtime 日志 "Toolkit: Registered tool '...'"），共 27 项：
---   Aegis 自建（4）    ：web_search / image_search / generate_file / http_request
+-- 见 runtime 日志 "Toolkit: Registered tool '...'"），共 28 项：
+--   Aegis 自建（5）    ：web_search / image_search / web_fetch / generate_file / http_request
 --   框架 Shell（1）    ：execute（framework-drive=true 时经 K8s 沙箱 Pod 执行）
 --   框架 Filesystem（6）：read_file / write_file / list_files / grep_files / glob_files / edit_file
 --   框架 Subagent/Task（7）：agent_spawn / agent_list / agent_send / task_list / task_cancel / task_output / wait_async_results
@@ -122,7 +122,9 @@ INSERT IGNORE INTO res_tool (id, tenant_id, tool_code, tool_name, description, t
 (3140, 0, 'skill_creator',            '技能创建', '框架 skill_creator 元技能，创建技能会注册新工具，需审批', 'WRITE', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0),
 (3141, 0, 'load_skill_through_path', '技能加载', '框架 LoadSkillThroughPathTool，按路径加载技能', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0),
 -- ===== MCP 场景兜底（1） =====
-(3150, 0, 'browser_use', '浏览器操作', '浏览器 MCP 接入时的自动化操作工具，需审批', 'EXTERNAL_NETWORK', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0);
+(3150, 0, 'browser_use', '浏览器操作', '浏览器 MCP 接入时的自动化操作工具，需审批', 'EXTERNAL_NETWORK', 'BUILTIN', 0, 'L3', 'NORMAL', 1, NOW(), 0),
+-- ===== Aegis 自建 - web_fetch（网页正文抓取，W-2，配合 web_search 读取原文） =====
+(3151, 0, 'web_fetch', '网页正文抓取', 'Jsoup 正文抽取 + SSRF 防护 + maxChars 截断，配合 web_search 读取原文', 'READONLY', 'BUILTIN', 1, 'L1', 'NORMAL', 1, NOW(), 0);
 
 
 -- -----------------------------------------------------------------------------
@@ -187,7 +189,7 @@ INSERT IGNORE INTO `sec_outbound_policy` (`id`, `tenant_id`, `policy_type`, `dom
 -- -----------------------------------------------------------------------------
 -- 17. 沙箱策略 sec_sandbox_policy：系统工具沙箱执行策略（tenant_id=0 全局）
 -- -----------------------------------------------------------------------------
--- 与 BuiltinToolRiskConfig.sandboxExecution 精确对齐（27 工具全覆盖）：
+-- 与 BuiltinToolRiskConfig.sandboxExecution 精确对齐（28 工具全覆盖）：
 --   sandbox_execution=1 → 框架 SandboxLifecycleMiddleware 驱动 K8s 沙箱 Pod
 --                         （execute + 6 个文件工具，共 7 项）
 --   sandbox_execution=0 → 宿主安全执行（自建工具走 Java 实现 + SSRF 防护；
@@ -210,6 +212,7 @@ INSERT INTO sec_sandbox_policy (id, tenant_id, tool_code, sandbox_execution, des
 (202, 0, 'image_search',  0, '自建 - Bing 直连 + SSRF 防护',         1, 1, NOW(), 0),
 (203, 0, 'generate_file', 0, '自建 - 宿主 POI 生成 + MinIO 持久化',   1, 1, NOW(), 0),
 (204, 0, 'http_request',  0, '自建 - 宿主 HttpClient + SSRF 内网拦截（GET 只读/写方法审批）', 1, 1, NOW(), 0),
+(205, 0, 'web_fetch',     0, '自建 - 宿主 Jsoup 正文抓取 + SSRF 防护', 1, 1, NOW(), 0),
 -- ===== 框架 Subagent / Task（内部调度，无外部副作用） =====
 (301, 0, 'agent_spawn',        0, '框架 AgentSpawnTool - 内部子智能体调度', 1, 1, NOW(), 0),
 (302, 0, 'agent_list',         0, '框架 AgentListTool - 列出子智能体',      1, 1, NOW(), 0),

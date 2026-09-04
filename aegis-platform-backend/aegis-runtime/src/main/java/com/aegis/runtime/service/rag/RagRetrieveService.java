@@ -9,7 +9,6 @@ import com.aegis.core.domain.resource.KnowledgeBase;
 import com.aegis.core.spi.EmbeddingService;
 import com.aegis.core.spi.IVectorStore;
 import com.aegis.dal.mapper.resource.KnowledgeBaseMapper;
-import com.aegis.runtime.service.intent.QueryRewriteService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,7 +36,7 @@ import java.util.stream.Collectors;
  * <h3>检索流程</h3>
  * <ol>
  *   <li>查询 KnowledgeBase 配置（含三字段）</li>
- *   <li>若 enableQueryRewrite → 调用 {@link QueryRewriteService#resolveCoreference} 改写 query</li>
+ *   <li>QueryRewrite 改写已上移至 AegisRagMiddleware 中间件层单次完成（R-7），本服务直接消费 effectiveQuery</li>
  *   <li>按 retrievalStrategy 路由：
  *     VECTOR → {@link IVectorStore#search}
  *     KEYWORD → {@link KeywordRetrieveService#keywordRetrieve}
@@ -52,7 +51,7 @@ import java.util.stream.Collectors;
  *   <li>阻塞式 JDBC：使用 MyBatis-Plus BaseMapper，不使用响应式</li>
  *   <li>租户隔离：检索前设置 TenantContext，确保向量集合按租户隔离</li>
  *   <li>LLM 依赖全部 try-catch 降级，保证检索主链路不因 LLM 不可用而中断</li>
- *   <li>接口兼容性：保留旧签名 retrieve(tenantId, kbId, query, topK) 委托给新方法</li>
+ *   <li>接口收敛（R-7）：唯一 4 参签名 retrieve(tenantId, kbId, query, topK)，QueryRewrite 由中间件完成</li>
  * </ul>
  *
  * @author wang.zhen
@@ -60,7 +59,6 @@ import java.util.stream.Collectors;
  * @see IVectorStore
  * @see KeywordRetrieveService
  * @see RerankService
- * @see QueryRewriteService
  */
 @Slf4j
 @Service
@@ -70,7 +68,6 @@ public class RagRetrieveService {
     private final IVectorStore vectorStore;
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final EmbeddingService embeddingService;
-    private final QueryRewriteService queryRewriteService;
     private final KeywordRetrieveService keywordRetrieveService;
     private final RerankService rerankService;
 
@@ -84,32 +81,19 @@ public class RagRetrieveService {
     /** RRF 融合平滑常数，标准值 60 */
     private static final double RRF_K = 60.0;
 
-    // ===== 旧签名重载（保持接口兼容） =====
-
-    /**
-     * RAG 语义检索（兼容旧调用方）。
-     *
-     * @deprecated 建议使用 {@link #retrieve(Long, Long, String, int, List)} 传入对话历史
-     */
-    @Deprecated
-    public List<Map<String, Object>> retrieve(Long tenantId, Long kbId, String query, int topK) {
-        return retrieve(tenantId, kbId, query, topK, Collections.emptyList());
-    }
-
-    // ===== 新签名主入口 =====
-
     /**
      * RAG 语义检索（主入口）。
      *
-     * @param tenantId      租户ID
-     * @param kbId          知识库ID
-     * @param query         用户查询文本
-     * @param topK          返回条数（<=0 时使用知识库配置值）
-     * @param recentHistory 最近对话历史（按时间正序），供 QueryRewrite 共指消解使用；可为空列表
+     * <p>R-7 改写收敛：QueryRewrite 已由 {@link com.aegis.runtime.integration.middleware.AegisRagMiddleware}
+     * 在中间件层单次完成，本方法不再内层改写，避免双倍 LLM 延迟与二次改写语义漂移。
+     *
+     * @param tenantId 租户ID
+     * @param kbId     知识库ID
+     * @param query    用户查询文本（中间件已改写则传入 effectiveQuery）
+     * @param topK     返回条数（<=0 时使用知识库配置值）
      * @return 检索结果列表，每条含 docId、content、score、chunkIndex
      */
-    public List<Map<String, Object>> retrieve(Long tenantId, Long kbId, String query,
-                                              int topK, List<String> recentHistory) {
+    public List<Map<String, Object>> retrieve(Long tenantId, Long kbId, String query, int topK) {
         // 设置租户上下文（供 MyBatis-Plus 多租户插件读取）。
         // 保存调用方已绑定的上下文（如租户隔离中间件在 onAgent 入口绑定的租户），
         // 检索结束后恢复——finally 直接 clear() 会清空调用方的租户上下文，
@@ -138,14 +122,8 @@ public class RagRetrieveService {
                 }
             }
 
-            // 2. QueryRewrite：共指消解
+            // R-7：QueryRewrite 已收敛到 AegisRagMiddleware 中间件层单次完成，此处直接用传入 query
             String effectiveQuery = query;
-            if (Boolean.TRUE.equals(kb.getEnableQueryRewrite())) {
-                effectiveQuery = queryRewriteService.resolveCoreference(query, recentHistory, tenantId);
-                if (!query.equals(effectiveQuery)) {
-                    log.debug("QueryRewrite 改写: 原始=[{}], 改写=[{}]", query, effectiveQuery);
-                }
-            }
 
             // 3. 按 retrievalStrategy 路由召回
             String strategy = kb.getRetrievalStrategy();

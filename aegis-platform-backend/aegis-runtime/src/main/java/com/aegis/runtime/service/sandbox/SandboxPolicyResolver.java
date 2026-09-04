@@ -47,6 +47,29 @@ public class SandboxPolicyResolver {
         return tenantMap.get(toolCode);
     }
 
+    /**
+     * 批量筛选给定工具集合中需要进沙箱的工具编码。
+     * 仅返回 sec_sandbox_policy 中 sandbox_execution=true 且 enabled=true 的工具。
+     * 未配置或 false 的不进沙箱（与"配置不走或没配的都不走"诉求对齐）。
+     */
+    public java.util.Set<String> resolveSandboxTools(Long tenantId, java.util.Set<String> toolCodes) {
+        if (tenantId == null || toolCodes == null || toolCodes.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+        Map<String, Boolean> tenantMap = policyCache.get(tenantId, this::loadTenantPolicies);
+        if (tenantMap == null || tenantMap.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+        java.util.Set<String> sandboxTools = new java.util.HashSet<>();
+        for (String code : toolCodes) {
+            Boolean exec = tenantMap.get(code);
+            if (Boolean.TRUE.equals(exec)) {
+                sandboxTools.add(code);
+            }
+        }
+        return sandboxTools;
+    }
+
     /** 主动失效（供 SecurityConfigPublisher 事件回调） */
     public void invalidate(Long tenantId) {
         policyCache.invalidate(tenantId);

@@ -1,0 +1,39 @@
+# SearXNG 配置 — Aegis web_search 后端
+# 关键项：search.formats 必须包含 json，否则 Aegis searchViaCustomApi 无法结构化解析
+use_default_settings: true
+
+general:
+  instance_name: "Aegis SearXNG"
+  debug: false
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "zh-CN"
+
+server:
+  secret_key: "aegis-searxng-secret-2026"
+  bind_address: "0.0.0.0"
+  port: 8080
+  limiter: false
+  image_proxy: false
+
+# 国内网络可达的引擎：bing + wikipedia；被屏蔽引擎全部禁用避免 timeout 拖慢响应
+engines:
+  - name: bing
+    disabled: false
+    timeout: 10
+  - name: wikipedia
+    disabled: false
+    timeout: 10
+  - name: google
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true

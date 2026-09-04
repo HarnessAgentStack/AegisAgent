@@ -59,6 +59,10 @@ public class AegisHttpTool extends ToolBase {
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
+    /** W-5/W-6 公共 SSRF 校验器（字段注入：本类因继承 ToolBase 用显式 super 构造，不便构造注入） */
+    @org.springframework.beans.factory.annotation.Autowired
+    private UrlSafetyChecker urlSafetyChecker;
+
     /**
      * 构造函数：通过 {@link ToolBase#builder()} 描述工具元数据。
      *
@@ -78,22 +82,6 @@ public class AegisHttpTool extends ToolBase {
                         + "- 内置 SSRF 防护：禁止访问内网地址和 file/ftp 协议。\n"
                         + "参数: url（必填）、method（可选，默认 GET）、headers（可选）。\n"
                         + "返回: {status, url, result}。")
-                .inputSchema(INPUT_SCHEMA));
-    }
-
-    /**
-     * 带自定义名称的构造函数，用于创建别名工具（如 network_request）。
-     *
-     * @param toolName 工具名称
-     */
-    public AegisHttpTool(String toolName) {
-        super(ToolBase.builder()
-                .name(toolName)
-                .description("【网络请求 - 发送HTTP请求】\n"
-                        + "触发场景: 需要向外部服务发送HTTP请求。\n"
-                        + "安全限制: 禁止访问内网地址（127.0.0.1, localhost, 10.x.x.x等）。\n"
-                        + "参数: url（必填）, method（可选，默认GET）, headers（可选）, body（可选）。\n"
-                        + "返回: HTTP响应（状态码、响应头、响应体）。")
                 .inputSchema(INPUT_SCHEMA));
     }
 
@@ -122,8 +110,8 @@ public class AegisHttpTool extends ToolBase {
         }
         String url = String.valueOf(urlObj);
 
-        // 1. SSRF 基础防护
-        String violation = checkUrlSafety(url);
+        // 1. SSRF 基础防护（W-6 委托公共 UrlSafetyChecker）
+        String violation = urlSafetyChecker.check(url);
         if (violation != null) {
             log.warn("http_request SSRF 拦截: url={}, reason={}", url, violation);
             return Mono.just(PermissionDecision.deny("URL blocked: " + violation));
@@ -170,8 +158,8 @@ public class AegisHttpTool extends ToolBase {
                     + "请使用 GET 方法查询信息，或使用专用工具执行写操作。"));
         }
 
-        // 二次 SSRF 校验（双保险）
-        String violation = checkUrlSafety(url);
+        // 二次 SSRF 校验（双保险，W-6 委托公共 UrlSafetyChecker）
+        String violation = urlSafetyChecker.check(url);
         if (violation != null) {
             log.warn("http_request callAsync SSRF 拦截: url={}, reason={}", url, violation);
             return Mono.just(errorResult(toolCallId, "URL blocked: " + violation));
@@ -272,64 +260,5 @@ public class AegisHttpTool extends ToolBase {
                 ToolResultState.ERROR);
     }
 
-    /**
-     * 校验 URL 安全性（SSRF 防护）。
-     *
-     * <p>P0 CMD-03/SEC-03 修复：废弃 contains 字符串匹配，改用 DNS 解析 + InetAddress
-     * 精确判定，防止十进制/十六进制/八进制 IP、IPv6 本地、0.0.0.0、DNS rebinding 绕过。
-     *
-     * @param url 待校验 URL
-     * @return 违规原因，{@code null} 表示安全
-     */
-    private String checkUrlSafety(String url) {
-        if (url == null || url.isEmpty()) {
-            return "empty url";
-        }
-        URI uri;
-        try {
-            uri = new URI(url);
-        } catch (java.net.URISyntaxException e) {
-            return "invalid url format";
-        }
-        String scheme = uri.getScheme();
-        if (scheme == null) {
-            return "missing url scheme";
-        }
-        // P0 SEC-03 修复：仅允许 http/https，拒绝 file/ftp/gopher 等
-        String lowerScheme = scheme.toLowerCase();
-        if (!"http".equals(lowerScheme) && !"https".equals(lowerScheme)) {
-            return "protocol '" + lowerScheme + "' is not allowed, only http/https";
-        }
-        String host = uri.getHost();
-        if (host == null || host.isEmpty()) {
-            // P0 SEC-03 修复：host 为空（如 file:///etc/passwd）直接拒绝
-            return "missing or empty host";
-        }
-        // P0 CMD-03 修复：DNS 解析 host 为 IP，逐个校验是否为内网/回环地址
-        try {
-            java.net.InetAddress[] addresses = java.net.InetAddress.getAllByName(host);
-            for (java.net.InetAddress addr : addresses) {
-                if (isForbiddenAddress(addr)) {
-                    return "access to internal/loopback address is forbidden: "
-                            + addr.getHostAddress() + " (resolved from " + host + ")";
-                }
-            }
-        } catch (java.net.UnknownHostException e) {
-            return "unable to resolve host: " + host;
-        }
-        return null;
-    }
-
-    /**
-     * 判断 IP 地址是否为禁止访问的内网/回环地址。
-     *
-     * <p>覆盖：回环、私有段（10/172.16-31/192.168）、链路本地、任意本地、多播、IPv6 回环。
-     */
-    private boolean isForbiddenAddress(java.net.InetAddress addr) {
-        return addr.isLoopbackAddress()      // 127.x.x.x, ::1
-                || addr.isAnyLocalAddress()   // 0.0.0.0, ::
-                || addr.isSiteLocalAddress()  // 10.x, 172.16-31.x, 192.168.x
-                || addr.isLinkLocalAddress()  // 169.254.x.x, fe80::
-                || addr.isMulticastAddress(); // 224.0.0.0/4, ff00::
-    }
 }
+

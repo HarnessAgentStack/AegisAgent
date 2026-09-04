@@ -122,13 +122,19 @@ public class AegisAgentInstanceManager {
     @Value("${aegis.runtime.sandbox.enabled:false}")
     private boolean sandboxEnabled;
 
-    /** P2 周期2：框架驱动沙箱灰度开关，默认 false 走 RemoteFS（现状零差异），true 走 AegisSandboxFilesystemSpec */
+    /** @deprecated 已由 sec_sandbox_policy 按工具粒度驱动取代（configureFilesystem 按 Toolkit 筛选沙箱工具）。
+     *  保留 @Value 绑定避免 application.yml 中残留配置项触发 unknown-property 警告，逻辑不再读取 */
+    @Deprecated
     @Value("${aegis.runtime.sandbox.framework-drive.enabled:false}")
     private boolean sandboxFrameworkDriveEnabled;
 
     /** P2 周期2：Aegis 沙箱客户端（桥接 admin 池 allocator），灰度开启时用于构建 SandboxFilesystemSpec */
     @Autowired
     private AegisSandboxClient aegisSandboxClient;
+
+    /** 沙箱命令策略解析器：装配期按 sec_sandbox_policy 判定 Toolkit 中哪些工具需进沙箱 */
+    @Autowired
+    private com.aegis.runtime.service.sandbox.SandboxPolicyResolver sandboxPolicyResolver;
 
     /** 实例池，读操作无锁并发，结构变更用写锁互斥 */
     private final ConcurrentHashMap<String, AgentEntry> pool = new ConcurrentHashMap<>();
@@ -527,9 +533,10 @@ public class AegisAgentInstanceManager {
         IsolationScope isolationScope = resolveIsolationScope(agentType);
         HarnessAgent.Builder builder = configureAgentBuilder(agentId, sysPrompt, toolkit, isolationScope, tenantId, modelTier, permissionContext, agentConfig);
 
-        // 4. 配置文件系统（沙箱 or Remote）：传递 sessionId 派生命名空间、agentType 供池路由
+        // 4. 配置文件系统（按 sec_sandbox_policy 驱动）：传递 resources 供策略解析器按绑定工具筛选沙箱
+        //    （resources.enabledBindings 含 DB 绑定的全部 tool_code，包括框架内置 execute/read_file 等）
         FilesystemConfig fsConfig = configureFilesystem(builder, isolationScope, tenantId, userId, agentId,
-                sessionId, isolationStrategy, agentType);
+                sessionId, isolationStrategy, agentType, toolkit, resources);
 
         HarnessAgent agent = builder.build();
         // ★ Phase 1.2: AgentEntry 携带 poolKey + bindingFingerprint，用于池命中后的懒刷新判定
@@ -686,43 +693,34 @@ public class AegisAgentInstanceManager {
                 .model(modelId)
                 .toolkit(toolkit)
                 .distributedStore(distributedStore)
-                // Phase 1.2 收敛：启用框架内置 ShellExecuteTool("execute") + FilesystemTool("filesystem")。
-                // framework-drive.enabled=true 时文件系统是 SandboxBackedFilesystem（implements AbstractSandboxFilesystem），
-                // 框架 HarnessAgent.Builder 会自动注册这两个工具；
-                // 它们的 execute/read_file/write_file/list_files 全部走 SandboxLifecycleMiddleware -> AegisSandboxClient -> K8s Pod，
-                // 沙箱生命周期（acquire/release/session 复用）由框架原生管理。
-                // 自建 AegisExecuteTool / SandboxTrigger / SandboxToolHandler 已删除（与框架工具重复造轮子）。
-                // framework-drive.enabled=false 走 RemoteFilesystemSpec（CompositeFilesystem），框架本来就不会注册 shell/fs 工具，此处无副作用。
-                // 不调用 .disableShellTool() / .disableFilesystemTools()
-                // 注册 Aegis 技能仓库 + 启用技能中间件，
                 // HarnessSkillMiddleware 会自动把可见技能注入系统提示词的 <available_skills> 段落。
                 .skillRepository(skillRepository)
                 .skillsEnabled(true)
-                // Phase 3：maxIters 优先取 AgentConfig.maxTurns，null 回退全局 @Value 默认
+                // maxIters 优先取 AgentConfig.maxTurns，null 回退全局 @Value 默认
                 .maxIters(agentConfig != null && agentConfig.getMaxTurns() != null
                         ? agentConfig.getMaxTurns() : maxIters)
                 .agentId(String.valueOf(agentId))
-                // 中间件链由 AgentScope 内核按 order 降序驱动（Phase 2 精简后直接注入 List）
+                // 中间件链由 AgentScope 内核按 order 降序驱动
                 .middlewares(standaloneMiddlewares)
-                // Phase 3：压缩配置由 AgentConfig.compactionThreshold / memoryFlushStrategy 驱动
+                // 压缩配置由 AgentConfig.compactionThreshold / memoryFlushStrategy 驱动
                 .compaction(buildCompactionConfig(agentConfig))
                 .toolResultEviction(ToolResultEvictionConfig.defaults())
                 .maxRetries(3)
                 .maxContextTokens(100_000)
                 .permissionContext(permissionContext);
-        // Phase 3：memoryFlushStrategy != NONE 时启用 AS 内置记忆钩子；
+        // memoryFlushStrategy != NONE 时启用 AS 内置记忆钩子；
         // 否则禁用（跨会话记忆由 AegisMemoryMiddleware 在应用层异步处理）
         if (!shouldEnableMemory(agentConfig)) {
             builder.disableMemoryHooks();
         }
-        // Phase 3：enablePlanMode 由 AgentConfig 驱动（默认关闭）
+        // enablePlanMode 由 AgentConfig 驱动（默认关闭）
         if (agentConfig != null && Boolean.TRUE.equals(agentConfig.getEnablePlanMode())) {
             builder.enablePlanMode();
         }
         return builder;
     }
 
-    /** Phase 3：根据 AgentConfig 构建上下文压缩配置。 */
+    /** 根据 AgentConfig 构建上下文压缩配置。 */
     private CompactionConfig buildCompactionConfig(AgentConfig agentConfig) {
         Integer threshold = (agentConfig != null) ? agentConfig.getCompactionThreshold() : null;
         if (threshold == null || threshold <= 0) {
@@ -783,30 +781,74 @@ public class AegisAgentInstanceManager {
                                                   long tenantId, long userId, long agentId,
                                                   String sessionId,
                                                   IsolationStrategy isolationStrategy,
-                                                  String agentType) {
-        // P2 周期2：sandbox.framework-drive.enabled=true 时走 AegisSandboxFilesystemSpec，
-        // 框架自动从 spec 构建 SandboxManager + SandboxLifecycleMiddleware 装入 HarnessAgent；
-        // 否则走 RemoteFilesystemSpec（现状零差异）。
-        if (sandboxFrameworkDriveEnabled) {
+                                                  String agentType,
+                                                  Toolkit toolkit,
+                                                  com.aegis.runtime.service.agent.AssemblyResourceContext resources) {
+        // 按 sec_sandbox_policy 驱动：仅当 Agent 绑定的工具中存在 sandbox_execution=true 的工具时，
+        // 才注入 AegisSandboxFilesystemSpec（框架自动注册 SandboxLifecycleMiddleware + 动态分配沙箱 Pod +
+        // 自动注册 execute/read_file 等框架内置沙箱工具）；
+        // 否则走 RemoteFilesystemSpec —— 框架不注册 SandboxLifecycleMiddleware，不 acquire 沙箱，不占资源。
+        //
+        // 决策源用 resources.enabledBindings 中 TOOL 类型绑定的 resource_id 批量查 res_tool 获取 tool_code
+        // （含框架内置 execute 等的 tool_code）。不能用 toolkit.getToolNames()——框架内置沙箱工具在 build()
+        // 之后才由框架自动注册，configureFilesystem 调用时 toolkit 尚不含它们。
+        Set<String> boundToolCodes = resolveBoundToolCodes(resources);
+        Set<String> sandboxToolCodes = sandboxPolicyResolver.resolveSandboxTools(tenantId, boundToolCodes);
+
+        if (!sandboxToolCodes.isEmpty()) {
             AegisSandboxFilesystemSpec sandboxFsSpec = AegisSandboxFilesystemSpec.forContext(
                     aegisSandboxClient, snapshotSpec, agentType,
                     tenantId, userId, agentId, sessionId);
             builder.filesystem(sandboxFsSpec);
-            String slotKey = sandboxFsSpec.getIsolationScope() != null
-                    ? "aegis:" + tenantId + ":" + (isolationScope == IsolationScope.USER
-                            ? "user:" + userId : "agent:" + agentId) : null;
-            log.info("文件系统配置(框架驱动沙箱): agentId={}, scope={}, agentType={}, slotKey={}",
-                    agentId, isolationScope, agentType, slotKey);
+            String slotKey = "aegis:" + tenantId + ":" + (isolationScope == IsolationScope.USER
+                    ? "user:" + userId : "agent:" + agentId);
+            log.info("文件系统配置(按策略驱动沙箱): agentId={}, scope={}, agentType={}, slotKey={}, boundTools={}, sandboxTools={}",
+                    agentId, isolationScope, agentType, slotKey, boundToolCodes.size(), sandboxToolCodes);
             return new FilesystemConfig(true, slotKey);
         }
 
-        // 现状路径：纯 RemoteFS（sandboxFrameworkDriveEnabled=false 默认）
-        log.info("文件系统配置(纯 RemoteFS): agentId={}, scope={}, agentType={}, sandboxEnabled={}",
-                agentId, isolationScope, agentType, sandboxEnabled);
+        // 无沙箱工具 → 纯 RemoteFS（框架不注册 SandboxLifecycleMiddleware，不 acquire 沙箱）
+        log.info("文件系统配置(无沙箱工具走 RemoteFS): agentId={}, scope={}, agentType={}, boundToolCount={}",
+                agentId, isolationScope, agentType, boundToolCodes.size());
         RemoteFilesystemSpec fsSpec = new RemoteFilesystemSpec()
                 .isolationScope(isolationScope);
         builder.filesystem(fsSpec);
         return new FilesystemConfig(false, null);
+    }
+
+    /**
+     * 从装配期资源上下文提取 Agent 绑定的全部工具编码集合（含框架内置 execute/read_file 等）。
+     * <p>复用 resourceQueryService.findToolsByIds 批量预载（与 AegisToolBridge.doResolveTools 同源），
+     * 避免重复 DB 查询设计：此处查询结果仅用于沙箱决策，不注册到 Toolkit。
+     */
+    private Set<String> resolveBoundToolCodes(com.aegis.runtime.service.agent.AssemblyResourceContext resources) {
+        if (resources == null || resources.enabledBindings() == null) {
+            return java.util.Collections.emptySet();
+        }
+        List<Long> toolIds = resources.enabledBindings().stream()
+                .filter(b -> b != null && b.getResourceType() != null
+                        && b.getResourceType().name().equals("TOOL"))
+                .map(AgentBinding::getResourceId)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        if (toolIds.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+        try {
+            List<Tool> tools = resourceQueryService.findToolsByIds(toolIds);
+            Set<String> codes = new java.util.HashSet<>();
+            if (tools != null) {
+                for (Tool t : tools) {
+                    if (t != null && t.getToolCode() != null) {
+                        codes.add(t.getToolCode());
+                    }
+                }
+            }
+            return codes;
+        } catch (Exception e) {
+            log.warn("resolveBoundToolCodes 查询失败，降级空集（可能走 RemoteFS）: {}", e.getMessage());
+            return java.util.Collections.emptySet();
+        }
     }
 
     /**

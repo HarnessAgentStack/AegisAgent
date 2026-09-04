@@ -53,8 +53,26 @@ public class KeywordRetrieveService {
                 log.debug("keywordRetrieve 无命中: kbId={}, query={}", kbId, truncate(query, 50));
                 return Collections.emptyList();
             }
-            log.debug("keywordRetrieve 命中 {} 条: kbId={}, query={}", hits.size(), kbId, truncate(query, 50));
-            return new ArrayList<>(hits);
+            // R-3 相对阈值：保留 bm25Score >= top1 × 0.2，滤除字面偶然命中（MATCH 分值>0 即返回会混入无关片段）
+            float topScore = 0f;
+            for (Map<String, Object> h : hits) {
+                Object s = h.get("bm25Score");
+                if (s instanceof Number n) {
+                    topScore = Math.max(topScore, n.floatValue());
+                }
+            }
+            float cutoff = topScore * 0.2f;
+            List<Map<String, Object>> filtered = new ArrayList<>(hits.size());
+            for (Map<String, Object> h : hits) {
+                Object s = h.get("bm25Score");
+                float sc = s instanceof Number n ? n.floatValue() : 0f;
+                if (sc >= cutoff) {
+                    filtered.add(h);
+                }
+            }
+            log.debug("keywordRetrieve 命中 {} 条（相对阈值 cutoff={} 后 {}）: kbId={}, query={}",
+                    hits.size(), cutoff, filtered.size(), kbId, truncate(query, 50));
+            return filtered;
         } catch (Exception e) {
             // 典型异常：索引不存在（SQL 错误 1191）、query 含停用词、表不存在等
             log.warn("keywordRetrieve 失败（可能 FULLTEXT 索引未建），降级为空列表: kbId={}, error={}",

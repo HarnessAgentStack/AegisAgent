@@ -75,6 +75,15 @@ aegis:
     access-key: ${MINIO_ACCESS_KEY:aegis}
     secret-key: ${MINIO_SECRET_KEY:aegis12345}
     bucket: aegis-attachments
+  # 内置工具配置（web_search/web_fetch/http_request）
+  tools:
+    # SearXNG 自建主引擎（docker compose up aegis-searxng 即插即用，免费无 API Key）
+    # 留空则回退内置 Bing 直连；SearXNG 失败时自动落 Bing 兜底（W-1）
+    web-search-url: ${AEGIS_WEB_SEARCH_URL:}  # 默认空=宿主机 Bing 直连（反爬不触发）；设 http://127.0.0.1:8888/search 启用 SearXNG
+    # 内网 host 白名单（W-5）：仅认精确 host，绝不接受 LLM 传入 URL 参数
+    # 127.0.0.1 放行以接入本机 SearXNG；按需追加内网检索系统 host
+    allowed-internal-hosts:
+      - 127.0.0.1
   runtime:
     agent-pool:
       max-size: 100

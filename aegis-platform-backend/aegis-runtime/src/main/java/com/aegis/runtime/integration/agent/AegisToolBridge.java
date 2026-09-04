@@ -82,10 +82,11 @@ public class AegisToolBridge {
     /** 技能订阅 Mapper，用于查询用户订阅的技能 */
     private final SkillSubscriptionMapper skillSubscriptionMapper;
 
-    /** AegisBuiltinTools 提供的工具编码集合（@Tool 注解方法） */
+    /** AegisBuiltinTools 提供的工具编码集合（@Tool 注解方法，registerTool 一次扫描全部） */
     private static final Set<String> BUILTIN_ANNOTATED_TOOLS = Set.of(
             "web_search",
-            "image_search"
+            "image_search",
+            "web_fetch"
     );
 
     /**
@@ -206,7 +207,7 @@ public class AegisToolBridge {
                 continue;
             }
 
-            // 注册 @Tool 注解工具（web_search, image_search, memory_search 等）
+            // 注册 @Tool 注解工具（web_search, image_search, web_fetch 等）
             if (BUILTIN_ANNOTATED_TOOLS.contains(toolCode)) {
                 if (!builtinRegistered) {
                     toolkit.registerTool(aegisBuiltinTools);

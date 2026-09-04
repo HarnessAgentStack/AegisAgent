@@ -16,9 +16,9 @@ import java.util.regex.Pattern;
  *
  * <h3>工具清单来源（唯一权威对齐源）</h3>
  * <p>与 HarnessAgent 装配时框架实际注册的工具全集精确对齐（见 runtime 日志
- * {@code Toolkit: Registered tool '...'}），共 27 项：</p>
+ * {@code Toolkit: Registered tool '...'}），共 28 项：</p>
  * <ul>
- *   <li>Aegis 自建（4）：web_search / image_search / generate_file / http_request</li>
+ *   <li>Aegis 自建（5）：web_search / image_search / web_fetch / generate_file / http_request</li>
  *   <li>框架 Shell（1）：execute（framework-drive=true 时经沙箱执行）</li>
  *   <li>框架 FilesystemTool 拆分（6）：read_file / write_file / list_files / grep_files / glob_files / edit_file</li>
  *   <li>框架 Subagent/Task（7）：agent_spawn / agent_list / agent_send / task_list / task_cancel / task_output / wait_async_results</li>
@@ -65,6 +65,17 @@ public final class BuiltinToolRiskConfig {
                 .toolType(ToolType.READONLY)
                 .riskLevel(RiskLevel.LOW)
                 .riskReason("图片搜索，只读查询，无数据变更风险")
+                .category("search")
+                .needApproval(false)
+                .sandboxExecution(false)
+                .build());
+
+        // web_fetch: 网页正文抓取，只读 + SSRF 防护，宿主 Jsoup 执行不进沙箱
+        map.put("web_fetch", ToolRiskInfo.builder()
+                .toolName("web_fetch")
+                .toolType(ToolType.READONLY)
+                .riskLevel(RiskLevel.LOW)
+                .riskReason("网页正文抓取，只读，经 UrlSafetyChecker SSRF 防护，无数据变更风险")
                 .category("search")
                 .needApproval(false)
                 .sandboxExecution(false)

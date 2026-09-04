@@ -38,4 +38,11 @@ public class AegisToolProperties {
      * 自定义 API 需以 GET 方式接收 {@code ?q=} 参数并返回搜索结果文本。
      */
     private String webSearchUrl = "";
+
+    /**
+     * 内网 host 白名单（W-5）：仅认应用配置的精确 host（不支持通配），
+     * 命中白名单的内网地址可被 web_search/http_request/web_fetch 访问。
+     * 典型：自建 SearXNG（127.0.0.1）、内网检索系统。绝不接受 LLM 传入的 URL 参数。
+     */
+    private java.util.Set<String> allowedInternalHosts = java.util.Collections.emptySet();
 }

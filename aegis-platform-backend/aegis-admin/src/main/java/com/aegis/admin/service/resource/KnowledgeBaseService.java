@@ -162,7 +162,7 @@ public class KnowledgeBaseService {
     /**
      * 相似度阈值钳制：低于下限时纠正为下限值。
      *
-     * <p>COSINE 量纲下阈值低于 {@link KbConstants#MIN_SIMILARITY_THRESHOLD}（0.2）
+     * <p>COSINE 量纲下阈值低于 {@link KbConstants#MIN_SIMILARITY_THRESHOLD}（0.25）
      * 属于误配置——噪声切片相似度通常在 0.1~0.2 区间，低阈值会把无关内容全部注入
      * 提示词，诱导模型判定检索结果无用并回退到文件系统探索（glob_files/list_files）。
      * 统一按最低有效值纠正，避免静默放行无效配置。

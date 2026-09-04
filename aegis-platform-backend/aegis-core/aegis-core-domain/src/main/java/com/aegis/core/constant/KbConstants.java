@@ -53,12 +53,14 @@ public final class KbConstants {
     public static final int DEFAULT_CHUNK_SIZE = 500;
     public static final int DEFAULT_CHUNK_OVERLAP = 50;
     public static final int DEFAULT_TOP_K = 5;
-    /** 默认相似度阈值（COSINE 量纲）。 */
-    public static final java.math.BigDecimal DEFAULT_SIMILARITY_THRESHOLD = new java.math.BigDecimal("0.30");
-    /** 相似度阈值下限（COSINE 量纲），创建/更新知识库时统一钳制。 */
-    public static final java.math.BigDecimal MIN_SIMILARITY_THRESHOLD = new java.math.BigDecimal("0.15");
+    /** 默认相似度阈值（COSINE 量纲）。R-5：0.30→0.40，与 DDL 注释 0.40 对齐，消除文档-代码漂移；
+     *  doubao 嵌入实测相关区间约 0.42~0.61，0.30 会放入噪声。 */
+    public static final java.math.BigDecimal DEFAULT_SIMILARITY_THRESHOLD = new java.math.BigDecimal("0.40");
+    /** 相似度阈值下限（COSINE 量纲），创建/更新知识库时统一钳制。R-5：0.15→0.25。 */
+    public static final java.math.BigDecimal MIN_SIMILARITY_THRESHOLD = new java.math.BigDecimal("0.25");
     public static final String DEFAULT_EMBEDDING_MODEL = "doubao-embedding-vision";
-    public static final String DEFAULT_RETRIEVAL_STRATEGY = "VECTOR";
+    /** R-4：默认检索策略 VECTOR→HYBRID，向量+关键词 RRF 融合，专有名词由关键词路径兜底召回 */
+    public static final String DEFAULT_RETRIEVAL_STRATEGY = "HYBRID";
 
     /** 嵌入模型提供商代码 */
     public static final String PROVIDER_VOLCENGINE = "volcengine";

@@ -46,25 +46,16 @@ import java.util.concurrent.TimeoutException;
 import reactor.util.retry.Retry;
 
 /**
- * 任务执行领域服务 — 响应式流式执行器。
+ * 任务执行器：驱动 AgentScope {@link HarnessAgent} 流式输出，
+ * 负责事件转换、输出累积、中断响应与终态委托。
  *
- * <p><b>职责边界</b>：本类是纯执行器，只负责驱动 AgentScope {@link HarnessAgent}
- * 流式输出 + 事件转换 + 输出累积 + 中断响应 + 终态委托。
+ * <p><b>职责边界</b>——以下能力由其他组件承担，本类不重复实现：
  * <ul>
  *   <li>请求校验 → {@link com.aegis.runtime.web.ChatRequestValidator}（Controller 层）</li>
  *   <li>智能体装配（模板/会话/工具/中间件） → {@link AgentAssemblyService}</li>
  *   <li>消息持久化 + 会话状态机 → {@link SessionProjectionService}</li>
  *   <li>HITL 审批状态管理 → {@link HitlFlowService}</li>
  * </ul>
- *
- * <p><b>执行流程概览</b>：
- * <pre>
- * execute(request)
- *   → assemble()          装配 AegisTaskContext（含 HarnessAgent + RuntimeContext）
- *   → agent_start 事件    告知前端智能体已启动
- *   → streamExecution()   核心流式管道（含中间件洋葱链 + 事件转换 + 中断）
- *   → done 事件           告知前端执行结束
- * </pre>
  *
  * @author wang.zhen
  */
@@ -73,21 +64,21 @@ import reactor.util.retry.Retry;
 @RequiredArgsConstructor
 public class TaskExecutionService {
 
-    /** 智能体装配服务（模板→会话→工具→中间件→HarnessAgent） */
+    /** 智能体装配：模板 → 会话 → 工具 → 中间件 → HarnessAgent */
     private final AgentAssemblyService assemblyService;
-    /** 会话投影服务（消息落库 + 状态机） */
+    /** 消息落库 + 会话状态机 */
     private final SessionProjectionService projectionService;
-    /** AgentScope 事件 → Aegis 事件 转换器 */
+    /** AgentScope 事件 → Aegis 事件转换器 */
     private final HarnessEventConverter harnessEventConverter;
-    /** 中断信号管理器（用户中断 + Redis 跨实例 + 僵尸清理） */
+    /** 中断信号：用户中断 + Redis 跨实例 + 僵尸 sink 清理 */
     private final InterruptSignalManager interruptSignalManager;
-    /** 技能仓库 — 用于计算显式 @SKILL 引用的激活/驳回结果并下发 SSE 事件 */
+    /** 技能仓库：解析显式 @SKILL 引用的激活/驳回结果 */
     private final AegisSkillRepository skillRepository;
-    /** 会话管理服务 — 用于将会话置为 PAUSED 状态（HITL 暂停时调用） */
+    /** 会话管理：HITL 暂停时将会话置为 PAUSED */
     private final SessionManageService sessionManageService;
-    /** HITL 流程服务 — 管理审批状态（Redis 持久化 ConfirmResult） */
+    /** HITL 审批状态（Redis 持久化 ConfirmResult） */
     private final HitlFlowService hitlFlowService;
-    /** 周期3：会话级沙箱持有器（会话真正结束时释放沙箱实例） */
+    /** 会话级沙箱持有器：会话真正结束时释放沙箱实例 */
     private final SandboxSessionHolder sandboxSessionHolder;
 
 
@@ -145,29 +136,25 @@ public class TaskExecutionService {
     }
 
     /**
-     * 执行任务并返回 SSE 事件流（入口方法）。
+     * 任务执行入口：装配 → agent_start → 流式执行 → done。校验由 Controller 层完成。
      *
-     * <p>编排流程：装配 → agent_start → 流式执行 → done。校验由 Controller 层完成。
-     *
-     * <p><b>响应式线程模型</b>：装配阶段在 {@code boundedElastic} 线程执行（含 DB I/O），
-     * 流式阶段由 AgentScope 内核线程驱动。租户上下文通过 {@link TenantContextHolder}
-     * 在线程切换后手动恢复（ThreadLocal 不跨线程）。
+     * <p><b>线程模型</b>：装配在 {@code boundedElastic} 执行（含 DB I/O），流式阶段由
+     * AgentScope 内核线程驱动。ThreadLocal 不跨线程，租户上下文用
+     * {@link TenantContextScope} 在切换后手动恢复。
      *
      * @param request 对话请求（已通过校验）
-     * @return SSE 事件流（reactive）
+     * @return SSE 事件流
      */
     public Flux<AgentEvent> execute(ChatRequest request) {
         String taskId = UUID.randomUUID().toString().replace("-", "");
         // 捕获 sessionId 供外层 doFinally 兜底使用（assemble 后才有值）
         final String[] sessionHolder = new String[1];
-        // 标记执行过程是否发生过错误（用于外层 doFinally 决定终态为 EXCEPTION 还是 INTERRUPTED）
+        // 标记是否发生过错误：外层 doFinally 据此决定终态为 EXCEPTION 还是 INTERRUPTED
         final boolean[] errored = {false};
-        // 捕获租户上下文，在 Reactor 线程切换后手动恢复（ThreadLocal 不跨线程）
         final Long tenantId = request.getTenantId();
 
-        // 边界式租户作用域（P1-1）：boundedElastic 线程在 callable 结束后归还线程池，
-        // 必须清空 ThreadLocal，防止下一请求（可能属另一租户）复用该线程时读到残留租户，
-        // 导致 MyBatis-Plus 租户插件以错误租户身份读写数据。
+        // 必须清理：boundedElastic 线程归还池后若残留租户，下一请求（可能属另一租户）
+        // 会读到错误租户，导致 MyBatis-Plus 租户插件以错误身份读写数据
         return Mono.fromCallable(() -> {
                     try (var ignore = TenantContextScope.bound(tenantId)) {
                         AegisTaskContext ctx = assemblyService.assemble(request, taskId);
@@ -201,17 +188,16 @@ public class TaskExecutionService {
                             AgentEvent.of("error", errorData),
                             AgentEvent.of("done", Map.of()));
                 })
-                // ★ 外层兜底：确保会话始终进入终态，杜绝"异常分支会话永久卡在 THINKING/STARTED"。
-                // 旧实现仅在 signal != ON_COMPLETE 时清理，但 onErrorResume 已将任意错误转成
-                // ON_COMPLETE，使该守卫失效（C4：assemble/buildSkillEvents 抛错时会话永不终态）。
-                // 改为始终按"会话是否仍活跃"兜底——terminateIfActive 仅对活跃态生效，
-                // 对已正确置为 ENDED/PAUSED/EXCEPTION/INTERRUPTED 的会话是幂等 no-op。
+                // 外层兜底：确保会话始终进入终态，杜绝异常分支永久卡在 THINKING/STARTED。
+                // 不能按 signal != ON_COMPLETE 判断——onErrorResume 已把错误转成 ON_COMPLETE。
+                // terminateIfActive 仅对活跃态生效，对已终态（ENDED/PAUSED/EXCEPTION/INTERRUPTED）
+                // 的会话是幂等 no-op。
                 .doFinally(signal -> {
                     try {
                         String sid = sessionHolder[0];
                         if (sid != null) {
                             log.info("外层 doFinally 兜底清理: sessionId={}, signal={}", sid, signal);
-                            // CANCEL/ERROR：清理中断信号（正常完成不清理，避免误删新请求 sink）
+                            // CANCEL/ERROR：清理中断信号（正常完成不清理，避免误删新请求的 sink）
                             if (signal != SignalType.ON_COMPLETE) {
                                 interruptSignalManager.forceUnregister(sid);
                             }
@@ -220,8 +206,8 @@ public class TaskExecutionService {
                                     ? SessionStatus.EXCEPTION
                                     : SessionStatus.INTERRUPTED;
                             projectionService.onForceTerminate(sid, terminal);
-                            // 周期4-2：外层兜底释放沙箱（内层 doFinally 已在终态路径释放过，
-                            // 此处幂等 no-op；但 assemble 抛错等内层未触发的场景仍能正确释放）
+                            // 兜底释放沙箱：内层 doFinally 已在终态路径释放，此处为幂等 no-op；
+                            // 但 assemble 抛错等内层未触发的场景仍能正确释放
                             try {
                                 sandboxSessionHolder.releaseOnSessionEnd(sid);
                             } catch (Exception sandEx) {
@@ -236,39 +222,13 @@ public class TaskExecutionService {
     }
 
     /**
-     * 流式执行核心 — 构建 Reactor Flux 管道驱动 AgentScope Agent。
+     * 流式执行核心：构造消息 → 注册中断信号 → 驱动 AgentScope 流 → 终态处理。
      *
-     * <p><b>本方法职责（5 项）</b>：
-     * <ol>
-     *   <li>消息准备：HITL 恢复消息 + 用户消息（含多模态图片）</li>
-     *   <li>中断信号注册：为当前 session 注册中断 sink，支持外部中断 + Redis 跨实例中断</li>
-     *   <li>事件转换：AgentScope 事件 → Aegis 事件（通过 {@link HarnessEventConverter}）</li>
-     *   <li>流中累积：输出文本、思考过程、Token 统计，并更新心跳</li>
-     *   <li>终态处理：HITL PAUSED / 正常 ENDED / 异常 EXCEPTION，委托 {@link SessionProjectionService}</li>
-     * </ol>
-     *
-     * <p><b>HITL 暂停与恢复</b>：
-     * 当中间件判定工具调用需用户审批（ASK 决策）时，AgentScope 发出 {@code hitl.request} 事件。
-     * 本方法将其保存到 Redis 并标记 {@code hitlPaused[0]=true}，流终止后将会话置为 PAUSED。
-     * 用户审批后通过 {@link com.aegis.runtime.web.HitlController} 再次调用 {@link #execute}，
-     * 本方法从 Redis 读取 ConfirmResult 注入消息列表，恢复被中断的工具调用。
-     *
-     * <p><b>Flux 管道结构</b>：
-     * <pre>
-     * Flux.concat(
-     *   agent.streamEvents(msgs, rc)          ← AgentScope 内核（含中间件洋葱链）
-     *     .onBackpressureBuffer(256)          ← 背压：缓冲 256 事件，溢出丢最旧
-     *     .timeout(5min)                      ← 超时保护
-     *     .retryWhen(网络异常 × 2)             ← 网络抖动重试
-     *     .takeUntilOther(interruptSink)      ← 外部中断响应
-     *     .concatMap(事件转换 + 副作用)         ← HITL/投影/token 注入
-     *     .doOnNext(累积 output/reasoning/tokens + 心跳)
-     *     .filter(过滤内部事件)
-     *     .doFinally(终态处理)                ← 无论 complete/cancel/error 都执行
-     *   ,
-     *   Flux.defer(中间件拦截检测)             ← 流结束后若 blocked=true 补发 error 事件
-     * )
-     * </pre>
+     * <p><b>HITL 暂停与恢复</b>：中间件判定工具调用需用户审批（ASK 决策）时发出
+     * {@code hitl.request} 事件，此处保存审批数据到 Redis 并置 {@code hitlPaused}，
+     * 流终止后会话转 PAUSED。用户审批后由 {@link com.aegis.runtime.web.HitlController}
+     * 再次调用 {@link #execute}，经 {@code HitlFlowService.buildResumeMessages} 注入
+     * ConfirmResult 消息，恢复被中断的工具调用。
      *
      * @param ctx 任务执行上下文（含 HarnessAgent、RuntimeContext、用户消息等）
      */
@@ -283,16 +243,12 @@ public class TaskExecutionService {
 
         RuntimeContext rc = ctx.getRuntimeContext();
 
-        // ====== 阶段 1：构造消息列表 ======
-        // 消息按优先级分 3 层：
-        //   ① HITL 恢复消息（ConfirmResult） — 审批后恢复被中断的工具调用
-        //   ② 用户消息（含多模态图片）       — 正常对话场景
-        //   ③ 兜底空列表                     — 交给 AgentScope 处理
+        // ====== 阶段 1：构造消息列表（HITL 恢复消息优先，其次用户消息） ======
         List<Msg> msgs = new ArrayList<>();
         String userMessage = ctx.getUserMessage();
 
-        // 1. HITL 恢复：从 Redis 读取待审批的 ConfirmResult，构造 TOOL 角色 Msg 注入
-        //    无论 userMessage 是否为空都必须注入，否则 AgentScope 无法恢复被中断的工具调用
+        // 1. HITL 恢复：注入 Redis 中的 ConfirmResult。即使 userMessage 为空也必须注入，
+        //    否则 AgentScope 无法恢复被中断的工具调用
         List<Msg> resumeMsgs = hitlFlowService.buildResumeMessages(ctx.getSessionId());
         if (!resumeMsgs.isEmpty()) {
             msgs.addAll(resumeMsgs);
@@ -300,7 +256,7 @@ public class TaskExecutionService {
                     ctx.getSessionId(), resumeMsgs.size(), userMessage != null && !userMessage.isEmpty());
         }
 
-        // 2. 追加用户消息 — 含 NATIVE_PASS 图片时构造多模态 UserMessage（TextBlock + ImageBlock）
+        // 2. 追加用户消息 — 含多模态图片时构造 UserMessage（TextBlock + ImageBlock）
         if (userMessage != null && !userMessage.isEmpty()) {
             List<ContentBlock> imageBlocks = ctx.getMultimodalBlocks();
             if (imageBlocks != null && !imageBlocks.isEmpty()) {
@@ -313,7 +269,7 @@ public class TaskExecutionService {
             }
         }
 
-        // 3. 兜底：无 HITL 恢复消息且无用户消息（异常场景），交给 AgentScope 处理
+        // 3. 异常兜底：两者皆空时仅告警，交给 AgentScope 处理
         if (msgs.isEmpty()) {
             log.warn("HITL 恢复：无 ConfirmResult 且无用户消息: sessionId={}", ctx.getSessionId());
         }
@@ -321,7 +277,7 @@ public class TaskExecutionService {
         // ====== 阶段 2：累积缓冲 + 中断信号注册 ======
         // outputBuffer    — 累积 text.delta（正式回复），供 onTerminate 落库
         // reasoningBuffer — 累积 reasoning.delta（思考过程），单独落库到 sess_message.reasoning
-        // tokenStats      — [inputTokens, outputTokens]，数组引用跨事件共享
+        // tokenStats      — [input, output]，用数组引用以跨事件共享
         StringBuilder outputBuffer = new StringBuilder();
         StringBuilder reasoningBuffer = new StringBuilder();
         int[] tokenStats = {0, 0};
@@ -364,17 +320,17 @@ public class TaskExecutionService {
                         .takeUntilOther(interruptSink.asFlux())
                         // 事件转换：每个 AgentScope 事件 → 0~N 个 Aegis 事件
                         .concatMap(harnessEvent -> {
-                            // convertMany 允许一个事件转换为多个事件：
-                            // 典型场景 — skill_creator 工具完成后附带发射 skill.* 编排事件
+                            // convertMany 允许一个事件转换为多个事件，
+                            // 典型场景：skill_creator 工具完成后附带发射 skill.* 编排事件
                             List<AgentEvent> convertedList = harnessEventConverter.convertMany(harnessEvent);
                             if (convertedList == null || convertedList.isEmpty()) {
                                 return Mono.empty();
                             }
                             return Flux.fromIterable(convertedList)
                                     .concatMap(converted -> Mono.fromCallable(() -> {
-                                        // C5 修复：将事件投影（HITL Redis 同步读写 + 阻塞 JDBC 落库）
-                                        // 移出 AgentScope 内核线程，交由 boundedElastic 调度，
-                                        // 释放内核线程、避免热路径阻塞；concatMap 保证会话内事件顺序。
+                                        // 事件投影含 HITL Redis 同步读写 + 阻塞 JDBC，移出 AgentScope
+                                        // 内核线程交给 boundedElastic，避免热路径阻塞；
+                                        // concatMap 保证同一会话内事件顺序
                                         processConvertedEvent(converted, ctx, hitlPaused, tokenStats);
                                         return converted;
                                     }).subscribeOn(Schedulers.boundedElastic()));
@@ -389,12 +345,12 @@ public class TaskExecutionService {
                         })
                         // 过滤内部事件：task.status 是统计事件，不发给前端
                         .filter(event -> !"task.status".equals(event.getEvent()))
-                        // ★ 终态处理：无论 complete/cancel/error 都执行
+                        // 终态处理：无论 complete/cancel/error 都执行
                         .doFinally(signalType -> {
                             try {
                                 if (hitlPaused[0]) {
-                                    // HITL 暂停路径：将会话置为 PAUSED，等待用户审批
-                                    // 竞态修复：如果审批端点已将状态设为 STARTED（用户已审批），则跳过 PAUSED
+                                    // HITL 暂停路径：会话置 PAUSED，等待用户审批。
+                                    // 竞态保护：若审批端点已将会话置回 STARTED（用户已审批），跳过 PAUSED
                                     boolean alreadyApproved = hitlFlowService.isApproved(ctx.getSessionId());
                                     if (alreadyApproved) {
                                         log.info("HITL 暂停流结束但已审批通过，跳过 PAUSED 状态: sessionId={}", ctx.getSessionId());
@@ -407,17 +363,17 @@ public class TaskExecutionService {
                                                 com.aegis.core.enums.session.SessionStatus.PAUSED);
                                     }
                                 } else {
-                                    // 非 HITL 暂停路径：流正常完成或被中断
-                                    // 如果用户已审批通过且流正常完成，ConfirmResult 已被 AgentScope 消费，
-                                    // 需清理 Redis 中的审批状态，避免残留污染下一轮对话
+                                    // 非 HITL 暂停路径：流正常完成或被中断。
+                                    // 若用户已审批通过，ConfirmResult 已被 AgentScope 消费，
+                                    // 清理 Redis 审批状态避免污染下一轮对话
                                     if (hitlFlowService.isApproved(ctx.getSessionId())) {
                                         log.info("清理已消费的 HITL 审批状态: sessionId={}", ctx.getSessionId());
                                         hitlFlowService.clearHitlState(ctx.getSessionId());
                                     }
-                                    // P0-2（C3 修复）兜底：onActing 直接发起的 HITL 审批请求
-                                    // （未知/MCP 工具默认 ASK、通配符 HitlNode 命中）可能未途经
-                                    // 流事件转换（框架中间件事件路由未覆盖）而未被 processConvertedEvent 捕获。
-                                    // 此处统一落库 + 置 PAUSED，确保可审批、可恢复、不卡死。
+                                    // 兜底：onActing 直接发起的 HITL 请求（未知/MCP 工具默认 ASK、
+                                    // 通配符 HitlNode 命中）可能未途经流事件转换，未被
+                                    // processConvertedEvent 捕获。此处统一落库 + 置 PAUSED，
+                                    // 确保可审批、可恢复、不卡死。
                                     Map<String, Object> pendingHitl = ctx.takePendingHitlRequest();
                                     if (pendingHitl != null) {
                                         Object replyId = pendingHitl.get("replyId");
@@ -446,8 +402,8 @@ public class TaskExecutionService {
                                         reasoningText, tokenStats[0], tokenStats[1], signalType);
                                 // 注销中断信号 sink（CAS 语义，避免误删新请求的 sink）
                                 interruptSignalManager.unregister(ctx.getSessionId(), registration);
-                                // 周期4-2：会话真正结束时（非 HITL PAUSED）释放沙箱实例（OCCUPIED→IDLE 复用不杀 Pod）。
-                                // HITL 暂停时沙箱保留，等待用户审批后恢复执行。
+                                // 会话真正结束（非 HITL PAUSED）时释放沙箱实例
+                                // （OCCUPIED→IDLE 复用不杀 Pod）；HITL 暂停时保留沙箱待审批后恢复
                                 if (!hitlPaused[0]) {
                                     try {
                                         sandboxSessionHolder.releaseOnSessionEnd(ctx.getSessionId());
@@ -478,13 +434,10 @@ public class TaskExecutionService {
     }
 
     /**
-     * 处理单个已转换的 Aegis 事件 — 执行 HITL 副作用 + 投影委托 + Token 注入。
-     *
-     * <p>由 {@code streamExecution} 的 concatMap 调用，每个 AgentScope 事件
-     * 转换后的 Aegis 事件都经过此方法处理副作用：
+     * 处理单个已转换的 Aegis 事件的副作用（由 {@code streamExecution} 的 concatMap 逐事件调用）：
      * <ul>
      *   <li>{@code hitl.request} → 保存到 Redis + 设置 hitlPaused 标记</li>
-     *   <li>非 {@code skill.*} 事件 → 委托 {@link SessionProjectionService#onEvent} 处理工具消息落库 + 状态流转</li>
+     *   <li>非 {@code skill.*} 事件 → 委托 {@link SessionProjectionService#onEvent} 落库 + 状态流转</li>
      *   <li>{@code done}/{@code agent_end} → 注入 token 统计到事件数据</li>
      * </ul>
      *
@@ -501,8 +454,7 @@ public class TaskExecutionService {
         if (converted == null) {
             return Mono.empty();
         }
-        // P2-6④：高频事件（text.delta 等）逐条 INFO 降噪为 DEBUG，
-        // 压测日志量下降 ≥70%；非高频关键事件在下方分支保留 INFO
+        // 高频事件（text.delta 等）降噪为 DEBUG，避免逐条 INFO 淹没日志
         if (log.isDebugEnabled()) {
             log.debug("[TaskExecution] Event: type={}, data={}",
                     converted.getEvent(), converted.getData());
@@ -510,7 +462,6 @@ public class TaskExecutionService {
 
         // HITL 审批请求：保存到 Redis 供后续恢复使用，并标记暂停
         if ("hitl.request".equals(converted.getEvent())) {
-            // 保存 HITL 请求数据到 Redis（供 markApproved 构造 ConfirmResult + 恢复用）
             if (converted.getData() instanceof Map<?, ?> dm) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> data = (Map<String, Object>) dm;
@@ -522,7 +473,7 @@ public class TaskExecutionService {
 
                     // 低风险自动放行：转换器判定全部工具无需审批（autoApproved=true）时，
                     // 不置 PAUSED、不透传前端弹窗；直接构造 ConfirmResult（全 approve），
-                    // 下一轮对话经 buildResumeMessages 自然恢复执行。
+                    // 下一轮对话经 buildResumeMessages 自然恢复执行
                     if (Boolean.TRUE.equals(data.get("autoApproved"))) {
                         hitlFlowService.saveHitlRequest(ctx.getSessionId(),
                                 replyId != null ? String.valueOf(replyId) : null, tcList);
@@ -560,8 +511,7 @@ public class TaskExecutionService {
     }
 
     /**
-     * 累积输出文本 — 仅 text.delta（正式回复），排除 reasoning.delta（思考过程）。
-     * 思考过程不应混入助手回复的 content 字段，单独由 {@link #accumulateReasoning} 处理。
+     * 累积正式回复（仅 text.delta）。思考过程由 {@link #accumulateReasoning} 单独累积，不混入回复 content。
      */
     private void accumulateOutput(AgentEvent event, StringBuilder outputBuffer) {
         String eventType = event.getEvent();
@@ -574,8 +524,7 @@ public class TaskExecutionService {
     }
 
     /**
-     * 累积思考过程（reasoning.delta）— 供 onTerminate 落库到 sess_message.reasoning 字段。
-     * 与 {@link #accumulateOutput} 分离，避免思考过程混入助手回复 content。
+     * 累积思考过程（reasoning.delta），供 onTerminate 落库到 sess_message.reasoning。
      */
     private void accumulateReasoning(AgentEvent event, StringBuilder reasoningBuffer) {
         String eventType = event.getEvent();
@@ -588,9 +537,8 @@ public class TaskExecutionService {
     }
 
     /**
-     * 累积 Token 统计 — 匹配含 tokenInput/tokenOutput 的 task.status 事件。
-     * 同时回写 ctx，供中间件 postCall 读取当前累计 Token。
-     * 其他不含 token 字段的 task.status 事件会被跳过。
+     * 累积 Token 统计（仅处理含 tokenInput/tokenOutput 的 task.status 事件），
+     * 同时回写 ctx 供中间件 postCall 读取累计值。
      */
     private void accumulateTokens(AgentEvent event, int[] tokenStats, AegisTaskContext ctx) {
         if ("task.status".equals(event.getEvent()) && event.getData() instanceof Map<?, ?> dm) {
