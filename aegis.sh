@@ -63,6 +63,14 @@ hd()    { echo -e "$*" | sed "s/.*/${GRAY}&${NC}/"; }
 # --- Path helpers ---
 ensure_log_dir() { mkdir -p "$LOG_DIR"; }
 
+# --- Environment command holders ---
+# Preserve values supplied by the shell; aegis.conf may override them below.
+JAVA_EXE="${JAVA_EXE:-}"
+MVN_CMD="${MVN_CMD:-}"
+NODE_EXE="${NODE_EXE:-}"
+NPM_CMD="${NPM_CMD:-}"
+DOCKER_CMD="${DOCKER_CMD:-}"
+
 # --- Load aegis.conf (optional override for env vars) ---
 load_aegis_conf() {
     local conf_file="$SCRIPT_DIR/aegis.conf"
@@ -85,14 +93,9 @@ load_aegis_conf() {
 load_aegis_conf
 
 # --- Env detection ---
-JAVA_EXE=""
-MVN_CMD=""
-NODE_EXE=""
-NPM_CMD=""
-
 resolve_env() {
     info "Detecting environment..."
-    local ok_flag=1
+    local ok_flag=0
 
     if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
         JAVA_EXE="$JAVA_HOME/bin/java"
@@ -101,7 +104,7 @@ resolve_env() {
     fi
     if [ -z "$JAVA_EXE" ]; then
         err "JDK not found. Set JAVA_HOME or install JDK 21+"
-        ok_flag=0
+        ok_flag=1
     else
         local jv
         jv="$($JAVA_EXE -version 2>&1 | head -1)"
@@ -115,9 +118,23 @@ resolve_env() {
     fi
     if [ -z "$MVN_CMD" ]; then
         err "Maven not found. Set MVN_CMD or install Maven 3.9+"
-        ok_flag=0
+        ok_flag=1
     else
         ok "Maven: $MVN_CMD"
+    fi
+
+    if [ -n "$DOCKER_CMD" ] && [ -x "$DOCKER_CMD" ]; then
+        : # keep configured Docker path
+    elif command -v docker >/dev/null 2>&1; then
+        DOCKER_CMD="$(command -v docker)"
+    elif [ -x "$HOME/.docker/bin/docker" ]; then
+        DOCKER_CMD="$HOME/.docker/bin/docker"
+    fi
+    if [ -z "$DOCKER_CMD" ]; then
+        err "Docker CLI not found. Start Docker Desktop and add docker to PATH"
+        ok_flag=1
+    else
+        ok "Docker: $DOCKER_CMD"
     fi
 
     if command -v node >/dev/null 2>&1; then
@@ -135,7 +152,7 @@ resolve_env() {
 }
 
 # --- Docker check ---
-test_docker() { docker info >/dev/null 2>&1; }
+test_docker() { [ -n "$DOCKER_CMD" ] && "$DOCKER_CMD" info >/dev/null 2>&1; }
 
 # --- Port helpers ---
 port_listening() {
@@ -160,16 +177,29 @@ BACKEND_SERVICES=("gateway:8080" "admin:8082" "runtime:8081" "mcp-demo:8084")
 
 find_jar() {
     local mod=$1
-    local dir="$BACKEND_ROOT/$mod/target"
+    # Maven 模块目录是 aegis-gateway / aegis-admin 等，不能用短名 gateway
+    local dir="$BACKEND_ROOT/aegis-$mod/target"
     [ -d "$dir" ] || return 1
     local j
-    j="$(ls -t "$dir"/*.jar 2>/dev/null | grep -v '^original-' | head -1)"
+    # 优先 Spring Boot 可执行包（*-exec.jar），排除 .original
+    j="$(ls -t "$dir"/*-exec.jar 2>/dev/null | grep -v '\.original$' | head -1)"
+    if [ -z "$j" ]; then
+        j="$(ls -t "$dir"/*.jar 2>/dev/null | grep -v '\.original$' | grep -v '/original-' | head -1)"
+    fi
     echo "$j"
     [ -n "$j" ]
 }
 
 # --- Sandbox host (unix socket on Mac/Linux) ---
-get_docker_host() { echo "unix:///var/run/docker.sock"; }
+get_docker_host() {
+    if [ -n "${DOCKER_HOST:-}" ]; then
+        echo "$DOCKER_HOST"
+    elif [ -S "$HOME/.docker/run/docker.sock" ]; then
+        echo "unix://$HOME/.docker/run/docker.sock"
+    else
+        echo "unix:///var/run/docker.sock"
+    fi
+}
 
 # =============================================================================
 # Infra
@@ -183,7 +213,7 @@ start_infra() {
 
     info "Starting Docker containers..."
     cd "$INFRA_ROOT"
-    docker compose up -d mysql redis nacos minio etcd milvus 2>/dev/null
+    "$DOCKER_CMD" compose up -d mysql redis nacos minio etcd milvus 2>/dev/null
     cd "$PROJECT_ROOT"
 
     if [ "$skip_hc" != "skip" ]; then
@@ -200,7 +230,7 @@ start_infra() {
 stop_infra() {
     info "Stopping Docker containers..."
     cd "$INFRA_ROOT"
-    docker compose down 2>/dev/null
+    "$DOCKER_CMD" compose down 2>/dev/null
     cd "$PROJECT_ROOT"
     ok "Infra stopped"
 }
@@ -208,7 +238,7 @@ stop_infra() {
 show_infra_status() {
     info "Infra containers:"
     local items
-    items="$(docker ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null | grep aegis || true)"
+    items="$($DOCKER_CMD ps -a --format '{{.Names}}\t{{.Status}}' 2>/dev/null | grep aegis || true)"
     if [ -z "$items" ]; then
         hd "  (no aegis containers)"
         return
@@ -302,7 +332,7 @@ ensure_backend_stopped() {
     local jar_locked=0
     for entry in "${BACKEND_SERVICES[@]}"; do
         local name="${entry%%:*}"
-        local jar="$BACKEND_ROOT/$name/target/aegis-$name-*-exec.jar"
+        local jar="$BACKEND_ROOT/aegis-$name/target/aegis-$name-*-exec.jar"
         local match
         match=$(ls -1 $jar 2>/dev/null | head -1)
         if [ -n "$match" ] && command -v lsof >/dev/null 2>&1; then
@@ -377,7 +407,9 @@ start_frontend() {
             cd "$FRONTEND_ROOT" && $NPM_CMD install >/dev/null 2>&1 && cd "$PROJECT_ROOT"
         fi
         local logf="$LOG_DIR/frontend.log"
+        cd "$FRONTEND_ROOT"
         nohup npx vite --host >"$logf" 2>&1 &
+        cd "$PROJECT_ROOT"
         if wait_port 5173 30 "Frontend"; then
             ok "Frontend ready: http://localhost:5173"
         else
@@ -445,10 +477,10 @@ show_frontend_status() {
 build_backend() {
     local clean=$1
     info "Building backend JAR $( [ "$clean" = "clean" ] && echo '(clean)' || echo '(incremental)' )..."
-    local goal="package"
-    [ "$clean" = "clean" ] && goal="clean package"
+    local goals=(package)
+    [ "$clean" = "clean" ] && goals=(clean package)
     cd "$BACKEND_ROOT"
-    if $MVN_CMD $goal -DskipTests 2>&1 | tee "$LOG_DIR/mvn-build.log"; then
+    if "$MVN_CMD" "${goals[@]}" -DskipTests 2>&1 | tee "$LOG_DIR/mvn-build.log"; then
         ok "Backend build done"
     else
         err "Maven build FAILED (exit=${PIPESTATUS[0]}). See: $LOG_DIR/mvn-build.log"
@@ -530,7 +562,7 @@ case "$ACTION" in
         local all_up=1
         for c in aegis-mysql aegis-redis aegis-nacos aegis-minio aegis-etcd aegis-milvus; do
             local r
-            r="$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo false)"
+            r="$($DOCKER_CMD inspect -f '{{.State.Running}}' "$c" 2>/dev/null || echo false)"
             [ "$r" = "true" ] || { all_up=0; break; }
         done
         if [ $all_up -eq 1 ]; then
@@ -589,7 +621,7 @@ case "$ACTION" in
             start_frontend "$FRONTEND_MODE"
             echo ""; ok "All services started!"
             echo ""
-            local fe_port=5173; [ "$FRONTEND_MODE" = "prod" ] && fe_port=80
+            fe_port=5173; [ "$FRONTEND_MODE" = "prod" ] && fe_port=80
             hd "  Frontend: http://localhost:$fe_port"
             hd "  Gateway:  http://localhost:8080"
             hd "  Admin:    http://localhost:8082"
