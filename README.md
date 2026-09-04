@@ -87,25 +87,7 @@
 
 ## 架构
 
-```
-React 18 + Ant Design 5 + Vite           :5173 (dev) / :80 (prod)
-        │  dev 代理：/api/admin→8082  /api/runtime→8081  /api→8082
-        ▼
-Spring Cloud Gateway                      :8080
-  AuditEntryFilter(-100) → AuthFilter(0) → SessionIdFilter(+50) → TenantResolveFilter(+100)
-  路由：/api/admin/**·/api/resource/**→lb://aegis-admin，/api/runtime/**→lb://aegis-runtime
-        │                    │
-        ▼                    ▼
-   aegis-runtime :8081   aegis-admin :8082
-   WebFlux              WebFlux
-   AgentScope 2.0.2      CRUD / RBAC / 审核 / 沙箱池 / 安全策略
-        │                    │
-        ▼                    ▼
-   aegis-mcp-demo :8084（启动自注册到 admin）
-        │
-        ▼
-   MySQL 8 · Redis 7 · Milvus 2.5 · MinIO · Nacos 3（仅服务发现）· etcd
-```
+![Aegis 架构图](docs/images/aegis_architecture.png)
 
 ### 运行时中间件
 
