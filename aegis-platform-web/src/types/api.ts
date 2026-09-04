@@ -6,15 +6,7 @@
  */
 
 /** 业务码：0 表示成功，非 0 表示业务错误 */
-export type BizCode = number;
-
-/**
- * 资源唯一标识。
- * 后端雪花 ID 为 64 位 long，超过 JS Number.MAX_SAFE_INTEGER，
- * 因此前端一律以 string 传递、比较、存储，禁止 Number() 转换。
- * 响应拦截器的 ID 归一化层保证 API 返回的 ID 字段必为 string。
- */
-export type ResourceId = string;
+type BizCode = number;
 
 /** 统一响应结构 */
 export interface Result<T = unknown> {

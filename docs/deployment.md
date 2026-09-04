@@ -36,7 +36,7 @@
 6. 启动前端（dev 默认 `vite`；`prod` 走 `vite build` + `serve`）
 7. 启动 gateway / admin / runtime / mcp-demo，统一带 `--spring.profiles.active=local --spring.cloud.nacos.config.enabled=false`
 
-> `start` 与 `restart` 都是 **clean 构建**，无增量。日常改代码用 IDE 热部署或单独 `mvn` 更快。
+> `start` 与 `restart` 均执行 clean 构建（无增量）。
 
 ### 命令
 
@@ -86,8 +86,8 @@ java -jar aegis-mcp-demo/target/aegis-mcp-demo-*.jar
 
 # 3. 前端
 cd aegis-platform-web
-pnpm install          # 或 npm install
-pnpm dev              # http://localhost:5173
+npm install
+npm run dev           # http://localhost:5173
 ```
 
 启动顺序：基础设施 → admin（注入 universal 智能体）→ runtime（注入 skill_creator 元技能）→ gateway → mcp-demo（自注册）。
@@ -98,7 +98,7 @@ pnpm dev              # http://localhost:5173
 
 ```bash
 docker compose --profile observability up -d   # Prometheus :9090 / Grafana :3000 / OTel :4317,:4318
-docker compose --profile ocr up -d             # PaddleOCR :8098（默认不用，OCR 走 ONNX 进程内推理）
+# OCR 已内置为 ONNX Runtime 进程内推理，无需单独启动；原 --profile ocr（paddleocr）已废弃不可用
 docker compose up -d aegis-searxng             # SearXNG :8888（web_search 工具后端）
 ```
 
@@ -125,7 +125,7 @@ docker exec -i aegis-mysql mysql -uroot -p'root123' aegis --default-character-se
   < infra/ddl/02_seed_data.sql
 ```
 
-Windows PowerShell 必须显式指定 UTF-8，否则管道按 CP936 编码导致中文乱码：
+Windows PowerShell 需显式指定 UTF-8 编码：
 
 ```powershell
 Get-Content -Raw -Encoding utf8 infra/ddl/01_schema_init.sql |
@@ -165,7 +165,7 @@ docker compose up -d                          # 重新执行 DDL/DML
 | process | `backend: process` | 无容器，runtime 进程内执行 |
 
 - 纯对话不占沙箱（`lazy-allocation.enabled=true`），未配沙箱不影响对话。
-- Windows Docker Desktop：启用 WSL2 后端；Docker 沙箱连接串必须 `npipe:////./pipe/docker_engine`（四斜杠是 docker-java 解析要求）。
+- Windows Docker Desktop：启用 WSL2 后端；Docker 沙箱连接串为 `npipe:////./pipe/docker_engine`（四斜杠）。
 - Docker Desktop K8s 的 containerd 不继承宿主 registry mirror，Pod 可能 `ImagePullBackOff`。`aegis.ps1` 已预拉镜像；仍失败时检查 Docker Desktop → Settings → Docker Engine → `registry-mirrors`。
 
 ---
@@ -181,7 +181,7 @@ docker compose up -d                          # 重新执行 DDL/DML
 | MCP Demo | 8084 | Milvus | 19530 / 9091 |
 | SearXNG | 8888 | etcd | 2379（容器内） |
 | Grafana | 3000 | Prometheus | 9090 |
-| PaddleOCR（可选） | 8098 | OTel | 4317 / 4318 |
+| PaddleOCR（已废弃） | 8098（不使用） | — | OCR 已内置 ONNX 进程内推理，`paddleocr` Docker 服务已移除 |
 
 ---
 
@@ -190,7 +190,7 @@ docker compose up -d                          # 重新执行 DDL/DML
 | 现象 | 原因与处置 |
 |---|---|
 | `mvn` 不是可识别的命令（Git Bash） | 用 PowerShell 调 `mvn.cmd` 全路径，或在 `aegis.conf` 设 `MVN_CMD` |
-| 脚本报端口 timeout 但服务实际已起 | `local` profile 不再改端口；若自改过 profile，用 `curl` 直连实际端口确认，别只看 `netstat` |
+| 脚本报端口 timeout 但服务实际已起 | 用 `curl` 直连实际端口确认 |
 | 401 / 登录失败 | 三个服务 `JWT_SECRET` 不一致；或密码错（种子 `aegis@123`） |
 | 对话报模型不可用 | 未配置模型 Provider，见 §5 |
 | 改了 DDL 不生效 | DDL 仅数据卷为空时执行，按 §4 删 volume 重建 |

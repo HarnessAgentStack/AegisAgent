@@ -257,7 +257,22 @@ public class TenantManageService {
     private TenantVO toTenantVO(Tenant entity) {
         TenantVO vo = new TenantVO();
         BeanUtils.copyProperties(entity, vo);
+        vo.setContactPhone(maskPhone(entity.getContactPhone()));
         return vo;
+    }
+
+    /**
+     * 手机号脱敏：保留前 3 后 4（如 138****0000）；不足 7 位时全量掩码，空值原样返回。
+     */
+    static String maskPhone(String phone) {
+        if (phone == null || phone.isBlank()) {
+            return phone;
+        }
+        String trimmed = phone.trim();
+        if (trimmed.length() < 7) {
+            return "*".repeat(trimmed.length());
+        }
+        return trimmed.substring(0, 3) + "****" + trimmed.substring(trimmed.length() - 4);
     }
 
     private Tenant requireTenant(Long id) {

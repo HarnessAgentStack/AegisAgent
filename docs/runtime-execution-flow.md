@@ -1,13 +1,12 @@
 # 运行时全流程剖析
 
 > 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-09-02（基于 AgentScope 2.0.2 源码 + aegis-runtime 源码复核）
-> 所有调用链、中间件顺序、事件类型、存储 Key 均来自真实代码，无臆造；与 `.tmp/AgentAssemblyService运行时数据状态全景解析.md` 互为参照。
 
 ---
 
 ## 序章：全局一瞥
 
-从用户浏览器点开 SSE 连接到 Agent 返回最终回复，一共经过 6 个阶段、3 个进程、5 个中间件、N 次 ReAct 循环。这条文档把每一步拆透。
+从用户浏览器点开 SSE 连接到 Agent 返回最终回复，一共经过 6 个阶段、3 个进程、6 个中间件、N 次 ReAct 循环。
 
 ### 一句话链路
 
@@ -26,7 +25,7 @@
                                     ↓
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │  阶段 4: 洋葱链中间件  │  阶段 5: ReAct 循环（Think→Act→Observe）│  阶段 6: 投影持久化 │
-│  11 层 Middleware     │  agent.streamEvents(msgs, rc)          │  SessionProjectionSvc │
+│  6 层中间件     │  agent.streamEvents(msgs, rc)          │  SessionProjectionSvc │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -87,7 +86,7 @@ ChatRequestValidator 的核心校验规则（来自 `ChatRequestValidator.java`�
 
 ## 二、智能体装配：AgentAssemblyService.assemble()
 
-装配是**同步阻塞**操作，在 `boundedElastic` 线程池执行（避免阻塞 WebFlux EventLoop）。一次性完成 5 件事，输出 `AegisTaskContext`（执行上下文）。
+装配是**同步阻塞**操作，在 `boundedElastic` 线程池执行。一次性完成 5 件事，输出 `AegisTaskContext`（执行上下文）。
 
 ### 装配流程
 
@@ -148,7 +147,7 @@ HarnessAgent agent = HarnessAgent.builder()
     .memoryConfig(memoryConfig)                // 记忆策略
     .filesystemSpec(remoteFsSpec)               // → RemoteFS（Phase 2 减法后纯 Remote 路径）
     .permissionContextState(permissionCtx)     // → sec_tool_policy 运行时权限
-    .middlewares(middlewareChain.build())       // ← 5 层洋葱链
+    .middlewares(middlewareChain.build())       // ← 6 层中间件链
     .tools(toolkit)                            // → AegisSkillRepository 装载的 Toolkit
     .build();
 ```
@@ -194,19 +193,20 @@ sequenceDiagram
 
 ---
 
-## 四、洋葱链中间件（5 层）
+## 四、中间件链（6 层）
 
 AgentScope 2.0.2 的 Middleware 有 **5 个拦截点**：4 个**洋葱型**（`onAgent` / `onReasoning` / `onActing` / `onModelCall`）+ 1 个**管道型变换**（`onSystemPrompt`）。order 值越大越外层、越先执行，对 4 个洋葱型统一生效；`onSystemPrompt` 按 order 排序后串联改写系统提示词。
 
 ### order 值（各中间件 `order()` 方法，经 Spring 注入 `List<MiddlewareBase>` 排序装配）
 
-Phase 2 精简后保留 5 层（Trace/SandboxRouting/RAG/Mask/Audit），Security/TenantIsolation/Intent/ContentFilter/SandboxHeartbeat/Memory 等中间件已删除——安全决策收敛到 AgentScope 原生 PermissionEngine（`AegisPermissionRuleLoader` 从 sec_tool_policy 映射规则），记忆由 HarnessAgent 原生 MemoryConfig 承载：
+Phase 2 精简后保留 6 层（Trace/SandboxRouting/BindingSync/RAG/Mask/Audit），Security/TenantIsolation/Intent/ContentFilter/SandboxHeartbeat/Memory 等中间件已删除——安全决策收敛到 AgentScope 原生 PermissionEngine（`AegisPermissionRuleLoader` 从 sec_tool_policy 映射规则），记忆由 HarnessAgent 原生 MemoryConfig 承载：
 
 ```mermaid
 flowchart TD
     subgraph "外层（先执行）"
         M1["order=95  AegisTraceMiddleware<br/>链路追踪 + Span 创建"]
         M2["order=85  SandboxRoutingMiddleware<br/>沙箱路由判定(sec_sandbox_policy)"]
+        M2b["order=75  BindingSyncMiddleware<br/>绑定指纹比对 + Workspace 重物化(onAgent)"]
         M3["order=70  AegisRagMiddleware<br/>知识库检索 + 知识片段注入系统提示词"]
     end
     subgraph "内层（后执行）"
@@ -214,7 +214,7 @@ flowchart TD
         M5["order=30  AegisAuditLogMiddleware<br/>审计日志落库"]
     end
 
-    M1 --> M2 --> M3 --> M4 --> M5
+    M1 --> M2 --> M2b --> M3 --> M4 --> M5
     style M1 fill:#e3f2fd
     style M3 fill:#fff3e0
     style M4 fill:#f3e5f5
@@ -224,7 +224,7 @@ flowchart TD
 
 | 拦截点 | 类型 / 触发时机 | 主要中间件 | 做什么 |
 |---|---|---|---|
-| **onAgent** | 洋葱·最外层，进入 Agent 时 | TraceMiddleware(95) | 创建 Agent Span，开启链路追踪 |
+| **onAgent** | 洋葱·最外层，进入 Agent 时 | TraceMiddleware(95) + BindingSyncMiddleware(75) | 创建 Agent Span，开启链路追踪；绑定指纹比对 + Workspace 重物化 |
 | **onSystemPrompt** | 管道·发给 LLM 之前 | RagMiddleware(70) | RAG 知识片段注入系统提示词 |
 | **onModelCall** | 洋葱·每次调 LLM 时 | TraceMiddleware(95) | 创建 MODEL_CALL Span 记录 I/O |
 | **onReasoning** | 洋葱·LLM 返回 CoT 时 | TraceMiddleware | 创建 REASONING / tool_call Span |
@@ -253,7 +253,7 @@ flowchart TD
 
 ## 五、ReAct 循环：Think → Act → Observe
 
-这是 AgentScope HarnessAgent 的核心机制。一个完整对话可能经过 1-N 轮循环。
+一个完整对话可能经过 1-N 轮循环。
 
 ### 循环结构
 
@@ -423,14 +423,14 @@ data: {"replyId":"req-uuid-abc123"}
 
 ### 运行时数据状态：两套会话记忆并存（关键）
 
-一次会话的"记忆"分散在**两类存储**，职责不同、并存、不可互相替代：
+一次会话的"记忆"分散在**两类存储**：
 
 | 存储 | Key / 表 | 性质 | 读写时机 | 用途 |
 |---|---|---|---|---|
 | Redis（AgentScope） | `aegis:session:{userId}/{sessionId}:agent_state` | **运行时上下文（主链路必落）** | 调用开始 `GET` 重载、调用结束 `SET` 落盘 | ReAct 循环的对话缓冲，分布式部署取到最新状态 |
 | MySQL（Aegis） | `sess_message` / `sess_session` | **审计/回放投影（异步可降级）** | 流式 fire-and-forget 落库 | 消息留痕、状态机、前端历史查询 |
 
-> 要点：`agent_state` 是"运行态"（丢了本轮对话断片），`sess_message` 是"账本"（丢了可查历史）——两者都要保，`deleteSession` 会级联清 MySQL 并删 AgentScope Redis key 防孤儿堆积。
+> `agent_state` 为运行态（丢失则本轮对话断片），`sess_message` 为审计 / 回放投影；`deleteSession` 级联清 MySQL 并删 AgentScope Redis key。
 
 ### 状态流转
 
@@ -474,7 +474,7 @@ stateDiagram-v2
 - `sess_message.cost_amount` / `mon_trace.cost_amount` 字段存在，但 `aegis-runtime` 内**无任何代码计算或赋值**（grep `costAmount` 零命中），运行时恒为 `NULL`；
 - `model_def.input_cost` / `output_cost`（元/千 token）仅 Admin 模型管理配置，runtime 不参与计费。
 
-> 若需真实金额，应在 `agent_end` 处用 `ChatUsage × ModelDef 单价` 补算（当前未接线）。这属于**当前实现缺口，不是文档笔误**。
+> 若需真实金额，应在 `agent_end` 处用 `ChatUsage × ModelDef 单价` 补算（当前未接线）。
 
 ---
 
@@ -552,7 +552,7 @@ RETRY_DELAY_MS = 1500  // backoff
 
 ### SSE BufferOverflow 策略
 
-浏览器网络抖动时 SSE 连接积压。AgentScope streamEvents Flux 使用 **DROP_OLDEST**：当缓冲区满（256 个 event），扔掉最旧的 text_delta，保证最新事件能推出去。代价是用户可能看到输出跳字。
+浏览器网络抖动时 SSE 连接积压。AgentScope streamEvents Flux 使用 **DROP_OLDEST**：缓冲区满（256 个 event）时丢弃最旧的 text_delta。
 
 ---
 
@@ -625,7 +625,7 @@ flowchart TD
 | `TaskExecutionService` | 编排：装配 → 流式执行 → 异常处理 → doFinally 兜底 | 阶段 2+5+6 |
 | `AgentAssemblyService` | 同步装配：查库 → 创建 session → 构建 context | 阶段 2 |
 | `AegisAgentInstanceManager` | 实例池管理 + RemoteFS + Middleware 装配 | 阶段 3 |
-| `List<MiddlewareBase>` | Spring 注入按 order() 排序的 5 层中间件 → Builder.middlewares() | 阶段 3 |
+| `List<MiddlewareBase>` | Spring 注入按 order() 排序的 6 层中间件 → Builder.middlewares() | 阶段 3 |
 | `AegisSkillRepository` | 按档位分轨装载 Toolkit（技能/MCP/知识库） | 阶段 2+3 |
 | `AegisPermissionRuleLoader` | sec_tool_policy → PermissionRule 装载给 AgentScope PermissionEngine | onActing 拦截点 |
 | `HitlFlowService` | Redis 存 req → 恢复时注入 ConfirmResult | onActing + 恢复 |

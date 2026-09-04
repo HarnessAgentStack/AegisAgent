@@ -50,6 +50,8 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
+        <!-- core-infra 的 CoreTenantContextWebFilter/CoreGlobalExceptionHandler 以 provided 引用 fastjson2，
+             不传递；网关运行时执行这些过滤器，必须自带声明（曾误删导致 NoClassDefFoundError） -->
         <dependency>
             <groupId>com.alibaba.fastjson2</groupId>
             <artifactId>fastjson2</artifactId>

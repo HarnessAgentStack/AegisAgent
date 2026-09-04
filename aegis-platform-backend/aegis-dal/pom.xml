@@ -45,7 +45,8 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
-        <!-- Fastjson2（ArkEmbeddingClient 使用） -->
+        <!-- dal 的 ArkEmbeddingService 运行时调用 core-infra 的 ArkEmbeddingClient（fastjson2 为 provided
+             不传递），用即声明，保证 dal 模块独立可测 -->
         <dependency>
             <groupId>com.alibaba.fastjson2</groupId>
             <artifactId>fastjson2</artifactId>

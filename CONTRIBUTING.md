@@ -29,10 +29,10 @@ mvn spring-boot:run -pl aegis-gateway    # :8080
 mvn spring-boot:run -pl aegis-admin     # :8082
 mvn spring-boot:run -pl aegis-runtime   # :8081
 
-# 方式 B：aegis-service.ps1 一键启动（PowerShell，支持 start/stop/status/restart/build）
-.\aegis-service.ps1 start    # 同时起 gateway + admin + runtime
-.\aegis-service.ps1 status   # 查看三个进程状态
-.\aegis-service.ps1 stop     # 停止
+# 方式 B：aegis.ps1 一键启动（PowerShell，支持 start/stop/status/restart/build）
+.\aegis.ps1 start    # 同时起 gateway + admin + runtime
+.\aegis.ps1 status   # 查看三个进程状态
+.\aegis.ps1 stop     # 停止
 
 # 前端
 cd aegis-platform-web

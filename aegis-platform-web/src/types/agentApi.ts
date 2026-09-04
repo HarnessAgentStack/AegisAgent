@@ -30,27 +30,9 @@ export enum ApiValidityType {
 }
 
 /** API 状态 */
-export enum ApiStatus {
+enum ApiStatus {
   NORMAL = 'NORMAL',
   DISABLED = 'DISABLED',
-}
-
-/** JSON Schema 属性定义 */
-export interface JsonSchemaProperty {
-  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
-  description?: string;
-  default?: unknown;
-  maxLength?: number;
-  minimum?: number;
-  format?: string;
-  enum?: string[];
-}
-
-/** JSON Schema 定义 */
-export interface JsonSchema {
-  type: 'object';
-  properties: Record<string, JsonSchemaProperty>;
-  required?: string[];
 }
 
 /** Bearer Token 管理模式 */
@@ -179,37 +161,3 @@ export interface AgentApiVersionInfo {
   rateLimit?: number;
 }
 
-/** OpenAPI 渲染用的结构化数据 */
-export interface OpenApiDoc {
-  openapi: string;
-  info: {
-    title: string;
-    version: string;
-    description?: string;
-  };
-  servers: Array<{ url: string; description?: string }>;
-  paths: Array<{
-    method: string;
-    path: string;
-    summary?: string;
-    operationId?: string;
-    requestBody?: {
-      required: boolean;
-      contentType: string;
-      schema?: unknown;
-      description?: string;
-    };
-    responses: Array<{
-      statusCode: string;
-      description: string;
-      isError?: boolean;
-      schema?: unknown;
-    }>;
-  }>;
-  security: Array<{
-    type: string;
-    in: string;
-    name: string;
-  }>;
-  errorCodes: ApiErrorCode[];
-}

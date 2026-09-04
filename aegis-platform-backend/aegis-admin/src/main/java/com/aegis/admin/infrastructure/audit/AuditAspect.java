@@ -3,9 +3,11 @@ package com.aegis.admin.infrastructure.audit;
 import com.aegis.core.common.web.Result;
 import com.aegis.core.context.UserContextHolder;
 import com.aegis.core.domain.monitor.AuditLog;
+import com.aegis.core.domain.org.User;
 import com.aegis.core.enums.monitor.AuditResult;
 import com.aegis.core.security.UserContext;
 import com.aegis.dal.mapper.monitor.AuditLogMapper;
+import com.aegis.dal.mapper.org.UserBaseMapper;
 import com.aegis.core.common.tenant.TenantContextHolder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,13 +15,16 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.server.ServerWebExchange;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.net.InetSocketAddress;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
@@ -42,6 +47,7 @@ import java.util.Map;
 public class AuditAspect {
 
     private final AuditLogMapper auditLogMapper;
+    private final UserBaseMapper userBaseMapper;
 
     @Around("@annotation(auditable)")
     public Object aroundAuditable(ProceedingJoinPoint pjp, Auditable auditable) throws Throwable {
@@ -96,12 +102,28 @@ public class AuditAspect {
         MethodSignature signature = (MethodSignature) pjp.getSignature();
         Method method = signature.getMethod();
         Map<String, String> headers = extractHeaders(method, pjp.getArgs());
+        ServerWebExchange exchange = findExchange(pjp.getArgs());
 
         Long tenantId = parseLong(headers.get("X-Tenant-Id"));
         Long userId = parseLong(headers.get("X-User-Id"));
-        String username = resolveUsername(userId);
-        String ip = headers.getOrDefault("X-Forwarded-For", headers.get("X-Real-IP"));
-        String traceId = headers.get("X-Trace-Id");
+        // 审计日志 insert 常发生在 @Auditable finally + WebFlux 线程切换后，
+        // 入口 filter 的 ThreadLocal bind 可能已丢失，此处显式补绑，
+        // 否则 AuditLogMapper.insert 走租户插件 fail-closed 抛"租户上下文缺失"。
+        // 服务间调用（如 MCP Server 自注册）无 X-Tenant-Id 头：归入系统租户 0（平台级审计）
+        Long effectiveTenantId = tenantId != null ? tenantId : TenantContextHolder.getTenantId();
+        if (effectiveTenantId == null) {
+            effectiveTenantId = 0L;
+        }
+        boolean boundHere = false;
+        if (TenantContextHolder.get() == null) {
+            TenantContextHolder.bind(effectiveTenantId);
+            boundHere = true;
+        }
+        try {
+        String username = resolveUsername(userId, tenantId);
+        String ip = resolveIp(headers, exchange);
+        String traceId = firstNonBlank(headers.get("X-Trace-Id"),
+                exchange != null ? exchange.getRequest().getHeaders().getFirst("X-Trace-Id") : null);
         String resourceName = resolveResourceName(returnValue, pjp.getArgs(), auditable, method);
 
         String detail = buildDetail(elapsedMs, errorMsg, pjp.getArgs(), auditable);
@@ -120,10 +142,13 @@ public class AuditAspect {
                 .retentionDays(auditable.retentionDays())
                 .occurTime(LocalDateTime.now())
                 .build();
-        if (tenantId != null) {
-            auditLog.setTenantId(tenantId);
-        }
+        auditLog.setTenantId(effectiveTenantId);
         auditLogMapper.insert(auditLog);
+        } finally {
+            if (boundHere) {
+                TenantContextHolder.clear();
+            }
+        }
     }
 
     /** 从方法参数 @RequestHeader 注解提取对应头值 */
@@ -143,15 +168,83 @@ public class AuditAspect {
         return headers;
     }
 
-    /** 解析用户名：优先 UserContextHolder，回退 null */
-    private String resolveUsername(Long userId) {
+    /** 解析用户名：优先 UserContextHolder；WebFlux 下上下文常为空，回退按 userId 查库（realName 优先） */
+    private String resolveUsername(Long userId, Long tenantId) {
         try {
             UserContext ctx = UserContextHolder.currentUser();
             if (ctx != null && ctx.getUsername() != null) {
                 return ctx.getUsername();
             }
         } catch (Exception ignored) {
-            // 上下文不可用时回退 null
+            // 上下文不可用时回退查库
+        }
+        if (userId == null) {
+            return null;
+        }
+        // 租户表查询需绑定租户：已有绑定直接查；未绑定时用头里的 tenantId 临时绑定
+        boolean tempBound = false;
+        if (TenantContextHolder.get() == null) {
+            if (tenantId == null) {
+                return null;
+            }
+            TenantContextHolder.bind(tenantId);
+            tempBound = true;
+        }
+        try {
+            User user = userBaseMapper.selectById(userId);
+            if (user != null) {
+                return user.getRealName() != null && !user.getRealName().isBlank()
+                        ? user.getRealName() : user.getUsername();
+            }
+        } catch (Exception ex) {
+            log.debug("审计 username 回退查库失败: userId={}", userId, ex);
+        } finally {
+            if (tempBound) {
+                TenantContextHolder.clear();
+            }
+        }
+        return null;
+    }
+
+    /** 扫描方法参数定位 ServerWebExchange（用于读取请求头与远端地址） */
+    private ServerWebExchange findExchange(Object[] args) {
+        if (args == null) {
+            return null;
+        }
+        for (Object arg : args) {
+            if (arg instanceof ServerWebExchange exchange) {
+                return exchange;
+            }
+        }
+        return null;
+    }
+
+    /** 解析客户端 IP：代理头优先（X-Forwarded-For 多值取第一个），无代理头回退 TCP 远端地址 */
+    private String resolveIp(Map<String, String> headers, ServerWebExchange exchange) {
+        String ip = firstNonBlank(headers.get("X-Forwarded-For"),
+                headers.get("X-Real-IP"), headers.get("X-Client-IP"));
+        if (ip == null && exchange != null) {
+            HttpHeaders httpHeaders = exchange.getRequest().getHeaders();
+            ip = firstNonBlank(httpHeaders.getFirst("X-Forwarded-For"),
+                    httpHeaders.getFirst("X-Real-IP"), httpHeaders.getFirst("X-Client-IP"));
+        }
+        if (ip != null) {
+            return ip.split(",")[0].trim();
+        }
+        if (exchange != null) {
+            InetSocketAddress remote = exchange.getRequest().getRemoteAddress();
+            if (remote != null && remote.getAddress() != null) {
+                return remote.getAddress().getHostAddress();
+            }
+        }
+        return null;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
         }
         return null;
     }

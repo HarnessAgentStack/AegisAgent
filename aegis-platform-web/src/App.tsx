@@ -28,7 +28,8 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-      <RouterProvider router={router} />
+      {/* v7_startTransition：路由状态更新包裹 startTransition，避免同步输入期间 Suspense 挂起崩溃 */}
+      <RouterProvider router={router} future={{ v7_startTransition: true }} />
     </ErrorBoundary>
   );
 };

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -37,7 +37,6 @@
         <spring-cloud-alibaba.version>2025.1.0.0</spring-cloud-alibaba.version>
         <minio.version>8.5.14</minio.version>
         <milvus.version>2.5.0</milvus.version>
-        <mapstruct.version>1.6.3</mapstruct.version>
         <mysql.version>8.0.32</mysql.version>
         <protobuf.version>3.24.0</protobuf.version>
         <redisson.version>3.37.0</redisson.version>

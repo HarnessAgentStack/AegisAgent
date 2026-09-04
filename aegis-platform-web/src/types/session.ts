@@ -120,8 +120,8 @@ export interface KbReference {
   sourceUrl?: string;
 }
 
-/** HITL 审批 */
-export interface HitlApproval {
+/** HITL 审批（Message.hitl 内用） */
+interface HitlApproval {
   /** 审批 ID */
   id: string;
   /** 审批状态 */
@@ -156,54 +156,6 @@ export interface SkillOption {
   category?: string;
 }
 
-/** 技能激活事件载荷（skill.activated） */
-export interface SkillActivatedPayload {
-  skills: string[];
-  timestamp?: number;
-}
-
-/** 技能驳回事件载荷（skill.rejected） */
-export interface SkillRejectedPayload {
-  skills: string[];
-  reason: string;
-  timestamp?: number;
-}
-
-/** SSE 事件类型（与后端 AgentEvent 事件名对齐） */
-export type SseEventType =
-  | 'agent_start'
-  | 'reasoning.delta'
-  | 'text.delta'
-  | 'tool.call'
-  | 'tool.result'
-  | 'kb.reference'
-  | 'hitl.request'
-  | 'task.status'
-  | 'error'
-  | 'done'
-  | 'message.delta'
-  | 'skill.activated'
-  | 'skill.rejected'
-  | 'skill.creator.stage'
-  | 'skill.creator.debug'
-  | 'skill.creator.package'
-  | 'skill.draft.created'
-  | 'skill.draft.updated'
-  | 'skill.debug.result'
-  | 'skill.package.result';
-
-/** SSE 事件 */
-export interface SseEvent<T = unknown> {
-  /** 事件类型 */
-  event: SseEventType;
-  /** 事件数据 */
-  data: T;
-  /** 事件 ID */
-  id?: string;
-  /** 重试间隔（毫秒） */
-  retry?: number;
-}
-
 /**
  * 智能体执行事件（与后端 AgentEvent 对齐）。
  *
@@ -232,8 +184,8 @@ export interface SkillCreatorDebugPayload {
   message: string;
 }
 
-/** 技能文件项（打包事件中返回的文件结构） */
-export interface SkillPackageFileItem {
+/** 技能文件项（打包事件中返回的文件结构，SkillCreatorPackagePayload 内用） */
+interface SkillPackageFileItem {
   name: string;
   type: 'file' | 'folder';
   path: string;
@@ -301,80 +253,6 @@ export interface SkillPackageResult {
   message: string;
   fileName?: string;
   size?: number;
-}
-
-/**
- * 思考步骤（用于思考过程时序展示）
- */
-export interface ThinkingStep {
-  /** 步骤序号 (1, 2, 3...) */
-  stepIndex: number;
-  /** 步骤标题 */
-  stepTitle: string;
-  /** 步骤详情（可选） */
-  stepDetail?: string;
-  /** 状态 */
-  status: 'RUNNING' | 'SUCCESS' | 'FAILED';
-  /** 耗时（毫秒） */
-  durationMs?: number;
-}
-
-/**
- * 思考过程（时序化展示）
- */
-export interface ThinkingProcess {
-  /** 思考步骤列表 */
-  steps: ThinkingStep[];
-  /** 思考摘要（一句话总结） */
-  summary?: string;
-}
-
-/**
- * 工具调用节点（用于时间线展示）
- */
-export interface ToolCallNode {
-  /** 调用唯一ID */
-  id: string;
-  /** 工具名称 */
-  name: string;
-  /** 触发原因说明 */
-  triggerReason?: string;
-  /** 调用状态 */
-  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED';
-  /** 调用参数 */
-  arguments?: Record<string, unknown>;
-  /** 调用结果 */
-  result?: unknown;
-  /** 耗时（毫秒） */
-  durationMs?: number;
-  /** 是否为并行调用 */
-  isParallel?: boolean;
-  /** 并行组ID（同一组的工具会并行执行） */
-  groupId?: string;
-}
-
-/**
- * 执行统计（用于时间线底部总览）
- */
-export interface ExecutionStats {
-  /** 总耗时（毫秒） */
-  totalDurationMs: number;
-  /** 工具调用总数 */
-  toolCount: number;
-  /** 并行组数 */
-  parallelGroups: number;
-  /** 思考步骤数 */
-  thinkingSteps: number;
-}
-
-/**
- * 资源引用（知识库+MCP服务）
- */
-export interface ResourceRef {
-  /** 知识库ID列表（使用字符串避免JavaScript精度丢失） */
-  kbIds?: string[];
-  /** MCP服务ID列表（使用字符串避免JavaScript精度丢失） */
-  mcpIds?: string[];
 }
 
 /**

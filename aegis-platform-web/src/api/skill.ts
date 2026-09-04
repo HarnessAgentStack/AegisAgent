@@ -25,16 +25,6 @@ export async function createSkillDraft(req: SkillCreateDraftRequest): Promise<Sk
   return http.post<SkillDraftResult>('/runtime/skill/draft', req);
 }
 
-/** 更新技能元数据 */
-export async function updateSkillMetadata(id: string, req: {
-  description?: string;
-  instructions?: string;
-  inputs?: string;
-  outputs?: string;
-}): Promise<SkillDraftResult> {
-  return http.put<SkillDraftResult>(`/runtime/skill/${id}/metadata`, req);
-}
-
 /** 获取技能元数据 */
 export async function getSkillMetadata(id: string): Promise<SkillMetadataResponse> {
   return http.get<SkillMetadataResponse>(`/runtime/skill/${id}/metadata`);

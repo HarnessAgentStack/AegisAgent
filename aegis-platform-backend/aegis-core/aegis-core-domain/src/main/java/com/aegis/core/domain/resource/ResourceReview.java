@@ -3,6 +3,7 @@ package com.aegis.core.domain.resource;
 import com.aegis.core.base.TenantEntity;
 import com.aegis.core.enums.resource.ResourceType;
 import com.aegis.core.enums.common.ReviewStatus;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -71,4 +72,8 @@ public class ResourceReview extends TenantEntity {
     private String rejectReason;
     /** 提交时间，申请人提交审核的时间 */
     private LocalDateTime submitTime;
+
+    /** 申请人展示名（realName 优先，回退 username），查询时批量填充，非库字段 */
+    @TableField(exist = false)
+    private String applicantName;
 }

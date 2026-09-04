@@ -100,8 +100,8 @@ export interface AnswerEvent {
   payload: AnswerPayload;
 }
 
-/** 错误事件 */
-export interface ErrorEvent {
+/** 错误事件（TurnEvent 联合与 isErrorEvent 内用） */
+interface ErrorEvent {
   id: string;
   kind: 'error';
   timestamp: number;
@@ -110,9 +110,6 @@ export interface ErrorEvent {
 
 /** 统一执行流事件（判别联合，kind 为判别字段） */
 export type TurnEvent = ThinkingEvent | ToolEvent | AnswerEvent | ErrorEvent;
-
-/** 事件 kind 字面量集合 */
-export type TurnEventKind = TurnEvent['kind'];
 
 // ========== 轮次聚合 ==========
 
@@ -151,14 +148,8 @@ export interface MessageContext {
 /** 默认自动收起延迟（事件完成后） */
 export const TURN_AUTO_COLLAPSE_MS = 1500;
 
-/** 整轮完成后自动折叠延迟 */
-export const TURN_AUTO_FOLD_MS = 2000;
-
 /** 结果摘要截断长度 */
 export const RESULT_SUMMARY_MAX = 150;
-
-/** preview 折叠态文本截断长度 */
-export const PREVIEW_TEXT_MAX = 80;
 
 // ========== 派生工具 ==========
 

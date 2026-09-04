@@ -181,8 +181,11 @@ public class SkillAsToolAdapter extends ToolBase {
                                                          Map<String, Object> inputs, String callId) {
         return Mono.fromCallable(() -> {
             List<AgentEvent> events = new ArrayList<>();
+            // skill_creator 在 AgentScope Toolkit 线程执行，入口绑定的 TenantContext 不跨线程传递。
+            // handleSkillCreator 内 skillMapper.selectCount/selectOne/insert/updateById 均操作 res_skill（非 ignore 表），
+            // 无 TenantContext 会触发 fail-closed。此处解析 tenantId 后显式 bind，finally clear。
+            boolean boundHere = false;
             try {
-                // 从会话上下文解析真实 tenantId/userId（skill_creator 实体自身是系统级占位值）
                 Long tenantId = null;
                 Long userId = null;
                 try {
@@ -199,10 +202,13 @@ public class SkillAsToolAdapter extends ToolBase {
                     log.warn("skill_creator: 从 RuntimeContext 解析会话上下文失败: {}", e.getMessage());
                 }
                 if (tenantId == null) {
-                    // 回退：普通技能实体的 tenantId（skill_creator 场景下为 0，仅兜底记录）
                     tenantId = skill.getTenantId();
                     log.warn("skill_creator: 会话上下文缺 tenantId，回退 skill.tenantId={}（系统技能场景该值不可用）",
                             tenantId);
+                }
+                if (tenantId != null && com.aegis.core.common.tenant.TenantContextHolder.get() == null) {
+                    com.aegis.core.common.tenant.TenantContextHolder.bind(tenantId);
+                    boundHere = true;
                 }
 
                 log.info("skill_creator 编排调用开始: tenantId={}, userId={}, skillId={}, inputs={}",
@@ -233,6 +239,10 @@ public class SkillAsToolAdapter extends ToolBase {
                     toolResultCache.put(callId, errJson);
                 }
                 return buildResult(callId, skill.getSkillCode(), errJson, true);
+            } finally {
+                if (boundHere) {
+                    com.aegis.core.common.tenant.TenantContextHolder.clear();
+                }
             }
         });
     }

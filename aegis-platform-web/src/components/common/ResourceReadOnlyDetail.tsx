@@ -303,7 +303,7 @@ const ResourceReadOnlyDetail: React.FC<ResourceReadOnlyDetailProps> = ({
 
       <Descriptions column={2} size="small" bordered title="检索配置">
         <Descriptions.Item label="分块策略">
-          {kb.chunkStrategy ? { FIXED_SIZE: '固定大小', SENTENCE: '按句子', PARAGRAPH: '按段落', SLIDING_WINDOW: '滑动窗口' }[kb.chunkStrategy] : '-'}
+          {kb.chunkStrategy ? { FIXED: '固定大小', FIXED_SIZE: '固定大小', SENTENCE: '按句子', PARAGRAPH: '按段落', MARKDOWN: 'Markdown 标题', SLIDING_WINDOW: '滑动窗口' }[kb.chunkStrategy] : '-'}
         </Descriptions.Item>
         <Descriptions.Item label="分块大小">{kb.chunkSize || '-'}</Descriptions.Item>
         <Descriptions.Item label="分块重叠">{kb.chunkOverlap ?? '-'}</Descriptions.Item>

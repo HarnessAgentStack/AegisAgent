@@ -315,22 +315,34 @@ public class AegisAgentInstanceManager {
                                      com.aegis.runtime.service.agent.AssemblyResourceContext resources,
                                      String newFingerprint, List<AgentBinding> bindings) {
         reactor.core.publisher.Mono.fromRunnable(() -> {
-                    // per-entry 锁：同一实例的并发刷新串行化
-                    synchronized (entry.refreshLock) {
-                        // CAS 双检：可能已有其他线程完成了刷新
-                        if (newFingerprint.equals(entry.bindingFingerprint)) {
-                            return;
+                    // boundedElastic 池化线程不继承请求租户上下文，刷新前显式绑定（fail-closed 要求）
+                    boolean boundHere = false;
+                    try {
+                        if (com.aegis.core.common.tenant.TenantContextHolder.get() == null) {
+                            com.aegis.core.common.tenant.TenantContextHolder.bind(tenantId);
+                            boundHere = true;
                         }
-                        try {
-                            refreshToolkit(entry, agentId, preloadedTools, tenantId, userId,
-                                    sessionMcpServiceIds, agentType, resources);
-                            materializeWorkspace(agentType, agentId, userId, bindings);
-                            entry.bindingFingerprint = newFingerprint;
-                            log.info("async refresh completed: poolKey={}, agentId={}, newFp={}",
-                                    entry.poolKey, agentId, newFingerprint);
-                        } catch (Exception e) {
-                            log.error("async refresh failed, stale tools remain until next request: poolKey={}, agentId={}",
-                                    entry.poolKey, agentId, e);
+                        // per-entry 锁：同一实例的并发刷新串行化
+                        synchronized (entry.refreshLock) {
+                            // CAS 双检：可能已有其他线程完成了刷新
+                            if (newFingerprint.equals(entry.bindingFingerprint)) {
+                                return;
+                            }
+                            try {
+                                refreshToolkit(entry, agentId, preloadedTools, tenantId, userId,
+                                        sessionMcpServiceIds, agentType, resources);
+                                materializeWorkspace(agentType, agentId, userId, bindings);
+                                entry.bindingFingerprint = newFingerprint;
+                                log.info("async refresh completed: poolKey={}, agentId={}, newFp={}",
+                                        entry.poolKey, agentId, newFingerprint);
+                            } catch (Exception e) {
+                                log.error("async refresh failed, stale tools remain until next request: poolKey={}, agentId={}",
+                                        entry.poolKey, agentId, e);
+                            }
+                        }
+                    } finally {
+                        if (boundHere) {
+                            com.aegis.core.common.tenant.TenantContextHolder.clear();
                         }
                     }
                 })

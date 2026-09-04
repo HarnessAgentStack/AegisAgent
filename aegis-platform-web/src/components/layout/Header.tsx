@@ -4,11 +4,9 @@
  * @author wang.zhen
  * @since 1.0.0
  */
-import React from 'react';
-import { Avatar, Button, Dropdown, Layout, Space, Tooltip } from 'antd';
+import React, { startTransition } from 'react';
+import { Avatar, Button, Dropdown, Layout, Space } from 'antd';
 import {
-  BulbFilled,
-  BulbOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -17,7 +15,6 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { ROUTE_PATH } from '@/utils/constants';
-import { useThemeStore } from '@/stores/themeStore';
 
 const { Header: AntHeader } = Layout;
 
@@ -29,12 +26,12 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ collapsed, onToggle }) => {
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
-  const themeMode = useThemeStore((s) => s.mode);
-  const toggleTheme = useThemeStore((s) => s.toggle);
 
   const handleSignOut = async () => {
     await signOut();
-    navigate(ROUTE_PATH.LOGIN, { replace: true });
+    startTransition(() => {
+      navigate(ROUTE_PATH.LOGIN, { replace: true });
+    });
   };
 
   const userMenu = {
@@ -70,14 +67,6 @@ export const Header: React.FC<HeaderProps> = ({ collapsed, onToggle }) => {
 
       {/* 右侧操作区 */}
       <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-        {/* 主题切换（任务 13） */}
-        <Tooltip title={themeMode === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}>
-          <Button
-            type="text"
-            onClick={toggleTheme}
-            icon={themeMode === 'dark' ? <BulbFilled style={{ fontSize: 18 }} /> : <BulbOutlined style={{ fontSize: 18 }} />}
-          />
-        </Tooltip>
         <Dropdown menu={userMenu} placement="bottomRight">
           <Space style={{ cursor: 'pointer', padding: '0 4px' }}>
             <Avatar

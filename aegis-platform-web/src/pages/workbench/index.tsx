@@ -143,14 +143,11 @@ const Workbench: React.FC = () => {
 
   /** 切换智能体 */
   const handleAgentSwitch = useCallback((agentId: string) => {
+    const agent = agentSel.agents.find((a) => a.id === agentId);
     agentSel.setCurrentAgentId(agentId);
     sessionMgr.resetSession();
     chat.resetChat();
-    agentSel.setAgents((prevAgents) => {
-      const agent = prevAgents.find((a) => a.id === agentId);
-      message.success(`已切换到 ${agent?.agentName ?? '智能体'}，整个任务过程将基于此智能体执行`);
-      return prevAgents;
-    });
+    message.success(`已切换到 ${agent?.agentName ?? '智能体'}，整个任务过程将基于此智能体执行`);
     setTimeout(() => {
       getSessionList({ page: 1, size: 1, agentId })
         .then(res => {
@@ -215,6 +212,15 @@ const Workbench: React.FC = () => {
       .catch(() => setSkills([]))
       .finally(() => setSkillsLoading(false));
   }, [agentSel.currentAgentId]);
+
+  // URL 参数：agentId 指定初始智能体（如智能体列表「开始对话」入口）
+  useEffect(() => {
+    const id = searchParams.get('agentId');
+    if (!id || agentSel.agentsLoading) return;
+    if (agentSel.agents.some((a) => a.id === id)) {
+      agentSel.setCurrentAgentId(id);
+    }
+  }, [searchParams, agentSel.agents, agentSel.agentsLoading, agentSel.setCurrentAgentId]);
 
   // URL 参数：mode=skill_creator 自动激活
   useEffect(() => {

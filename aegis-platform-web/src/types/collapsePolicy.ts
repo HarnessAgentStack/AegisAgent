@@ -12,7 +12,7 @@
 export type ThinkingStyle = 'collapsed' | 'collapsedPreview' | 'fixedScrolling';
 
 /** 工具折叠档位 */
-export type CollapsedTools = 'none' | 'all' | 'readOnly';
+type CollapsedTools = 'none' | 'all' | 'readOnly';
 
 /** 折叠策略集合 */
 export interface CollapsePolicy {

@@ -6,9 +6,9 @@
 
 ## 一、产品定位与核心模型
 
-### 为什么要有三类智能体
+### 三类智能体定位
 
-企业里用 AI Agent 的人和场景差得很远：有人想聊聊天、有人想对接业务系统、有人要给外部系统调用。Aegis 把这三种场景抽象成三种智能体类型（**agent_type = UNIVERSAL / APPLICATION / SYSTEM**），**从运行时行为、资源加载、安全策略到部署方式全链路差异化**，而不是靠一个"通用 Agent 配不同参数"打补丁。此外，每个智能体还有独立的治理档位（**governance_tier = STANDARD 默认 / ENHANCED 增强 / STRICT 严格**），叠加控制安全基线。
+Aegis 把三种场景抽象成三种智能体类型（**agent_type = UNIVERSAL / APPLICATION / SYSTEM**），**从运行时行为、资源加载、安全策略到部署方式全链路差异化**。每个智能体还有独立的治理档位（**governance_tier = STANDARD 默认 / ENHANCED 增强 / STRICT 严格**），叠加控制安全基线。
 
 ### 三类智能体
 
@@ -18,7 +18,7 @@
 | **APPLICATION**（应用智能体）    | 业务人员 | 租户内业务团队 | 仅限智能体显式绑定的资源，严格控制不越权                      |
 | **SYSTEM**（系统智能体）         | 技术人员 | 系统集成方   | 仅限绑定的高安全等级资源，对外暴露 API 供自动化调用              |
 
-agent_type 的差异在运行时直接体现：同一个对话请求进来，先判断走哪个 agent_type 的资源装载轨道，再决定这个智能体"能看到什么"。通用智能体是开放工作台，应用智能体是封闭业务单元，系统智能体是受控 API。
+agent_type 决定运行时资源装载轨道：通用智能体开放、应用智能体封闭、系统智能体受控 API。
 
 ---
 
@@ -91,7 +91,7 @@ agent_type 的差异在运行时直接体现：同一个对话请求进来，先
 
 | 智能体           | agent_type   | 作用                                 |
 | ------------- | ----------- | ---------------------------------- |
-| universal     | UNIVERSAL   | 平台预置的全功能智能体，对话 / 工具 / RAG 全覆盖，开箱即用 |
+| universal     | UNIVERSAL   | 平台预置的全功能智能体，对话 / 工具 / RAG 全覆盖 |
 | skill_creator | UNIVERSAL   | 元技能，`@skill_creator` 引用即可创建新技能     |
 
 ---
@@ -153,7 +153,7 @@ DRAFT → REVIEWING → PUBLISHED → ARCHIVED（DEPRECATED）
 
 技能提交后先跑安全扫描，八大维度任何一个命中 HIGH 风险直接阻断，修完才能继续。扫描过了才进人工审核。
 
-### 分轨装载（关键）
+### 分轨装载
 
 资源（技能 / MCP / 知识库）在运行时怎么进入模型上下文，取决于 **agent_type**：
 
@@ -163,7 +163,7 @@ DRAFT → REVIEWING → PUBLISHED → ARCHIVED（DEPRECATED）
 | **APPLICATION**（应用智能体）    | 平台内置能力 + **智能体显式绑定的**（由创建者选好，用户不能自行添加订阅）    |
 | **SYSTEM**（系统智能体）         | 平台内置能力 + **智能体显式绑定的**（严格控制，防越权）             |
 
-这个分轨设计的核心逻辑：**开放场景（通用）允许用户自由组合，封闭场景（应用/系统）只暴露经过审核的资源集**，避免越权。
+开放场景（通用）允许用户自由组合，封闭场景（应用/系统）只暴露经过审核的资源集。
 
 另外，通用智能体还有一条兜底：用户在工作台用 `@技能名` 引用了一个没订阅但可见的技能，允许本轮临时注入（会话级）。应用/系统智能体没有这个兜底，必须走绑定。
 
@@ -189,7 +189,7 @@ DRAFT → REVIEWING → PUBLISHED → ARCHIVED（DEPRECATED）
 
 **对接外部 MCP 协议服务**。输入 MCP Server URL，点连接测试，系统自动发现 Server 提供的 tools 列表并注册。
 
-MCP 服务在会话期间按需加载，不污染全局。智能体可以像调用平台内置工具一样调用 MCP 提供的工具。
+MCP 服务在会话期间按需加载。智能体可以像调用平台内置工具一样调用 MCP 提供的工具。
 
 ![MCP 中心 · 市场](images/mcp-market.png)
 
@@ -233,7 +233,7 @@ MCP 服务在会话期间按需加载，不污染全局。智能体可以像调�
     │  ③ 创建会话快照，记录版本
     │  ④ 构建运行时上下文（租户 + 用户 + @技能 + 会话资源）
     ▼
-HarnessAgent 中间件链（5 个，从外到内：Trace → SandboxRouting → RAG → Mask → Audit）
+HarnessAgent 中间件链（6 个，从外到内：Trace → SandboxRouting → BindingSync → RAG → Mask → Audit）
     │  工具安全决策不在这条链内，由 AgentScope PermissionEngine 在 onActing 实时评估 sec_tool_policy
     ▼
 HarnessAgent ReAct 循环

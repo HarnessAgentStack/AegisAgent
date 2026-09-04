@@ -2,10 +2,12 @@ package com.aegis.admin.service.resource.handler;
 
 import com.aegis.core.common.error.BusinessException;
 import com.aegis.core.common.web.ResultCode;
+import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.agent.AgentConfig;
 import com.aegis.core.domain.agent.AgentDef;
 import com.aegis.core.enums.agent.AgentLifeStatus;
 import com.aegis.core.enums.resource.ResourceType;
+import com.aegis.dal.mapper.agent.AgentBindingMapper;
 import com.aegis.dal.mapper.agent.AgentConfigMapper;
 import com.aegis.dal.mapper.agent.AgentDefMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -29,6 +31,7 @@ public class AgentReviewHandler implements ResourceReviewHandler {
 
     private final AgentDefMapper agentDefMapper;
     private final AgentConfigMapper agentConfigMapper;
+    private final AgentBindingMapper agentBindingMapper;
 
     @Override
     public ResourceType supportedType() {
@@ -76,6 +79,13 @@ public class AgentReviewHandler implements ResourceReviewHandler {
                 currentCfg.setVersion(version);
                 agentConfigMapper.insert(currentCfg);
             }
+            // 绑定随版本迁移：uk_agent_binding_resource 唯一键不含 version，
+            // 只能 UPDATE 旧版本绑定指向新版本（INSERT 副本会触发唯一键冲突）
+            agentBindingMapper.update(null, new LambdaUpdateWrapper<AgentBinding>()
+                    .eq(AgentBinding::getAgentId, resourceId)
+                    .eq(AgentBinding::getAgentVersion, agent.getVersion())
+                    .eq(AgentBinding::getEnabled, true)
+                    .set(AgentBinding::getAgentVersion, version));
         }
         agentDefMapper.update(null, new LambdaUpdateWrapper<AgentDef>()
                 .eq(AgentDef::getId, resourceId)

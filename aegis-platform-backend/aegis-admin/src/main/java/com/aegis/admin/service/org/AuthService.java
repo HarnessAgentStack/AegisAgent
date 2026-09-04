@@ -212,6 +212,10 @@ public class AuthService {
      * @return 用户信息
      */
     public Map<String, Object> me(Long tenantId, Long userId, String username, String roles) {
+        if (tenantId != null) {
+            TenantContextHolder.bind(tenantId);
+        }
+        try {
         Map<String, Object> userInfo = new HashMap<>();
         userInfo.put("id", userId);
         userInfo.put("username", username);
@@ -244,6 +248,11 @@ public class AuthService {
         userInfo.put("permissions", computePermissionsFromConfig(roleList));
         userInfo.put("status", displayStatus);
         return userInfo;
+        } finally {
+            if (tenantId != null) {
+                TenantContextHolder.clear();
+            }
+        }
     }
 
     // ============ 个人设置 ============
@@ -260,10 +269,14 @@ public class AuthService {
      * @param email    邮箱
      * @param phone    手机号
      */
-    public void updateProfile(Long userId, String nickname, String avatar, String email, String phone) {
+    public void updateProfile(Long userId, Long tenantId, String nickname, String avatar, String email, String phone) {
         if (userId == null) {
             throw new BusinessException(ResultCode.UNAUTHORIZED, "未登录");
         }
+        if (tenantId != null) {
+            TenantContextHolder.bind(tenantId);
+        }
+        try {
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "用户不存在");
@@ -303,6 +316,11 @@ public class AuthService {
         }
         userMapper.updateById(user);
         log.info("用户资料更新: userId={}, nickname={}", userId, nickname);
+        } finally {
+            if (tenantId != null) {
+                TenantContextHolder.clear();
+            }
+        }
     }
 
     /**
@@ -312,13 +330,17 @@ public class AuthService {
      * @param oldPassword 旧密码明文
      * @param newPassword 新密码明文
      */
-    public void changePassword(Long userId, String oldPassword, String newPassword) {
+    public void changePassword(Long userId, Long tenantId, String oldPassword, String newPassword) {
         if (userId == null) {
             throw new BusinessException(ResultCode.UNAUTHORIZED, "未登录");
         }
         if (oldPassword == null || newPassword == null || newPassword.isEmpty()) {
             throw new BusinessException(ResultCode.PARAM_ERROR, "密码不能为空");
         }
+        if (tenantId != null) {
+            TenantContextHolder.bind(tenantId);
+        }
+        try {
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "用户不存在");
@@ -329,6 +351,11 @@ public class AuthService {
         user.setPassword(passwordEncoder.encode(newPassword));
         userMapper.updateById(user);
         log.info("用户密码修改: userId={}", userId);
+        } finally {
+            if (tenantId != null) {
+                TenantContextHolder.clear();
+            }
+        }
     }
 
     // ============ 辅助方法 ============

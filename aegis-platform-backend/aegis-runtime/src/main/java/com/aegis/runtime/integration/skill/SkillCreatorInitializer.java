@@ -45,12 +45,24 @@ public class SkillCreatorInitializer implements CommandLineRunner {
                     .last("LIMIT 1"));
 
             if (existing != null) {
+                boolean needUpdate = false;
                 // 已存在但缺少 inputs schema（旧版本初始化的数据）：
                 // 补充 tool_call 参数定义，否则 LLM 看到的工具 schema 为空 object，无法正确传参
                 if (existing.getInputs() == null || existing.getInputs().isBlank()) {
                     existing.setInputs(buildDefaultInputsSchema());
+                    needUpdate = true;
+                }
+                // instructions 版本升级：旧 instructions 未包含"禁止调用 generate_file"约束，
+                // 导致 LLM 在 skill_creator 流程中误调 generate_file 生成文件。检测到旧版本时强制刷新。
+                String instr = existing.getInstructions();
+                if (instr == null || !instr.contains("禁止调用 generate_file")) {
+                    existing.setInstructions(buildDefaultInstructions());
+                    needUpdate = true;
+                    log.info("skill_creator 检测到旧版 instructions，升级为含 generate_file 约束版本");
+                }
+                if (needUpdate) {
                     skillMapper.updateById(existing);
-                    log.info("skill_creator 已存在（id={}），补充 inputs schema", existing.getId());
+                    log.info("skill_creator 已存在（id={}），已更新字段", existing.getId());
                 } else {
                     log.info("skill_creator 已存在（id={}），跳过初始化", existing.getId());
                 }
@@ -177,10 +189,12 @@ public class SkillCreatorInitializer implements CommandLineRunner {
             - 根据反馈迭代优化
             - 最终生成可下载的技能包
 
-            ## 注意事项
+            ## 重要约束（必须遵守）
+            - **禁止调用 generate_file 工具生成技能文件**：SKILL.md / skill.json / README.md 由平台在 skill_creator CREATE 动作完成时自动生成，并通过 skill.draft.created 事件下发前端右侧面板，无需也不应使用 generate_file。
+            - 你只需调用 skill_creator 工具（action=CREATE/MODIFY/DEBUG/SUBMIT），平台会自动完成文件生成。
             - scope 字段强制为 LOCAL，用户不可修改
             - 所有创建的技能需通过安全扫描
-            - 交付产物为标准 .zip 压缩包
+            - 交付产物为标准 .zip 压缩包（由 PACKAGE 动作生成，非 generate_file）
             """;
     }
 

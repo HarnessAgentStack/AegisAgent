@@ -7,8 +7,7 @@
 # 环境变量契约：
 #   DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD   MySQL 连接
 #   DB_USE_SSL                                            JDBC useSSL（本地 false / 生产 true）
-#   REDIS_HOST / REDIS_PORT / REDIS_PASSWORD              Spring Data Redis（Lettuce）
-#   UPON_REDIS_HOST / UPON_REDIS_PORT / UPON_REDIS_PASSWORD  AgentScope DistributedStore（Jedis，默认回退 REDIS_*）
+#   REDIS_HOST / REDIS_PORT / REDIS_PASSWORD              Spring Data Redis（Lettuce，亦供 DistributedStore 共享）
 #   JWT_SECRET                                            HS256 签名密钥（UTF-8 字节 ≥ 32）
 #   MINIO_ENDPOINT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY  对象存储
 #   SANDBOX_DOCKER_HOST / SANDBOX_USER_FILES_DIR          沙箱 Docker 卷
@@ -30,8 +29,3 @@ aegis:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
     access-key: ${MINIO_ACCESS_KEY:aegis}
     secret-key: ${MINIO_SECRET_KEY:aegis12345}
-  upon:
-    redis:
-      host: ${UPON_REDIS_HOST:${REDIS_HOST:127.0.0.1}}
-      port: ${UPON_REDIS_PORT:${REDIS_PORT:6379}}
-      password: ${UPON_REDIS_PASSWORD:${REDIS_PASSWORD:}}

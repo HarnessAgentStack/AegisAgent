@@ -15,7 +15,7 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
  *
  * <h3>配置项</h3>
  * <ul>
- *   <li>SSE 端点：注册响应式 SSE 路由，配合 {@code SseHandler}（网关）透传流式事件</li>
+ *   <li>SSE 端点：注册响应式 SSE 路由，透传流式事件</li>
  *   <li>异步线程池：阻塞调用（MyBatis-Plus 同步 JDBC / 沙箱 exec）卸载至 {@code boundedElastic}，
  *       避免阻塞 Reactor 事件循环线程</li>
  *   <li>跨域：允许开发环境直连 runtime，绕过代理对 SSE 的处理限制</li>

@@ -115,6 +115,7 @@ public class AegisAuditLogMiddleware implements MiddlewareBase {
                 AuditLog audit = AuditLog.builder()
                         .logType(logType)
                         .userId(ctx.getUserId())
+                        .username(ctx.getUserName())
                         .operation(operation)
                         .resourceType(resourceType)
                         .resourceName(resourceName)

@@ -42,8 +42,12 @@ public class JwtServerAuthenticationConverter implements ServerAuthenticationCon
 
         String path = request.getRequest().getPath().value();
 
-        // 跳过认证相关端点
-        if (path.startsWith("/api/admin/auth/")) {
+        // 跳过认证公开端点（与 SecurityConfig permitAll 列表严格对齐）。
+        // 不能用 startsWith("/api/admin/auth/") 前缀跳过——会误伤同前缀下
+        // 需要 JWT 认证的 /me、/profile、/change-password，导致其永远 401
+        if (path.equals("/api/admin/auth/login")
+                || path.equals("/api/admin/auth/refresh")
+                || path.equals("/api/admin/auth/logout")) {
             return Mono.empty();
         }
 

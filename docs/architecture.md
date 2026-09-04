@@ -67,7 +67,7 @@ aegis-platform-backend（Maven 聚合，Java 21，Spring Boot 4.0.0）
 | 包 | 内容 |
 |---|---|
 | `integration/agent` | `AegisAgentInstanceManager`（实例池 + Builder 装配）、`HarnessEventConverter`、`AegisToolBridge` |
-| `integration/middleware` | 5 个中间件（`BindingSyncMiddleware` 在 `integration/workspace` 下） |
+| `integration/middleware` | 6 个中间件（`BindingSyncMiddleware` 在 `integration/workspace` 包下） |
 | `integration/model` | `AegisModelProvider`（ModelProvider SPI）+ 动态模型路由 |
 | `integration/tool` | `AegisBuiltinTools`、`AegisExecuteTool`、`AegisGenerateFileTool`、`AegisHttpTool`、`AegisMcpTool` |
 | `integration/sandbox` | `AegisSandbox` / `AegisSandboxClient` / `AegisSandboxFilesystemSpec` |
@@ -144,12 +144,13 @@ HarnessAgent.builder()
 
 ### 3.4 中间件链
 
-5 个中间件实现 `MiddlewareBase`，Spring 注入 `List<MiddlewareBase>`，由 AgentScope 内核按 `order()` 降序（大值在外层）驱动：
+6 个中间件实现 `MiddlewareBase`，Spring 注入 `List<MiddlewareBase>`，由 AgentScope 内核按 `order()` 降序（大值在外层）驱动：
 
 | order | 类 | 拦截点 | 作用 |
 |---|---|---|---|
 | 95 | `AegisTraceMiddleware` | onAgent / onReasoning / onActing / onModelCall | TraceId 贯穿，Span 记录（AGENT / REASONING / TOOL_CALL / MODEL_CALL） |
 | 85 | `SandboxRoutingMiddleware` | onActing | 读 `sec_sandbox_policy` 判定工具是否进沙箱；仅判定 + 审计，不短路执行 |
+| 75 | `BindingSyncMiddleware` | onAgent | 绑定指纹比对，不一致时 `refreshToolkit` + Workspace 重物化 |
 | 70 | `AegisRagMiddleware` | onSystemPrompt | 知识库检索，片段注入系统提示词 |
 | 50 | `AegisMaskMiddleware` | — | 输出脱敏 |
 | 30 | `AegisAuditLogMiddleware` | onActing | 审计日志落库 |
@@ -175,7 +176,7 @@ AgentScope 2.0.2 提供 5 个拦截点：4 个洋葱型（`onAgent` / `onReasoni
 
 对应配置项 `aegis.runtime.agent-pool.max-size`（默认 100）与 `idle-evict-minutes`（默认 15）。
 
-`BindingFingerprinter` 对 `agent_binding` 计算 SHA-256（`resourceType:resourceId:resourceVersion` 排序拼接）：一致则复用实例（冷启动 500–2000ms → <50ms），不一致则 `refreshToolkit` + 重物化 Workspace。
+`BindingFingerprinter` 对 `agent_binding` 计算 SHA-256（`resourceType:resourceId:resourceVersion` 排序拼接）：一致则复用实例，不一致则 `refreshToolkit` + 重物化 Workspace。
 
 工作区根路径按池键派生，与 sessionId 无关：`UNIVERSAL → /workspace/{tenantId}/{agentId}/{userId}`，`APPLICATION/SYSTEM → /workspace/{tenantId}/{agentId}`。
 
@@ -208,7 +209,7 @@ AgentScope 2.0.2 提供 5 个拦截点：4 个洋葱型（`onAgent` / `onReasoni
 | Zustand | 5.0.2 |
 | TanStack React Query | 5.62 |
 | React Router | 6.28 |
-| 包管理器 | pnpm 11.17.0 |
+| 包管理器 | npm（仓库含 package-lock.json，CI 用 `npm ci`） |
 
 **基础设施**
 
@@ -224,9 +225,9 @@ AgentScope 2.0.2 提供 5 个拦截点：4 个洋葱型（`onAgent` / `onReasoni
 | Prometheus | v2.53.0 | 9090 | profile `observability` |
 | Grafana | 11.1.0 | 3000 | profile `observability` |
 | OTel Collector | 0.104.0 | 4317 / 4318 | profile `observability` |
-| PaddleOCR | 自建镜像 | 8098 | profile `ocr`，默认不启用 |
+| PaddleOCR | 已移除 | — | 已废弃：OCR 统一走 ONNX Runtime 进程内推理，原 `paddleocr` Docker 服务已从启动脚本移除 |
 
-OCR 默认走 ONNX Runtime 进程内推理（`aegis.ocr.onnx.enabled=true`，模型在 `models/ocr/`），PaddleOCR HTTP 为已弃用的 fallback（`aegis.ocr.paddle.enabled=false`）。
+OCR 走 ONNX Runtime 进程内推理（`aegis.ocr.onnx.enabled`，默认 true，模型在 `models/ocr/`）。PaddleOCR 为已弃用 fallback（`aegis.ocr.paddle.enabled`，原 Docker 服务已移除）。
 
 ---
 
@@ -267,7 +268,7 @@ DDL：`infra/ddl/01_schema_init.sql`；种子：`infra/ddl/02_seed_data.sql`。�
 
 ### 5.3 Milvus
 
-集合名 = `tenant_{tenantId}_` + `aegis_kb_v1_{kbId}`（`MilvusVectorStoreAdapter.buildCollectionName` 拼租户前缀，`KbConstants.VECTOR_COLLECTION_PREFIX = "aegis_kb_v1_"`，后缀为知识库主键 ID）。跨租户物理隔离。
+集合名 = `tenant_{tenantId}_aegis_kb_v1_{kbId}`。跨租户物理隔离。
 
 ### 5.4 MinIO
 
@@ -355,7 +356,7 @@ DDL：`infra/ddl/01_schema_init.sql`；种子：`infra/ddl/02_seed_data.sql`。�
 | `aegis.upon.sandbox.snapshot.enabled` | `true` | 快照存储 `minio` |
 | `aegis.upon.sandbox.execution-guard.enabled` | `true` | 执行互斥锁，超时 30s |
 
-> 配置键存在不一致：`AegisAgentInstanceManager` 读 `aegis.sandbox.framework-drive.enabled`（无默认值注入点，落 false → 文件系统走 `RemoteFilesystemSpec`），`AegisExecuteTool` 读 `aegis.runtime.sandbox.framework-drive.enabled`（yml 中为 true → 代码执行走框架驱动路径）。两处互不影响，但切换全框架驱动需同时改两个键。
+> 配置键不一致：`AegisAgentInstanceManager` 读 `aegis.sandbox.framework-drive.enabled`（未配置，默认 false）；`AegisExecuteTool` 读 `aegis.runtime.sandbox.framework-drive.enabled`（yml 为 true）。切换全框架驱动需同时改两处。
 
 `SandboxTrigger` 用工具能力白名单判定是否需要沙箱：`aegis_execute`、`execute`、`shell`、`sh`、`bash`、`run_script`、`build_test`、`exec_attachment`、`generate_file`。
 

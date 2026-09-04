@@ -1,6 +1,8 @@
 package com.aegis.admin.service.resource;
 
+import com.aegis.dal.mapper.org.UserBaseMapper;
 import com.aegis.dal.mapper.resource.ResourceReviewMapper;
+import com.aegis.core.domain.org.User;
 import com.aegis.core.domain.resource.ResourceReview;
 import com.aegis.core.enums.resource.ResourceType;
 import com.aegis.core.enums.common.ReviewStatus;
@@ -9,7 +11,13 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import com.aegis.admin.service.resource.ReviewProcessEngine;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 审核查询领域服务。
@@ -25,6 +33,7 @@ import com.aegis.admin.service.resource.ReviewProcessEngine;
 public class ReviewQueryService {
 
     private final ResourceReviewMapper resourceReviewMapper;
+    private final UserBaseMapper userBaseMapper;
 
     /**
      * 待审核列表（支持关键词搜索 + 真实分页）。
@@ -48,7 +57,9 @@ public class ReviewQueryService {
                 .like(!trimmedKeyword.isEmpty(),
                         ResourceReview::getResourceName, trimmedKeyword)
                 .orderByDesc(ResourceReview::getSubmitTime);
-        return resourceReviewMapper.selectPage(pageObj, wrapper);
+        Page<ResourceReview> pageResult = resourceReviewMapper.selectPage(pageObj, wrapper);
+        fillApplicantNames(pageResult);
+        return pageResult;
     }
 
     /**
@@ -64,7 +75,9 @@ public class ReviewQueryService {
         LambdaQueryWrapper<ResourceReview> wrapper = new LambdaQueryWrapper<ResourceReview>()
                 .eq(userId != null, ResourceReview::getApplicantUserId, userId)
                 .orderByDesc(ResourceReview::getSubmitTime);
-        return resourceReviewMapper.selectPage(pageObj, wrapper);
+        Page<ResourceReview> pageResult = resourceReviewMapper.selectPage(pageObj, wrapper);
+        fillApplicantNames(pageResult);
+        return pageResult;
     }
 
     /**
@@ -84,7 +97,43 @@ public class ReviewQueryService {
                 .eq(reviewStatus != null && !reviewStatus.isEmpty(),
                         ResourceReview::getReviewStatus, parseReviewStatus(reviewStatus))
                 .orderByDesc(ResourceReview::getSubmitTime);
-        return resourceReviewMapper.selectPage(pageObj, wrapper);
+        Page<ResourceReview> pageResult = resourceReviewMapper.selectPage(pageObj, wrapper);
+        fillApplicantNames(pageResult);
+        return pageResult;
+    }
+
+    /**
+     * 按页内 applicantUserId 批量填充申请人展示名（realName 优先，回退 username）。
+     *
+     * <p>用户已删/缺失时回退显 userId，不报错。
+     */
+    private void fillApplicantNames(Page<ResourceReview> pageResult) {
+        List<ResourceReview> records = pageResult.getRecords();
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        Set<Long> userIds = records.stream()
+                .map(ResourceReview::getApplicantUserId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (userIds.isEmpty()) {
+            return;
+        }
+        Map<Long, User> userMap = userBaseMapper.selectBatchIds(userIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity(), (a, b) -> a));
+        for (ResourceReview review : records) {
+            Long applicantUserId = review.getApplicantUserId();
+            if (applicantUserId == null) {
+                continue;
+            }
+            User user = userMap.get(applicantUserId);
+            if (user != null) {
+                review.setApplicantName(user.getRealName() != null && !user.getRealName().isBlank()
+                        ? user.getRealName() : user.getUsername());
+            } else {
+                review.setApplicantName(String.valueOf(applicantUserId));
+            }
+        }
     }
 
     /**

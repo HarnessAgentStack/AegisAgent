@@ -46,8 +46,12 @@ export function useAgentSelection() {
       }
 
       setAgents(result);
-      const universal = result.find((a) => a.agentType === AgentType.UNIVERSAL);
-      setCurrentAgentId(universal?.id ?? result[0]?.id);
+      // 仅当尚无选中或选中已不在列表时回落通用智能体，避免覆盖 URL 指定的 agentId
+      setCurrentAgentId((prev) => {
+        if (prev && result.some((a) => a.id === prev)) return prev;
+        const universal = result.find((a) => a.agentType === AgentType.UNIVERSAL);
+        return universal?.id ?? result[0]?.id;
+      });
     } catch (err) {
       console.error(err);
     } finally {

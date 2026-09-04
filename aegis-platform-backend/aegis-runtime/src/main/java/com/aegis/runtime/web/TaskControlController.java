@@ -1,5 +1,7 @@
 package com.aegis.runtime.web;
 
+import com.aegis.core.common.tenant.TenantContextHolder;
+
 import com.aegis.core.common.error.BusinessException;
 import com.aegis.core.common.web.Result;
 import com.aegis.core.common.web.ResultCode;
@@ -73,6 +75,8 @@ public class TaskControlController {
 
         // 阻塞 DB 操作切换到 boundedElastic 线程池，避免阻塞 Netty event loop
         return Mono.<Result<Void>>fromCallable(() -> {
+            TenantContextHolder.bind(tenantId);
+            try {
             // 校验会话存在 + 归属（跨租户/横向越权防护）
             Session session = assertSessionOwnership(sessionId, tenantId, userId);
 
@@ -88,6 +92,9 @@ public class TaskControlController {
                 return Result.success(null);
             } else {
                 return Result.fail(ResultCode.INTERNAL_ERROR, "中断信号发送失败");
+            }
+            } finally {
+                TenantContextHolder.clear();
             }
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -111,6 +118,8 @@ public class TaskControlController {
 
         // 阻塞 DB 操作切换到 boundedElastic 线程池，避免阻塞 Netty event loop
         return Mono.<Result<Void>>fromCallable(() -> {
+            TenantContextHolder.bind(tenantId);
+            try {
             Session session = assertSessionOwnership(sessionId, tenantId, userId);
 
             SessionStatus status = session.getStatus();
@@ -123,6 +132,9 @@ public class TaskControlController {
             sessionManageService.updateStatus(sessionId, SessionStatus.STARTED);
             log.info("Session status updated to STARTED for retry: sessionId={}", sessionId);
             return Result.success(null);
+            } finally {
+                TenantContextHolder.clear();
+            }
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -160,6 +172,8 @@ public class TaskControlController {
 
         // 阻塞 DB 操作切换到 boundedElastic 线程池，避免阻塞 Netty event loop
         return Mono.<Result<Void>>fromCallable(() -> {
+            TenantContextHolder.bind(tenantId);
+            try {
             Session session = assertSessionOwnership(sessionId, tenantId, userId);
 
             SessionStatus status = session.getStatus();
@@ -195,6 +209,9 @@ public class TaskControlController {
             writeHitlHistory(sessionId, session, userId, HitlAction.APPROVE,
                     results.isEmpty() ? null : "toolCount=" + results.size());
             return Result.success(null);
+            } finally {
+                TenantContextHolder.clear();
+            }
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -217,6 +234,8 @@ public class TaskControlController {
 
         // 阻塞 DB 操作切换到 boundedElastic 线程池，避免阻塞 Netty event loop
         return Mono.<Result<Void>>fromCallable(() -> {
+            TenantContextHolder.bind(tenantId);
+            try {
             Session session = assertSessionOwnership(sessionId, tenantId, userId);
 
             if (session.getStatus() != SessionStatus.PAUSED) {
@@ -237,6 +256,9 @@ public class TaskControlController {
             // 写入 HITL 审计记录到 sec_hitl_history
             writeHitlHistory(sessionId, session, userId, HitlAction.REJECT, "用户驳回");
             return Result.success(null);
+            } finally {
+                TenantContextHolder.clear();
+            }
         }).subscribeOn(Schedulers.boundedElastic());
     }
 

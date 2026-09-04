@@ -55,6 +55,7 @@ import { modelApi } from '@/api/model';
 import type { ModelDefVO } from '@/api/model';
 import type { KbChunk } from '@/types/resource';
 import { useAuthStore } from '@/stores/authStore';
+import { usePermission } from '@/hooks/usePermission';
 import { formatFileSize } from '@/utils/format';
 
 const { Paragraph, Text } = Typography;
@@ -85,19 +86,21 @@ const SECURITY_OPTIONS: { label: string; value: string }[] = [
 /** 安全级别表单选项（不含"全部"） */
 const SECURITY_FORM_OPTIONS = SECURITY_OPTIONS.filter((o) => o.value !== 'all');
 
-/** 分块策略选项 */
+/** 分块策略选项（与后端 KbConstants 权威值对齐：FIXED/SENTENCE/PARAGRAPH/MARKDOWN） */
 const CHUNK_STRATEGY_OPTIONS = [
-  { value: 'FIXED_SIZE', label: '固定大小' },
+  { value: 'FIXED', label: '固定大小' },
   { value: 'SENTENCE', label: '按句子' },
   { value: 'PARAGRAPH', label: '按段落' },
-  { value: 'SLIDING_WINDOW', label: '滑动窗口' },
+  { value: 'MARKDOWN', label: 'Markdown 标题' },
 ];
 
-/** 分块策略 →文案 */
+/** 分块策略 →文案（保留 FIXED_SIZE/SLIDING_WINDOW 旧值映射，兼容存量知识库展示） */
 const CHUNK_STRATEGY_LABEL: Record<string, string> = {
+  FIXED: '固定大小',
   FIXED_SIZE: '固定大小',
   SENTENCE: '按句子',
   PARAGRAPH: '按段落',
+  MARKDOWN: 'Markdown 标题',
   SLIDING_WINDOW: '滑动窗口',
 };
 
@@ -387,6 +390,9 @@ const KnowledgePage: React.FC = () => {
   // 当前用户ID（从 authStore 获取，保证与登录态一致，字符串类型避免大整数精度丢失）
   const user = useAuthStore((s) => s.user);
   const currentUserId = user?.id != null ? String(user.id) : '';
+  // 创建入口按 kb:create 权限门控（无权限不渲染，避免可见不可用）
+  const { hasPermission } = usePermission();
+  const canCreate = hasPermission('kb:create');
 
   // ===== 市场列表 =====
   const [marketKeyword, setMarketKeyword] = useState('');
@@ -423,7 +429,7 @@ const KnowledgePage: React.FC = () => {
     let cancelled = false;
     const load = async () => {
       try {
-        const list = await modelApi.listDefs();
+        const list = await modelApi.listEnabledEmbeddingDefs();
         const options = (list ?? [])
           .filter((m: ModelDefVO) => m.modelType === 'EMBEDDING' && (m.status ?? 'DISABLED') === 'ENABLED')
           .map((m: ModelDefVO) => ({
@@ -1391,9 +1397,11 @@ const KnowledgePage: React.FC = () => {
               style={{ width: 240 }}
               enterButton
             />
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              ➕ 创建
-            </Button>
+            {canCreate && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                ➕ 创建
+              </Button>
+            )}
           </div>
           <Table<KnowledgeBase>
             rowKey="id"

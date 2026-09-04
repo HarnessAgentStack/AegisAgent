@@ -69,8 +69,10 @@ export const modelApi = {
   testProvider: (id: string) => http.post<boolean>(`${BASE}/providers/${id}/test`),
 
   // ===== 模型实例 =====
-  /** 模型实例列表 */
+  /** 模型实例列表（管理端，需 PLATFORM_ADMIN/TENANT_ADMIN） */
   listDefs: () => http.get<ModelDefVO[]>(`${BASE}/defs`),
+  /** 启用中的嵌入模型列表（用户侧只读，所有已认证用户可访问，知识库创建等场景） */
+  listEnabledEmbeddingDefs: () => http.get<ModelDefVO[]>('/admin/model-user/defs'),
   /** 新增模型实例，返回新建的模型ID */
   createDef: (data: unknown) => http.post<string>(`${BASE}/defs`, data),
   /** 更新模型实例 */

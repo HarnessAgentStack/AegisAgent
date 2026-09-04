@@ -10,7 +10,7 @@ import { storage } from '@/utils/storage';
 import { STORAGE_KEY } from '@/utils/constants';
 
 /** 主题模式 */
-export type ThemeMode = 'light' | 'dark';
+type ThemeMode = 'light' | 'dark';
 
 /** 主题状态 */
 interface ThemeState {
@@ -22,18 +22,13 @@ interface ThemeState {
   setMode: (mode: ThemeMode) => void;
 }
 
-/** 从本地存储恢复初始主题，默认跟随系统偏好 */
+/** 初始主题：强制亮色（切换功能已移除，不再读取 localStorage 或系统偏好） */
 function resolveInitialMode(): ThemeMode {
-  const saved = storage.getRaw(STORAGE_KEY.THEME);
-  if (saved === 'light' || saved === 'dark') return saved;
-  try {
-    if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark';
-  } catch { /* ignore */ }
   return 'light';
 }
 
 /** 同步 <html data-theme="..."> 属性，供 CSS 变量切换 */
-export function applyThemeAttribute(mode: ThemeMode): void {
+function applyThemeAttribute(mode: ThemeMode): void {
   try {
     document.documentElement.setAttribute('data-theme', mode);
   } catch { /* SSR / 非浏览器环境：忽略 */ }

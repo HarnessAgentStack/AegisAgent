@@ -6,24 +6,6 @@
  */
 import type { LifeStatus, SecurityLevel } from './enum';
 
-/** 资源基础字段（业务卡片组件使用） */
-export interface ResourceBase {
-  /** 资源 ID（雪花ID，前端一律 string） */
-  id: string;
-  /** 资源名称 */
-  name: string;
-  /** 资源类型 */
-  resourceType?: string;
-  /** 资源描述 */
-  description?: string;
-  /** 安全级别 */
-  securityLevel: SecurityLevel;
-  /** 生命周期状态 */
-  lifeStatus?: LifeStatus;
-  /** 版本号 */
-  version?: string;
-}
-
 /** 知识库（Knowledge Base） */
 export interface KnowledgeBase {
   id?: string;
@@ -120,8 +102,8 @@ export interface Skill {
 /** MCP 协议类型 */
 export type McpProtocol = 'SSE' | 'STDIO' | 'STREAMABLE_HTTP';
 
-/** MCP 鉴权类型 */
-export type McpAuthType = 'NONE' | 'BEARER' | 'BASIC' | 'APIKEY';
+/** MCP 鉴权类型（McpServer 内用） */
+type McpAuthType = 'NONE' | 'BEARER' | 'BASIC' | 'APIKEY';
 
 /** MCP 服务行 */
 export interface McpServer {

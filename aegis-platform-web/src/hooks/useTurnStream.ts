@@ -438,7 +438,7 @@ export function useTurnStream(setMessages: Dispatch<SetStateAction<Message[]>>) 
 /**
  * 思考完成摘要：取首句或前 80 字。供 preview 折叠态展示。
  */
-export function summarizeThinking(text: string): string {
+function summarizeThinking(text: string): string {
   if (!text) return '';
   const t = text.trim();
   if (!t) return '';
@@ -451,7 +451,7 @@ export function summarizeThinking(text: string): string {
  * 工具完成动作摘要：根据工具名 + 入参 + 结果生成一句话描述。
  * 规则：read_file/list 类→"读取了 N 个文件"；search→"检索到 N 条结果"；其余→结果摘要点。
  */
-export function summarizeTool(
+function summarizeTool(
   toolName: string,
   args: Record<string, unknown> | undefined,
   result: unknown,

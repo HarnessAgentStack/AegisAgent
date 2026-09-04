@@ -66,20 +66,6 @@ export enum AgentType {
   SYSTEM = 'SYSTEM',
 }
 
-/** 资源类型 */
-export enum ResourceType {
-  /** 技能 */
-  SKILL = 'SKILL',
-  /** 知识库 */
-  KNOWLEDGE_BASE = 'KNOWLEDGE_BASE',
-  /** MCP 服务 */
-  MCP = 'MCP',
-  /** 工具 */
-  TOOL = 'TOOL',
-  /** 数据集 */
-  DATASET = 'DATASET',
-}
-
 /**
  * 模型档位。对应后端 AgentConfig.modelTier 字段。
  */
@@ -90,17 +76,6 @@ export enum ModelTier {
   STANDARD = 'STANDARD',
   /** 高性能 */
   STRONG = 'STRONG',
-}
-
-/** 模型供应商 */
-export enum ModelProvider {
-  OPENAI = 'openai',
-  ANTHROPIC = 'anthropic',
-  AZURE = 'azure',
-  DOUBAO = 'doubao',
-  QWEN = 'qwen',
-  DEEPSEEK = 'deepseek',
-  CUSTOM = 'custom',
 }
 
 /** 会话消息角色 */
@@ -128,24 +103,10 @@ export enum HitlStatus {
   REJECTED = 'rejected',
 }
 
-/** 租户状态（对齐后端 TenantStatus 枚举） */
-export enum TenantStatus {
-  NORMAL = 'NORMAL',
-  FROZEN = 'FROZEN',
-}
-
 /** 用户状态（对齐后端 CommonStatus 枚举） */
 export enum UserStatus {
   NORMAL = 'NORMAL',
   DISABLED = 'DISABLED',
-}
-
-/** 使用场景 */
-export enum UsageScenario {
-  /** 个人使用：创建后立即可用，仅自己可见 */
-  PERSONAL = 'PERSONAL',
-  /** 共享发布：需审核通过后发布，供他人订阅使用 */
-  SHARED = 'SHARED',
 }
 
 /**
@@ -161,22 +122,3 @@ export enum GovernanceTier {
   /** 严格：隔离沙箱、强管控、强制人审与全量审计 */
   STRICT = 'STRICT',
 }
-
-/** 审核状态 */
-export enum ReviewStatus {
-  PENDING = 'PENDING',
-  APPROVED = 'APPROVED',
-  REJECTED = 'REJECTED',
-}
-
-/** 技能作用域枚举 */
-export enum SkillScope {
-  GLOBAL = 'GLOBAL',
-  LOCAL = 'LOCAL',
-}
-
-/** 技能作用域标签映射 */
-export const SKILL_SCOPE_LABEL: Record<SkillScope, string> = {
-  [SkillScope.GLOBAL]: '全局',
-  [SkillScope.LOCAL]: '局部',
-};

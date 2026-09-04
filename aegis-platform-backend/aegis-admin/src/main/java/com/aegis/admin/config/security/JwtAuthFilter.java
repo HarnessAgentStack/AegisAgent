@@ -39,8 +39,12 @@ public class JwtAuthFilter implements WebFilter {
             return chain.filter(exchange);
         }
 
-        // Skip auth endpoints
-        if (path.startsWith("/api/admin/auth/")) {
+        // Skip public auth endpoints（与 SecurityConfig permitAll 严格对齐）。
+        // 不能 startsWith 前缀跳过——/me、/profile、/change-password 同在 /api/admin/auth/
+        // 前缀下但需要 JWT 认证与 X-* 头注入，前缀跳过会导致 Controller 拿不到用户身份
+        if (path.equals("/api/admin/auth/login")
+                || path.equals("/api/admin/auth/refresh")
+                || path.equals("/api/admin/auth/logout")) {
             return chain.filter(exchange);
         }
 

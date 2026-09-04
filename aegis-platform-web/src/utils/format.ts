@@ -28,32 +28,6 @@ export function formatDateTime(value: DateInput, pattern = 'YYYY-MM-DD HH:mm:ss'
   return d.isValid() ? d.format(pattern) : '-';
 }
 
-/** 格式化日期（不含时间） */
-export function formatDate(value: DateInput, pattern = 'YYYY-MM-DD'): string {
-  return formatDateTime(value, pattern);
-}
-
-/**
- * 格式化相对时间（如 3 小时前）
- * @param value 日期时间 */
-export function formatRelativeTime(value: DateInput): string {
-  if (!value) return '-';
-  const d = dayjs(value);
-  return d.isValid() ? d.fromNow() : '-';
-}
-
-/**
- * 格式化数字（千分位 + 指定小数位）
- * @param value 数值
- * @param fractionDigits 小数位数（默认 0） */
-export function formatNumber(value?: number, fractionDigits = 0): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '-';
-  return value.toLocaleString('zh-CN', {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  });
-}
-
 /**
  * 格式化文件大小（全工程唯一实现）
  * 统一契约：
@@ -72,15 +46,6 @@ export function formatFileSize(bytes?: number): string {
   const size = bytes / Math.pow(1024, i);
   const fractionDigits = i === 0 ? 0 : i === 1 ? 1 : 2;
   return `${toFixedSafe(size, fractionDigits)} ${units[i]}`;
-}
-
-/**
- * 格式化金额
- * @param value 金额数值
- * @param currency 币种（默认 CNY） */
-export function formatMoney(value?: number, currency = 'CNY'): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '-';
-  return `${currency === 'CNY' ? '\uffe5' : ''}${formatNumber(value, 2)}`;
 }
 
 /**

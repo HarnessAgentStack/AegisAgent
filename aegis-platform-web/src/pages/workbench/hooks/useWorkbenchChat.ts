@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file 聊天 SSE Hook
  * @description 封装 streamChat SSE 连接、事件处理（reasoning/tool_call/assistant/hitl/skill_creator 等）、
  *              草稿同步、turnStream（per-message 执行流）驱动、HITL 自动恢复、附件/资源/技能选择。
@@ -673,6 +673,43 @@ function syncSkillDraftFromToolResult(opts: UseWorkbenchChatOptions, result: unk
       if (needUpdate) {
         opts.setSkillDraft((prev: SkillDraft) => ({ ...prev, ...patch }));
       }
+
+      // skill_creator 编排事件（stage/draft.created/draft.updated/debug/package）被打包在
+      // tool_result 的 _skillEvents 字段内下发，而非独立 SSE 事件。此处逐个回放，
+      // 驱动右侧面板的 stage 进度、文件树、debug 结果渲染。
+      const skillEvents = (resultObj as { _skillEvents?: Array<{ event: string; data?: Record<string, unknown> }> })._skillEvents;
+      if (Array.isArray(skillEvents)) {
+        for (const se of skillEvents) {
+          if (!se || !se.event || !se.data) continue;
+          const evData = se.data as Record<string, unknown>;
+          if (se.event === 'skill.creator.stage') {
+            opts.setSkillCreatorStage({
+              phase: String(evData.phase ?? 'unknown'),
+              description: String(evData.description ?? ''),
+              progress: Number(evData.progress ?? 0),
+              ts: Date.now(),
+            });
+            if (evData.skillId) opts.setDraftSkillId(String(evData.skillId));
+          } else if (se.event === 'skill.draft.created' || se.event === 'skill.draft.updated') {
+            syncSkillDraftFromEvent(opts, evData);
+          } else if (se.event === 'skill.debug.result' || se.event === 'skill.creator.debug') {
+            opts.setSkillDebugResult({
+              success: Boolean(evData.success),
+              message: evData.message as string | undefined,
+              ts: Date.now(),
+            });
+          } else if (se.event === 'skill.creator.package' || se.event === 'skill.package.result') {
+            const files = (evData.files as Array<{ name: string; type: string; path: string; content?: string; children?: unknown[] }> | undefined);
+            if (files && Array.isArray(files) && files.length > 0) {
+              const mapped: SkillFileItem[] = files.map(f => ({
+                name: f.name, type: (f.type === 'dir' ? 'folder' : 'file') as SkillFileItem['type'],
+                path: f.path, content: f.content,
+              }));
+              opts.setSkillFiles(mapped);
+            }
+          }
+        }
+      }
     }
   } catch { /* 非 JSON 结果，忽略 */ }
 }
@@ -759,7 +796,10 @@ function handleSseEvent(event: string, data: Record<string, unknown>, ctx: SseEv
       let parsedResult = data.result;
       if (typeof parsedResult === 'string') parsedResult = safeJsonParse(parsedResult, parsedResult);
 
-      syncSkillDraftFromToolResult(opts, parsedResult);
+      
+      // DEBUG: 追踪 tool.result 事件里 _skillEvents 是否存在
+      const _evs = parsedResult && typeof parsedResult === 'object' ? (parsedResult as any)._skillEvents : undefined;
+      console.log('[DEBUG tool.result]', { callId, resultStatus, parsedResultType: typeof parsedResult, hasSkillEvents: Array.isArray(_evs), skillEventsLen: _evs?.length, skillId: (parsedResult as any)?.skillId, skillName: (parsedResult as any)?.skillName, rawResultIsString: typeof data.result === 'string', rawResultSample: typeof data.result === 'string' ? (data.result as string).substring(0, 120) : typeof data.result });syncSkillDraftFromToolResult(opts, parsedResult);
 
       const toolName = String(data.name ?? data.toolName ?? '未知工具');
       turnStream.appendToolResult(
@@ -1014,6 +1054,57 @@ function handleHitlResumeEvent(event: string, data: Record<string, unknown>, ctx
           tc.id === callId ? { ...tc, status: resultStatus, result: data.result } : tc
         ),
       })));
+      // 恢复流与正常流共用 tool_result 载荷：skill_creator 的元数据与 _skillEvents
+      // 编排事件同样在此下发，必须同步驱动右侧技能面板。此前恢复流缺失该逻辑，
+      // 导致 HITL 审批通过后文件树不渲染、调试/保存按钮置灰。
+      let parsedSkillResult: unknown = data.result;
+      if (typeof parsedSkillResult === 'string') {
+        try { parsedSkillResult = JSON.parse(parsedSkillResult); } catch { /* 非 JSON，跳过技能同步 */ }
+      }
+      if (parsedSkillResult && typeof parsedSkillResult === 'object') {
+        if (import.meta.env.DEV) {
+          const evs = (parsedSkillResult as { _skillEvents?: unknown[] })._skillEvents;
+          console.log('[DEBUG resume tool.result]', { callId, hasSkillEvents: Array.isArray(evs), skillEventsLen: Array.isArray(evs) ? evs.length : 0, skillId: (parsedSkillResult as { skillId?: unknown }).skillId });
+        }
+        syncSkillDraftFromToolResult(ctx.opts, parsedSkillResult);
+      }
+      break;
+    }
+    case 'skill.creator.stage': {
+      const payload = data as { phase?: string; description?: string; progress?: number; skillId?: string };
+      ctx.opts.setSkillCreatorStage({
+        phase: String(payload.phase ?? 'unknown'),
+        description: String(payload.description ?? ''),
+        progress: Number(payload.progress ?? 0),
+        ts: Date.now(),
+      });
+      if (payload.skillId) ctx.opts.setDraftSkillId(payload.skillId);
+      break;
+    }
+    case 'skill.draft.created':
+    case 'skill.draft.updated': {
+      syncSkillDraftFromEvent(ctx.opts, data);
+      break;
+    }
+    case 'skill.debug.result':
+    case 'skill.creator.debug': {
+      const payload = data as { success?: boolean; message?: string };
+      ctx.opts.setSkillDebugResult({
+        success: Boolean(payload.success),
+        message: payload.message,
+        ts: Date.now(),
+      });
+      break;
+    }
+    case 'skill.creator.package': {
+      const payload = data as unknown as SkillCreatorPackagePayload;
+      if (payload.files && Array.isArray(payload.files) && payload.files.length > 0) {
+        const mapped: SkillFileItem[] = payload.files.map(f => ({
+          name: f.name, type: f.type, path: f.path, content: f.content,
+          children: f.children?.map(c => ({ name: c.name, type: c.type, path: c.path, content: c.content })),
+        }));
+        ctx.opts.setSkillFiles(mapped);
+      }
       break;
     }
     case 'kb.reference': {

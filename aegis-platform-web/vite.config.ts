@@ -72,7 +72,7 @@ export default defineConfig({
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
           'antd-vendor': ['antd', '@ant-design/icons'],
           'query-vendor': ['@tanstack/react-query'],
-          'utils-vendor': ['axios', 'dayjs', 'lodash-es'],
+          'utils-vendor': ['axios', 'dayjs'],
         },
       },
     },

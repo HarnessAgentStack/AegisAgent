@@ -1,7 +1,7 @@
 # 资源管理更新机制剖析
 
 > 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-09-03（源码核实）
-> 覆盖四类资源：**智能体 / 技能 / 知识库 / MCP**。核心回答三个问题：怎么创建、怎么发布、runtime 端怎么感知变更。
+> 覆盖四类资源：**智能体 / 技能 / 知识库 / MCP**。
 
 ---
 
@@ -89,7 +89,7 @@ flowchart TD
 
 ### agent_config 版本化机制
 
-**这是智能体最重要的设计**：每次配置变更不是 UPDATE 旧行，而是 INSERT 新行 + version+1。理由：
+每次配置变更不是 UPDATE 旧行，而是 INSERT 新行 + version+1。
 
 ```
 sess_session.version_snapshot  ←  创建会话时存当时的 agent_config JSON
@@ -118,7 +118,7 @@ sequenceDiagram
 
 ### BindingFingerprinter — 实例池指纹比对
 
-**这是 runtime 感知绑定变更的核心机制**。AegisAgentInstanceManager 以 `poolKey` 为粒度缓存 HarnessAgent 实例，`BindingFingerprinter` 用来判断缓存是否失效。
+AegisAgentInstanceManager 以 `poolKey` 为粒度缓存 HarnessAgent 实例，`BindingFingerprinter` 用来判断缓存是否失效。
 
 ```java
 // BindingFingerprinter.fingerprint() 源码逻辑
@@ -206,7 +206,7 @@ flowchart TD
 | **APPLICATION**（封闭轨道） | GLOBAL 平台内置 + **agent_binding** | ❌ 否 | ❌ 否 |
 | **SYSTEM**（严格封闭） | GLOBAL 平台内置 + **agent_binding** | ❌ 否 | ❌ 否 |
 
-**为什么 APPLICATION/SYSTEM 不加载订阅？** 防止越权——UNIVERSAL 是面向个人的，用户可以自由订阅技能；但 APPLICATION/SYSTEM 是业务/系统集成场景，如果允许加载用户订阅，用户就能通过订阅 L4 高风险技能绕过 APPLICATION 档位的安全策略。
+**APPLICATION/SYSTEM 不加载订阅**：防止通过订阅 L4 高风险技能绕过档位安全策略。
 
 ### 技能发布新版本后的 runtime 感知
 
@@ -230,7 +230,7 @@ sequenceDiagram
     end
 ```
 
-**FIXED vs DYNAMIC 的设计意图**：
+**FIXED vs DYNAMIC**：
 - FIXED（锁死版本）：业务方依赖某个技能的稳定行为，技能升级可能改了 tools_json 导致不兼容
 - DYNAMIC（跟随最新）：平台内置技能，bugfix/安全补丁需要自动生效
 
@@ -401,7 +401,7 @@ flowchart TD
     style J fill:#ffcdd2
 ```
 
-**为什么需要双通道？** MCP 协议 2025 年才稳定，早期 Server 实现有的只暴露 REST、有的只暴露 SSE、有的同时支持 JSON-RPC。McpInvoker 的 REST fallback → JSON-RPC 兜底保证了对老 Server 的兼容性。
+MCP 协议 2025 年才稳定，早期 Server 实现只暴露 REST / SSE / 或同时支持 JSON-RPC。McpInvoker 的 REST fallback → JSON-RPC 兜底兼容老 Server。
 
 ---
 

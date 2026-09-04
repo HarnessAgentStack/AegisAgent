@@ -28,8 +28,3 @@ aegis:
     endpoint: ${MINIO_ENDPOINT}
     access-key: ${MINIO_ACCESS_KEY}
     secret-key: ${MINIO_SECRET_KEY}
-  upon:
-    redis:
-      host: ${UPON_REDIS_HOST:${REDIS_HOST}}
-      port: ${UPON_REDIS_PORT:${REDIS_PORT}}
-      password: ${UPON_REDIS_PASSWORD:${REDIS_PASSWORD}}

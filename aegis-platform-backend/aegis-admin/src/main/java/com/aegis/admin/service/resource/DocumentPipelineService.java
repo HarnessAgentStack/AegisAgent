@@ -377,7 +377,8 @@ public class DocumentPipelineService {
             for (XWPFParagraph para : doc.getParagraphs()) {
                 String text = para.getText();
                 if (text != null && !text.isBlank()) {
-                    result.append(text).append("\n");
+                    // 段落间用空行分隔，保证 PARAGRAPH 切片策略按段切分（题库等一题一段场景）
+                    result.append(text).append("\n\n");
                 }
             }
             // 提取表格中的文本
@@ -391,6 +392,8 @@ public class DocumentPipelineService {
                     });
                     result.append("\n");
                 });
+                // 表格整体作为一段
+                result.append("\n");
             });
             String text = result.toString().trim();
             if (text.isEmpty()) {

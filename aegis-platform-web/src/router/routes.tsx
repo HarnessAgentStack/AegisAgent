@@ -34,6 +34,7 @@ const AdminSandbox = lazy(() => import('@/pages/admin/sandbox'));
 const AdminHA = lazy(() => import('@/pages/admin/ha'));
 const AdminObserve = lazy(() => import('@/pages/admin/observe'));
 const NotFound = lazy(() => import('@/pages/not-found'));
+const RouteErrorPage = lazy(() => import('@/pages/route-error'));
 
 /** 由 AuthGuard 包裹页面 */
 const withGuard = (node: ReactNode, permissions?: string[]) => (
@@ -45,6 +46,7 @@ export const routes: RouteObject[] = [
   {
     path: '/',
     element: <MainLayout />,
+    errorElement: <RouteErrorPage />,
     children: [
       { index: true, element: <Navigate to={ROUTE_PATH.WORKBENCH} replace /> },
       // ===== 员工工作台 =====

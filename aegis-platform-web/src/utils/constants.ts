@@ -62,8 +62,4 @@ export const HTTP_HEADER = {
 } as const;
 
 /** 分页默认值 */
-export const DEFAULT_PAGE = 1;
 export const DEFAULT_PAGE_SIZE = 10;
-
-/** 应用标题 */
-export const APP_TITLE = import.meta.env.VITE_APP_TITLE ?? 'Aegis Platform';

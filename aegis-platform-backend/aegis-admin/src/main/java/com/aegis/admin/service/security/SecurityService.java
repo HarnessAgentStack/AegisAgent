@@ -429,8 +429,11 @@ public class SecurityService {
 
     @Transactional(rollbackFor = Exception.class)
     public void updateSandboxPolicy(Long id, SandboxPolicyUpdateRequest req, Long tenantId) {
-        SandboxPolicy existing = sandboxPolicyMapper.selectById(id);
-        if (existing == null || !tenantId.equals(existing.getTenantId())) {
+        Long scopeTenant = tenantId != null ? tenantId : 0L;
+        SandboxPolicy existing = sandboxPolicyMapper.selectOne(new LambdaQueryWrapper<SandboxPolicy>()
+                .eq(SandboxPolicy::getId, id)
+                .in(SandboxPolicy::getTenantId, 0L, scopeTenant));
+        if (existing == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "沙箱策略不存在或无权修改");
         }
         if (req.getSandboxExecution() != null) existing.setSandboxExecution(req.getSandboxExecution());
@@ -442,8 +445,11 @@ public class SecurityService {
 
     @Transactional(rollbackFor = Exception.class)
     public void deleteSandboxPolicy(Long id, Long tenantId) {
-        SandboxPolicy existing = sandboxPolicyMapper.selectById(id);
-        if (existing == null || !tenantId.equals(existing.getTenantId())) {
+        Long scopeTenant = tenantId != null ? tenantId : 0L;
+        SandboxPolicy existing = sandboxPolicyMapper.selectOne(new LambdaQueryWrapper<SandboxPolicy>()
+                .eq(SandboxPolicy::getId, id)
+                .in(SandboxPolicy::getTenantId, 0L, scopeTenant));
+        if (existing == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "沙箱策略不存在或无权删除");
         }
         sandboxPolicyMapper.deleteById(id);

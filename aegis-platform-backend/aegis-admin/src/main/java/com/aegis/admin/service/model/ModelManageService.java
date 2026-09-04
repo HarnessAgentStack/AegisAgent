@@ -18,6 +18,7 @@ import com.aegis.core.dto.model.ModelRateLimitSaveRequest;
 import com.aegis.core.dto.model.ModelRateLimitVO;
 import com.aegis.core.enums.model.ModelStatus;
 import com.aegis.core.enums.model.ModelTier;
+import com.aegis.core.enums.model.ModelType;
 import com.aegis.core.enums.model.ProviderStatus;
 import com.aegis.core.util.XssSanitizer;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -306,6 +307,22 @@ public class ModelManageService {
                         .collect(Collectors.toMap(ModelProvider::getId, p -> p, (a, b) -> a));
 
         return list.stream().map(m -> toModelDefVO(m, providerMap.get(m.getProviderId()))).collect(Collectors.toList());
+    }
+
+    /**
+     * 用户侧：启用中的嵌入模型列表（知识库创建等场景的嵌入模型下拉）。
+     *
+     * <p>与 {@link #listModels} 的区别：仅返回 EMBEDDING + ENABLED，面向所有已认证用户，
+     * 不暴露供应商密钥等管理细节。
+     *
+     * @return 启用中的嵌入模型列表
+     */
+    public List<ModelDefVO> listEnabledEmbeddingModels() {
+        List<ModelDef> list = modelDefMapper.selectList(new LambdaQueryWrapper<ModelDef>()
+                .eq(ModelDef::getModelType, ModelType.EMBEDDING)
+                .eq(ModelDef::getStatus, ModelStatus.ENABLED.name())
+                .orderByAsc(ModelDef::getTier));
+        return list.stream().map(m -> toModelDefVO(m, null)).collect(Collectors.toList());
     }
 
     // ============ 限流策略管理 ============

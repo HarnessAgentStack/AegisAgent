@@ -60,9 +60,6 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 
-sse:
-  timeout: 300000
-
 # 沙箱配置
 aegis:
   # JWT 签名密钥（HS256，UTF-8 字节 ≥ 32）；dev 占位密钥，生产必须通过 Nacos/环境变量覆盖
@@ -99,11 +96,6 @@ aegis:
         enabled: true
       cpu: 1.0
       memoryMb: 512
-      # T1 沙箱惰性分配：构建期不分配 Pod，推迟到首次沙箱工具调用经 SandboxReadinessGate 分配
-      lazy-allocation:
-        enabled: true
-      # T1 空闲释放阈值：末次沙箱工具调用后 N 分钟无使用，主动 saveSnapshot+releaseSlot 回池
-      idle-release-minutes: 5
       docker:
         # Windows Docker Desktop: npipe:////./pipe/docker_engine  (4 slashes required for docker-java)
         # Linux/Mac: unix:///var/run/docker.sock
@@ -116,33 +108,9 @@ aegis:
         # kubeconfig 文件路径，留空则按优先级查找：
         # 1) 此处显式路径  2) ~/.kube/config  3) fabric8 自动发现（集群内 Pod 模式）
         kubeconfig: ""
-        # 默认 namespace 前缀（与 admin 池配置一致：aegis-sbx-t{tenantId}-{type}）
-        namespace-prefix: aegis-sbx-t
-        # Pod 创建后等待 Running 的超时时间（秒）
-        ready-timeout-sec: 60
-        # exec 命令默认超时时间（秒）
-        exec-timeout-sec: 120
-  # AgentScope 2.0 深度集成配置
+  # AgentScope 2.0 集成配置（仅 sys-prompt/max-iters 生效，Redis/DistributedStore 走 spring.data.redis）
   upon:
-    enabled: true
-    redis:
-      host: ${UPON_REDIS_HOST:${REDIS_HOST:127.0.0.1}}
-      port: ${UPON_REDIS_PORT:${REDIS_PORT:6379}}
-      password: ${UPON_REDIS_PASSWORD:${REDIS_PASSWORD:}}
-    # P0-02：workspace-path 已废弃，工作区通过 RedisStore 分布式存储
-    # AgentScope 的 RemoteFilesystemSpec 自动从 RedisStore 读取 workspace
     max-iters: 5
-    # 沙箱分布式能力配置（AgentScope 2.0 DistributedStore 装配）
-    sandbox:
-      # 工作空间快照（RemoteSnapshotSpec，依赖 MinIO）
-      snapshot:
-        enabled: true
-        storage-type: minio
-      # 沙箱执行互斥（RedisSandboxExecutionGuard，依赖 Redis）
-      # 注意：Windows 本地开发环境建议禁用，避免 Redis 锁导致的卡死问题
-      execution-guard:
-        enabled: true
-        lock-timeout-sec: 30
     sys-prompt: >
       你是一个集成了 AgentScope 2.0 框架的智能助手。请遵循以下回答策略：
 

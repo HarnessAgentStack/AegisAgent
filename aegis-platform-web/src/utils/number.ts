@@ -1,26 +1,10 @@
 /**
  * @file 数值精度工具
- * @description 解决 IEEE-754 双精度浮点的两类问题：
- *   1. 雪花 ID 等 64 位整数超过 Number.MAX_SAFE_INTEGER 的精度丢失；
- *   2. toFixed 浮点舍入不确定性（如 1.005.toFixed(2) → "1.00"）。
- *   全工程 ID 传递与金额/百分比计算必须经本模块，禁止裸用 Number()/toFixed()。
+ * @description 解决 toFixed 浮点舍入不确定性（如 1.005.toFixed(2) → "1.00"）。
+ *   金额/百分比计算必须经本模块，禁止裸用 toFixed()。
  * @author wang.zhen
  * @since 1.0.0
  */
-
-/** 安全整数上界（2^53 - 1） */
-export const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
-
-/**
- * 判断数值是否在安全整数范围内。
- * 超界 ID 必须以 string 传递，禁止用 Number() 转换。
- * @param value 待判定的值
- * @returns 是否为安全整数
- */
-export function isSafeInteger(value: unknown): boolean {
-  const n = Number(value);
-  return Number.isInteger(n) && n <= MAX_SAFE_INTEGER && n >= -MAX_SAFE_INTEGER;
-}
 
 /**
  * 安全数值格式化（替代裸 toFixed）。

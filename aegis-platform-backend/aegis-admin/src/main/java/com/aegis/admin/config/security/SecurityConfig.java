@@ -138,6 +138,9 @@ public class SecurityConfig {
                                 "/api/admin/model-admin/**"
                         ).hasAnyRole(RoleCode.PLATFORM_ADMIN, RoleCode.TENANT_ADMIN)
 
+                        // 用户侧模型只读（嵌入模型下拉等）：所有已认证用户
+                        .pathMatchers("/api/admin/model-user/**").authenticated()
+
                         // 角色和用户管理：平台管理员和租户管理员
                         .pathMatchers(
                                 "/api/admin/role/**",

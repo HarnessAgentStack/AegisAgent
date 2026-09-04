@@ -40,7 +40,8 @@ public class AgentLifecycleController {
     @ResourceOwner(resourceType = ResourceType.AGENT, permission = ResourcePermission.EDIT, resourceIdParam = "id")
     @Auditable(operation = "ARCHIVE_AGENT", resourceType = "AGENT", resourceIdParam = "id")
     public Result<Void> archive(@PathVariable Long id,
-                                @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+                                @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
+                                @RequestHeader(value = "X-User-Id", required = false) Long userId) {
         TenantContextHolder.bind(tenantId);
         agentPublishService.archive(tenantId, id);
         return Result.success(null);

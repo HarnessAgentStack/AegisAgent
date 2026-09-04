@@ -80,9 +80,10 @@ public class AuthController {
     @PutMapping("/profile")
     @Auditable(operation = "UPDATE_PROFILE", resourceType = "USER")
     public Result<Void> updateProfile(
+            @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
             @RequestHeader(value = "X-User-Id", required = false) Long userId,
             @Valid @RequestBody UpdateProfileRequest req) {
-        authService.updateProfile(userId, req.getNickname(), req.getAvatar(), req.getEmail(), req.getPhone());
+        authService.updateProfile(userId, tenantId, req.getNickname(), req.getAvatar(), req.getEmail(), req.getPhone());
         return Result.success(null);
     }
 
@@ -92,9 +93,10 @@ public class AuthController {
     @PostMapping("/change-password")
     @Auditable(operation = "CHANGE_PASSWORD", resourceType = "USER")
     public Result<Void> changePassword(
+            @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
             @RequestHeader(value = "X-User-Id", required = false) Long userId,
             @Valid @RequestBody ChangePasswordRequest req) {
-        authService.changePassword(userId, req.getOldPassword(), req.getNewPassword());
+        authService.changePassword(userId, tenantId, req.getOldPassword(), req.getNewPassword());
         return Result.success(null);
     }
 

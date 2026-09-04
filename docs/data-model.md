@@ -1,6 +1,6 @@
 # Aegis 核心数据模型
 
-> 基于真实 DDL（`infra/ddl/01_schema_init.sql`），按业务域分章，每章讲清楚「表关系是什么 → 为什么这样设计 → 运行时数据怎么流」。
+> 基于真实 DDL（`infra/ddl/01_schema_init.sql`），按业务域分章。
 
 ---
 
@@ -149,7 +149,7 @@ flowchart LR
 
 ## 一、组织与租户域：数据隔离的根
 
-这是所有其他域 `tenant_id` 的来源。顶层租户 → 部门树 → 用户 → RBAC。
+顶层租户 → 部门树 → 用户 → RBAC。
 
 ```mermaid
 erDiagram
@@ -267,9 +267,9 @@ erDiagram
     }
 ```
 
-### 为什么是三层（def / config / binding）
+### 三层结构（def / config / binding）
 
-| 层                 | 存什么                             | 为什么独立                                                                                        |
+| 层                 | 存什么                             | 说明                                                                                              |
 | ----------------- | ------------------------------- | -------------------------------------------------------------------------------------------- |
 | **agent_def**     | 骨架：agent_type / governance_tier / life_status / owner | **一旦选定不能改**——agent_type 决定运行时资源装载轨道（开放 vs 封闭），governance_tier 决定沙箱隔离强度，改了会导致所有历史会话行为不一致 |
 | **agent_config**  | 可变：system_prompt / model / 高级参数 | **版本化**，每次发布 +1。创建会话时把当时的 config JSON 快照到 `sess_session.version_snapshot`，确保会话期间不受后续改版影响     |
@@ -301,7 +301,7 @@ flowchart TD
 
 ### agent_api：只有 SYSTEM 档位能用
 
-`agent_api.deployment_pool_code` 是个有意思的设计——它把对外 API 的沙箱池部署硬编码在 API 配置里，不是动态路由。`reserved_replicas` 是冷启动预留副本数（默认 1），admin Reconcile 定时检查池内实际实例数，如果低于 reserved_replicas 就补齐，保证 API 调用进来时沙箱已经热好。
+`agent_api.deployment_pool_code` 把对外 API 的沙箱池部署硬编码在 API 配置里，非动态路由。`reserved_replicas` 是冷启动预留副本数（默认 1），admin Reconcile 定时检查池内实际实例数，低于 reserved_replicas 则补齐。
 
 ---
 
@@ -377,7 +377,7 @@ sequenceDiagram
     RT->>MySQL: INSERT sess_session<br/>version_snapshot = agent_config JSON
     RT->>MySQL: SELECT agent_def + agent_config + agent_binding
     RT->>Redis: agent_state_session_key 组装<br/>格式: aegis:session:{userId}/{sessionId}:_keys
-    RT->>AS: HarnessAgent.Builder<br/>.distributedStore(redis)<br/>.middlewares(5个)
+    RT->>AS: HarnessAgent.Builder<br/>.distributedStore(redis)<br/>.middlewares(6个)
 
     Note over RT,AS: 2. 执行 ReAct 循环
     RT->>AS: agent.replyAsync(user_msg)
@@ -420,7 +420,7 @@ Redis Key 实际展开（AgentScope RedisDistributedStore 自动生成）:
   aegis:store:idx:{userId}/{sessionId}                  ← Workspace 文件索引
 ```
 
-为什么**会话状态存 Redis 不存 MySQL**？
+会话状态存 Redis，不落 MySQL。
 
 | 场景                  | Redis   | MySQL             |
 | ------------------- | ------- | ----------------- |
@@ -428,7 +428,7 @@ Redis Key 实际展开（AgentScope RedisDistributedStore 自动生成）:
 | SSE 流式推送需要快速取最新状态   | 直接 GET  | SELECT + JOIN 慢   |
 | 多实例 runtime 下会话状态共享 | 天然共享内存  | 分布式事务成本高          |
 
-**但 sess_message 必须落 MySQL**——审计追溯、历史会话回放、可观测面板查询都需要，Redis 里的状态是会过期的。
+**sess_message 必须落 MySQL**：审计追溯 / 历史会话回放 / 可观测面板查询；Redis 中的状态会过期。
 
 ### 消息四类型串成完整执行链
 
@@ -458,7 +458,7 @@ TOOL_CALL ───────────────────────�
 
 ## 四、资源治理域：能力供给与装载轨道
 
-四类资源（工具 / 技能 / 知识库 / MCP），每种都有生命周期 + 订阅关系。**关键差异在运行时装载轨道**——通用智能体开放（自动装载用户订阅），应用/系统智能体封闭（只加载绑定）。
+四类资源（工具 / 技能 / 知识库 / MCP），每种都有生命周期 + 订阅关系。通用智能体开放（自动装载用户订阅），应用/系统智能体封闭（只加载绑定）。
 
 ### ER 关系
 
@@ -603,7 +603,7 @@ erDiagram
 
 ### sec_tool_policy 查表（tool_type × security_level，等级直映兜底）
 
-这张表按**工具类型**和**安全等级**（int 1-4）决定每次工具调用的命运。
+这张表按**工具类型**和**安全等级**（int 1-4）决定每次工具调用的处理结果。
 
 ```
 查表顺序：
@@ -613,9 +613,9 @@ erDiagram
 4. **放行规则**：内置低风险工具白名单（BuiltinToolRiskConfig）、MCP 只读前缀工具（get_/query_/search_ 等 11 种前缀）直接放行
 ```
 
-**为什么用 (tool_type, security_level) 而不是 (agent_tier, security_level)**？因为治理档位（governance_tier）不参与资源访问决策（v4.3 明确移除），agent_type 也不参与工具策略查表。查表 key 是工具的固有属性（READONLY/INTERNAL_API/WRITE/EXTERNAL_NETWORK/CODE_EXEC/HIGH_RISK 六种）× 安全等级（1-4）。
+governance_tier 不参与资源访问决策（v4.3 明确移除），agent_type 也不参与工具策略查表。查表 key 为 (tool_type, security_level)，取值：READONLY/INTERNAL_API/WRITE/EXTERNAL_NETWORK/CODE_EXEC/HIGH_RISK 六种 × security_level（1-4）。
 
-**等级直映兜底**是最常走的路径：L1/L2 直接放行，L3 触发 HITL 审批，L4 直接拒绝。显式策略表给管理员一个差异化配置入口，但基础行为由等级直映保证。
+**等级直映兜底**：L1/L2 → ALLOW，L3 → APPROVE（触发 HITL），L4 → REJECT。显式策略表提供差异化配置入口。
 
 ### HITL 完整流程（嵌入 Redis）
 
@@ -785,8 +785,6 @@ runtime 的 `AegisSandboxBackend` SPI 接口统一封装，上层不感知差异
 
 ## 七、模型域：推理引擎的动态路由
 
-小域，快速过。
-
 ```mermaid
 erDiagram
     model_provider ||--o{ model_def : "提供商下的模型实例"
@@ -809,13 +807,11 @@ erDiagram
     }
 ```
 
-**model_route 是最有意思的表**——让 runtime 能按 `(model_tier, tenant_id)` 动态路由到不同 Provider。同档位（STANDARD），A 租户走 DeepSeek，B 租户走通义千问。价格列在 **model_def**（input_cost / output_cost，元/千 token），model_provider 不含价格。`cost_amount = token_input × input_cost/1000 + token_output × output_cost/1000`，runtime 在 ASSISTANT 消息落库时自动查表计算。
+`model_route` 让 runtime 按 `(model_tier, tenant_id)` 动态路由到不同 Provider。同档位（STANDARD），A 租户走 DeepSeek，B 租户走通义千问。价格列在 **model_def**（input_cost / output_cost，元/千 token），model_provider 不含价格。`cost_amount = token_input × input_cost/1000 + token_output × output_cost/1000`，runtime 在 ASSISTANT 消息落库时自动查表计算。
 
 ---
 
 ## 八、可观测域：Trace/Span 和会话 1:1 绑定
-
-极简域，快速过。
 
 ```mermaid
 erDiagram
@@ -839,9 +835,9 @@ erDiagram
     }
 ```
 
-**设计亮点**：`span_type` 四种类型（REASONING / TOOL_CALL / RAG / MODEL_CALL）让前端可观测面板能渲染不同颜色的节点，**一眼看到 LLM 花了多少时间推理、多少时间调工具、多少时间做 RAG**。
+`span_type` 有四种类型（REASONING / TOOL_CALL / RAG / MODEL_CALL）。
 
-TraceStore SPI 是 AgentScope 2.0.2 原生接口，Aegis 的 `MysqlTraceStore` 实现把每次对话落这两张表。没有用 OpenTelemetry 采集——因为 Aegis 自己的中间件链（AegisTraceMiddleware）已经在每个拦截点 + 每次工具调用 + 每次 RAG 检索时手动创建 Span，粒度比 OTel 自动采集更精细（能区分 RAG 和普通模型调用）。
+TraceStore SPI 是 AgentScope 2.0.2 原生接口，Aegis 的 `MysqlTraceStore` 实现把每次对话落这两张表。
 
 ---
 
@@ -854,7 +850,7 @@ TraceStore SPI 是 AgentScope 2.0.2 原生接口，Aegis 的 `MysqlTraceStore` �
 | **MinIO**              | 会话域（产物）+ 沙箱域（快照）  | ✅ 必须 | AgentScope OSS SPI 对接 + 附件存储 + 产物存储                                          |
 | **Nacos**              | 无直接嵌入             | ✅ 必须 | 三进程服务发现 + 配置热更新                                                              |
 | **etcd**               | 无直接嵌入（Milvus 内部用） | ✅ 被动 | Milvus v2.5 元数据存储，跟随 Milvus 启动                                               |
-| **PaddleOCR**          | 资源治理域（文档解析）       | ❌ 可选 | 扫描版 PDF 解析，Docker profile `ocr` 启动                                           |
+| **PaddleOCR**          | 资源治理域（文档解析）       | ❌ 已废弃 | 原扫描版 PDF 解析 Docker 服务，已从启动脚本移除；OCR 现走 ONNX Runtime 进程内推理                                           |
 | **Prometheus/Grafana** | 可观测域              | ❌ 可选 | 额外指标采集面板。Aegis 自己有 mon_trace/mon_span，Docker profile `observability` 启动      |
 
 ### 双锁分工（保留，不可删）

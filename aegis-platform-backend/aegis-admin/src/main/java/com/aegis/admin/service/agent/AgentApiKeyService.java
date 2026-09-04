@@ -65,10 +65,6 @@ public class AgentApiKeyService {
         return result;
     }
 
-    public AgentApiKey getByHash(String hash) {
-        return agentApiKeyMapper.findActiveByHash(hash);
-    }
-
     public List<AgentApiKey> listByApiId(Long apiId) {
         return agentApiKeyMapper.listByApiId(apiId);
     }
@@ -133,13 +129,6 @@ public class AgentApiKeyService {
         result.put("key", rawKey);
         result.put("newKey", newKey);
         return result;
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public void touchLastUsed(Long keyId) {
-        agentApiKeyMapper.update(null, new LambdaUpdateWrapper<AgentApiKey>()
-                .eq(AgentApiKey::getId, keyId)
-                .set(AgentApiKey::getLastUsedAt, LocalDateTime.now()));
     }
 
     @Scheduled(cron = "0 0 2 * * ?")

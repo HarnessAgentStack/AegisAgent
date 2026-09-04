@@ -47,15 +47,6 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 
-review:
-  sla-hours: 48
-
-audit:
-  retention-days: 90
-
-resource:
-  max-upload-size: 50MB
-
 health:
   show-details: always
 

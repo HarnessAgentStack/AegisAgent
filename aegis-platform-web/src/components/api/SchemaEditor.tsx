@@ -11,7 +11,7 @@ import { safeJsonParse } from '@/utils/number';
 
 const { Text } = Typography;
 
-export interface SchemaPropertyRow {
+interface SchemaPropertyRow {
   key: string;
   type: 'string' | 'number' | 'boolean' | 'object' | 'array';
   required: boolean;

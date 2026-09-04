@@ -17,8 +17,3 @@ aegis:
       # K8s 配置：留空 kubeconfig 让 fabric8 自动发现（~/.kube/config 或集群内 ServiceAccount）
       k8s:
         kubeconfig: ""
-        namespace-prefix: aegis-sbx-t
-      # 惰性分配仍启用（纯聊天零沙箱占用）
-      lazy-allocation:
-        enabled: true
-      idle-release-minutes: 5

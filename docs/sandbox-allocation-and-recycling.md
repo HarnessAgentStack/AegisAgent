@@ -7,7 +7,7 @@
 
 ## 序章：架构演进与设计取舍
 
-### 为什么删掉旧协调层
+### Phase 2 前的协调层
 
 Phase 2 之前的自建沙箱协调体系（`AegisSandboxCoordinator` 765 行 + 意图预取 + 门控三态 + 租约）承担了三件事：低延迟分配、跨 JVM 复用、空闲回收。实践暴露的问题：
 
@@ -272,9 +272,9 @@ flowchart TD
 | **预热补充** | 干净 IDLE < min_instances 时创建新实例，受 max_instances 上限约束 |
 | **缩容销毁** | 活跃实例 > max_instances 时销毁空闲超阈值的 IDLE |
 
-**缩容保护**：只销毁 `initialized=1` 的干净 IDLE 实例；脏 IDLE（runtime 释放的，initialized=0）不被缩容，下次分配可复用（只需重新初始化工作区，比新建快）。
+**缩容保护**：只销毁 `initialized=1` 的干净 IDLE 实例；脏 IDLE（runtime 释放的，initialized=0）不被缩容，下次分配可复用（重新初始化工作区）。
 
-> 历史教训：`initialized=2`（已装载但未完成初始化）状态的实例必须包含在清理 SQL 中，否则无人使用的 IDLE 实例会永久泄漏。
+> 清理 SQL 须包含 `initialized=2`（已装载但未完成初始化）状态的实例，否则无人使用的 IDLE 实例会永久泄漏。
 
 ---
 
@@ -351,7 +351,7 @@ sequenceDiagram
 |---|---|---|
 | `aegis.admin.sandbox.reconcile.interval-ms` | `120000` | admin Reconcile 巡检周期（毫秒） |
 | `aegis.admin.sandbox.reconcile.hard-recycle` | `true` | 回收模式（硬回收直接销毁 Pod） |
-| `aegis.runtime.sandbox.backend` | `docker` | Docker / kubernetes / process |
+| `aegis.runtime.sandbox.backend` | `k8s` | Docker / kubernetes / process |
 | `aegis.runtime.sandbox.docker.host` | npipe（Windows） | Docker 连接协议 |
 
 > Windows Docker Desktop 环境必须用 `npipe:////./pipe/docker_engine`（四斜杠是 docker-java 解析硬性要求）。
