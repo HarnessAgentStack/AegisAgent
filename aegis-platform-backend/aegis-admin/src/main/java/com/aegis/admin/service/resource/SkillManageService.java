@@ -102,7 +102,7 @@ public class SkillManageService {
             skill.setDescription(XssSanitizer.sanitize(req.getDescription(), 1000));
         }
         if (req.getTags() != null && !req.getTags().isEmpty()) {
-            skill.setTags(XssSanitizer.sanitize(req.getTags(), 500));
+            skill.setTags(req.getTags());
         }
         if (req.getIcon() != null && !req.getIcon().isEmpty()) {
             skill.setIcon(XssSanitizer.sanitize(req.getIcon(), 500));
@@ -172,7 +172,7 @@ public class SkillManageService {
         if (req.getDescription() != null) wrapper.set(Skill::getDescription, XssSanitizer.sanitize(req.getDescription(), 1000));
         if (req.getSkillType() != null) wrapper.set(Skill::getSkillType, req.getSkillType());
         if (req.getCategory() != null) wrapper.set(Skill::getCategory, req.getCategory());
-        if (req.getTags() != null) wrapper.set(Skill::getTags, XssSanitizer.sanitize(req.getTags(), 500));
+        if (req.getTags() != null) wrapper.set(Skill::getTags, req.getTags());
         if (req.getSecurityLevel() != null) wrapper.set(Skill::getSecurityLevel, req.getSecurityLevel());
         if (req.getVisibility() != null) wrapper.set(Skill::getVisibility, req.getVisibility());
         if (req.getInputs() != null) wrapper.set(Skill::getInputs, req.getInputs());
@@ -181,7 +181,10 @@ public class SkillManageService {
         if (req.getMappingConfig() != null) wrapper.set(Skill::getMappingConfig, req.getMappingConfig());
         // 执行配置持久化
         if (req.getExecConfig() != null) wrapper.set(Skill::getExecConfig, req.getExecConfig());
-        if (req.getInstructions() != null) wrapper.set(Skill::getInstructions, req.getInstructions());
+        // instructions 是技能核心方法论，空值不覆盖（与 create 路径守卫一致，防止客户端未回显导致误清空）
+        if (req.getInstructions() != null && !req.getInstructions().isEmpty()) {
+            wrapper.set(Skill::getInstructions, req.getInstructions());
+        }
         if (req.getReferencesManifest() != null) wrapper.set(Skill::getReferencesManifest, req.getReferencesManifest());
         if (req.getTriggerExamples() != null) wrapper.set(Skill::getTriggerExamples, req.getTriggerExamples());
         if (req.getSkillForm() != null) wrapper.set(Skill::getSkillForm, req.getSkillForm());

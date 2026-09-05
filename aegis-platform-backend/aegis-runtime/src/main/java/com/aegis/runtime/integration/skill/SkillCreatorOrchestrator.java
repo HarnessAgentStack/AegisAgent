@@ -2,22 +2,25 @@ package com.aegis.runtime.integration.skill;
 
 import com.aegis.core.domain.resource.Skill;
 import com.aegis.core.domain.resource.ResourceReview;
+import com.aegis.core.domain.resource.SkillFile;
+import com.aegis.core.domain.resource.SkillPackage;
+import com.aegis.core.domain.resource.SkillVersion;
 import com.aegis.core.dto.agent.AgentEvent;
 import com.aegis.core.enums.agent.AgentLifeStatus;
 import com.aegis.core.enums.common.SecurityLevel;
-import com.aegis.core.enums.common.Visibility;
-import com.aegis.core.enums.resource.ResourceType;
 import com.aegis.core.enums.common.ReviewStatus;
+import com.aegis.core.enums.resource.ResourceType;
 import com.aegis.core.enums.resource.SkillCategory;
 import com.aegis.core.enums.resource.SkillScope;
 import com.aegis.core.enums.resource.SkillType;
+import com.aegis.core.helper.SkillDomainHelper;
 import com.aegis.core.security.SkillContentScanner;
 import com.aegis.core.util.SkillCodeGenerator;
-import com.aegis.core.util.XssSanitizer;
-import com.aegis.core.common.error.BusinessException;
-import com.aegis.core.common.web.ResultCode;
-import com.aegis.dal.mapper.resource.SkillMapper;
 import com.aegis.dal.mapper.resource.ResourceReviewMapper;
+import com.aegis.dal.mapper.resource.SkillFileMapper;
+import com.aegis.dal.mapper.resource.SkillMapper;
+import com.aegis.dal.mapper.resource.SkillPackageMapper;
+import com.aegis.dal.mapper.resource.SkillVersionMapper;
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -25,6 +28,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,10 +45,6 @@ import java.util.Map;
  * <h3>事件收集方式</h3>
  * <p>使用外部传入的 {@code List<AgentEvent>} 收集事件，避免 ThreadLocal 在线程切换时失效。
  * 调用方负责创建事件列表并在编排完成后读取事件。
- *
- * <h3>与 SkillCreatorTool 的关系</h3>
- * <p>{@code SkillCreatorTool} 是低级工具（直接操作 DB），
- * 本编排器在其之上封装了意图识别、阶段推进、事件发射等高层编排逻辑。
  */
 @Slf4j
 @Component
@@ -54,32 +55,25 @@ public class SkillCreatorOrchestrator {
     private final SkillPackagerTool skillPackagerTool;
     private final ResourceReviewMapper resourceReviewMapper;
     private final SkillContentScanner skillContentScanner;
+    private final SkillFileMapper skillFileMapper;
+    private final SkillVersionMapper skillVersionMapper;
+    private final SkillPackageMapper skillPackageMapper;
 
     /**
      * 处理 skill_creator 工具调用。
-     *
-     * <p>根据 LLM 传入的 action 和参数，执行对应的编排逻辑，
-     * 将事件收集到外部传入的事件列表中。
-     *
-     * @param tenantId 租户ID
-     * @param userId   用户ID
-     * @param inputs   LLM 传入的参数（含 action, skillName, description 等）
-     * @param events   事件收集列表（由调用方创建并持有引用）
-     * @return 执行结果（包含 skillId, success 等）
      */
     public Map<String, Object> handleSkillCreator(Long tenantId, Long userId,
                                                    Map<String, Object> inputs,
                                                    List<AgentEvent> events) {
         String action = getString(inputs, "action", getString(inputs, "intent", "CREATE"));
-        log.info("skill_creator 编排: tenantId={}, userId={}, action={}, inputs={}",
-                tenantId, userId, action, inputs);
+        log.info("skill_creator 编排: tenantId={}, userId={}, action={}, inputs={}", tenantId, userId, action, inputs);
 
         return switch (action.toUpperCase()) {
             case "CREATE", "CREATE_DRAFT" -> handleCreate(tenantId, userId, inputs, events);
             case "MODIFY", "UPDATE", "EDIT" -> handleModify(tenantId, userId, inputs, events);
             case "DEBUG", "TEST" -> handleDebug(tenantId, userId, inputs, events);
             case "PACKAGE", "EXPORT" -> handlePackage(tenantId, userId, inputs, events);
-            case "SUBMIT", "SUBMIT_REVIEW" -> handleSubmit(tenantId, userId, inputs, events);
+            case "SUBMIT", "SUBMIT_REVIEW" -> rejectLlmSubmit(events);
             case "GET_METADATA", "QUERY" -> handleQuery(inputs, events);
             default -> handleCreate(tenantId, userId, inputs, events);
         };
@@ -95,66 +89,57 @@ public class SkillCreatorOrchestrator {
         String skillName = getString(inputs, "skillName", getString(inputs, "name", "新技能"));
         String description = getString(inputs, "description", getString(inputs, "desc", ""));
         String instructions = getString(inputs, "instructions", "");
-        String category = getString(inputs, "category", SkillCategory.INTEGRATION.name());
-        String bindingTools = getString(inputs, "bindingTools", "");
-        String inputs_schema = getString(inputs, "inputs", "");
-        String outputs = getString(inputs, "outputs", "");
+        String categoryStr = getString(inputs, "category", null);
+        String bindingTools = getString(inputs, "bindingTools", null);
+        String inputs_schema = getString(inputs, "inputs", null);
+        String outputs = getString(inputs, "outputs", null);
+
+        // ★ 尊重 LLM 传入的 skillType，没有才默认 COMPOSITE
+        SkillType skillType = parseSkillType(getString(inputs, "skillType", getString(inputs, "type", null)));
+        if (skillType == null) skillType = SkillType.COMPOSITE;
+
+        // ★ 尊重 LLM 传入的 securityLevel，没有才默认 L2
+        SecurityLevel secLevel = parseSecurityLevel(getString(inputs, "securityLevel", null));
+        if (secLevel == null) secLevel = SecurityLevel.L2;
+
+        SkillCategory category = parseCategory(categoryStr);
 
         emitStage(events, "structuring", "正在结构化工件...", 30);
 
-        // U5: skillCode 统一由 SkillCodeGenerator 生成（三套实现合一）
         String skillCode = SkillCodeGenerator.fromName(skillName);
 
-        // 统一创建逻辑（版本号 0.0.1、XSS、编码唯一、默认值）
         Skill skill;
         try {
-            skill = createDraftSkill(
-                    tenantId, userId,
-                    skillCode, skillName,
-                    // 对话创建的是编排式技能
-                    SkillType.COMPOSITE,
-                    parseCategory(category),
-                    // 对话创建默认 L2（保持原 runtime 行为，由用户调整）
-                    SecurityLevel.L2);
+            skill = SkillDomainHelper.buildDefaultSkill(tenantId, userId, skillCode, skillName, skillType, category, secLevel);
         } catch (com.aegis.core.common.error.BusinessException e) {
-            // 编码已存在等情况，返回友好提示
             emitStage(events, "completed", e.getMessage(), 100);
             return buildResultMap(false, e.getMessage(), null, skillCode).build();
         }
 
-        // ========== runtime 对话特有字段补充 ==========
-        if (description != null && !description.isEmpty()) {
-            skill.setDescription(description);
-        }
-        if (instructions != null && !instructions.isEmpty()) {
-            skill.setInstructions(instructions);
-        }
-        if (bindingTools != null && !bindingTools.isEmpty()) {
-            skill.setBindingTools(bindingTools);
-        }
-        if (inputs_schema != null && !inputs_schema.isEmpty()) {
-            skill.setInputs(inputs_schema);
-        }
-        if (outputs != null && !outputs.isEmpty()) {
-            skill.setOutputs(outputs);
-        }
-        // scope 保持 LOCAL（原 runtime 行为）
-        skill.setScope(SkillScope.LOCAL);
-        skillMapper.updateById(skill);
+        // runtime 对话特有字段补充（只覆盖 LLM 传了的，null 不覆盖默认值）
+        if (description != null && !description.isEmpty()) skill.setDescription(description);
+        if (instructions != null && !instructions.isEmpty()) skill.setInstructions(instructions);
+        if (bindingTools != null && !bindingTools.isEmpty()) skill.setBindingTools(bindingTools);
+        if (inputs_schema != null && !inputs_schema.isEmpty()) skill.setInputs(inputs_schema);
+        if (outputs != null && !outputs.isEmpty()) skill.setOutputs(outputs);
 
-        log.info("技能草稿创建 (unified via runtime): id={}, code={}, userId={}", skill.getId(), skillCode, userId);
+        skillMapper.insert(skill);
+
+        // ★ 持久化文件快照（CREATE 后立即写 res_skill_file）
+        persistSkillFiles(skill, tenantId, userId);
+
+        log.info("技能草稿创建: id={}, code={}, securityLevel={}, skillType={}", skill.getId(), skillCode, secLevel, skillType);
 
         emitStage(events, "completed", "技能草稿创建成功", 100);
         emitDraftCreated(events, skill);
 
-        log.info("skill_creator CREATE 完成: skillId={}, 已自动生成 SKILL.md/skill.json/README.md，明确告知 LLM 无需再调用 generate_file", skill.getId());
         return buildResultMap(true, "技能草稿创建成功。SKILL.md 与依赖文件已由平台自动生成并通过 skill.draft.created 事件下发前端，无需调用 generate_file 工具。接下来可引导用户调试或提交审核。", skill.getId(), skill.getSkillCode())
                 .appendData("skillName", skill.getSkillName())
-                .appendData("description", description)
-                .appendData("instructions", instructions)
-                .appendData("skillType", SkillType.COMPOSITE.name())
-                .appendData("category", category)
-                .appendData("securityLevel", SecurityLevel.L2.name())
+                .appendData("description", skill.getDescription())
+                .appendData("instructions", skill.getInstructions())
+                .appendData("skillType", skill.getSkillType() != null ? skill.getSkillType().name() : null)
+                .appendData("category", category != null ? category.name() : null)
+                .appendData("securityLevel", skill.getSecurityLevel() != null ? skill.getSecurityLevel().name() : null)
                 .appendData("scope", SkillScope.LOCAL.name())
                 .appendData("bindingTools", bindingTools)
                 .appendData("filesAutoGenerated", true)
@@ -168,14 +153,11 @@ public class SkillCreatorOrchestrator {
         if (skillId == null) {
             String skillCode = getString(inputs, "skillCode", "");
             if (!skillCode.isEmpty()) {
-                Skill s = skillMapper.selectOne(new QueryWrapper<Skill>()
-                        .eq("skill_code", skillCode).last("LIMIT 1"));
+                Skill s = skillMapper.selectOne(new QueryWrapper<Skill>().eq("skill_code", skillCode).last("LIMIT 1"));
                 if (s != null) skillId = s.getId();
             }
         }
-        if (skillId == null) {
-            return buildErrorResult("未指定 skillId 或 skillCode");
-        }
+        if (skillId == null) return buildErrorResult("未指定 skillId 或 skillCode");
 
         emitStage(events, "updating", "正在更新技能元数据...", 30);
 
@@ -189,17 +171,18 @@ public class SkillCreatorOrchestrator {
         String category = getString(inputs, "category", null);
         String secLevel = getString(inputs, "securityLevel", null);
 
-        // 使用本地方法的增量更新（带 XSS 清洗 + 变更检测）
-        boolean updated = patchSkillFields(
+        boolean updated = SkillDomainHelper.patchFields(
                 skill,
                 skillName,
                 desc,
                 ins,
-                category != null ? parseCategory(category) : null,
-                secLevel != null ? SecurityLevel.valueOf(secLevel) : null,
+                parseCategory(category),
+                parseSecurityLevel(secLevel),
                 bindTools);
 
         if (updated) {
+            skillMapper.updateById(skill);
+            persistSkillFiles(skill, tenantId, userId);
             emitStage(events, "completed", "技能元数据更新成功", 100);
             emitDraftUpdated(events, skill);
         } else {
@@ -218,110 +201,205 @@ public class SkillCreatorOrchestrator {
                                              Map<String, Object> inputs,
                                              List<AgentEvent> events) {
         Long skillId = getLong(inputs, "skillId");
-        if (skillId == null) {
-            return buildErrorResult("未指定 skillId");
+        if (skillId == null) return buildErrorResult("未指定 skillId");
+        emitStage(events, "debugging", "正在调试技能...", 20);
+
+        Skill skill = skillMapper.selectById(skillId);
+        if (skill == null) return buildErrorResult("技能不存在: " + skillId);
+
+        // 1. 静态检查
+        List<String> issues = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        if (skill.getInstructions() == null || skill.getInstructions().isBlank()) {
+            issues.add("instructions 为空 — 技能没有核心指令");
         }
-        emitStage(events, "debugging", "正在调试技能...", 50);
-        emitDebugResult(events, skillId, true, "调试完成（模拟执行）");
-        return buildResultMap(true, "调试完成", skillId, null)
-                .appendData("debugSuccess", true)
-                .appendData("debugMessage", "调试完成")
+        if (skill.getDescription() == null || skill.getDescription().isBlank()) {
+            warnings.add("description 为空 — 建议补充技能描述");
+        }
+        if (skill.getBindingTools() == null || "[]".equals(skill.getBindingTools())) {
+            warnings.add("未绑定任何工具 — 可能是纯 Prompt 类技能");
+        }
+
+        // 2. 安全扫描（与 SUBMIT 共用 SkillContentScanner）
+        SkillContentScanner.ScanResult scan = skillContentScanner.scan(skill);
+
+        // 3. 模拟最终 Prompt
+        String simulatedPrompt = buildSimulatedPrompt(skill);
+
+        emitStage(events, "completed", "调试完成", 100);
+
+        Map<String, Object> debugData = new HashMap<>();
+        debugData.put("skillId", String.valueOf(skillId));
+        debugData.put("success", issues.isEmpty());
+        debugData.put("issues", issues);
+        debugData.put("warnings", warnings);
+        debugData.put("scanPassed", scan.isPassed());
+        debugData.put("scanSummary", scan.getSummary());
+        debugData.put("simulatedPrompt", simulatedPrompt);
+        debugData.put("message", issues.isEmpty() ? "调试通过" : "发现 " + issues.size() + " 个问题");
+
+        events.add(AgentEvent.of("skill.debug.result", debugData));
+
+        return buildResultMap(issues.isEmpty(), debugData.get("message").toString(), skillId, null)
+                .appendData("debugSuccess", issues.isEmpty())
+                .appendData("issues", issues)
+                .appendData("warnings", warnings)
+                .appendData("scanPassed", scan.isPassed())
+                .appendData("simulatedPrompt", simulatedPrompt)
                 .build();
+    }
+
+    private String buildSimulatedPrompt(Skill skill) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== Skill Prompt Preview ===\n\n");
+        sb.append("# ").append(skill.getSkillName()).append("\n\n");
+        if (skill.getDescription() != null) sb.append(skill.getDescription()).append("\n\n");
+        sb.append("## Instructions\n\n");
+        sb.append(skill.getInstructions() != null ? skill.getInstructions() : "(空)").append("\n\n");
+        return sb.toString();
+    }
+
+    private void createVersionSnapshot(Skill skill, String snapshotVersion,
+                                        Long tenantId, Long userId) {
+        SkillVersion sv = new SkillVersion();
+        sv.setTenantId(tenantId);
+        sv.setSkillId(skill.getId());
+        sv.setSkillCode(skill.getSkillCode());
+        sv.setVersion(snapshotVersion);
+        sv.setSkillName(skill.getSkillName());
+        sv.setDescription(skill.getDescription());
+        sv.setInstructions(skill.getInstructions());
+        sv.setBindingTools(skill.getBindingTools());
+        sv.setInputs(skill.getInputs());
+        sv.setOutputs(skill.getOutputs());
+        sv.setMappingConfig(skill.getMappingConfig());
+        sv.setSecurityLevel(skill.getSecurityLevel() != null ? skill.getSecurityLevel().name() : null);
+        sv.setCategory(skill.getCategory() != null ? skill.getCategory().name() : null);
+        sv.setIsSystem(skill.getIsSystem() != null && skill.getIsSystem() ? 1 : 0);
+        sv.setCreateBy(userId);
+        skillVersionMapper.insert(sv);
+        log.info("版本快照创建: skillId={}, version={}", skill.getId(), snapshotVersion);
     }
 
     private Map<String, Object> handlePackage(Long tenantId, Long userId,
                                                 Map<String, Object> inputs,
                                                 List<AgentEvent> events) {
         Long skillId = getLong(inputs, "skillId");
-        if (skillId == null) {
-            return buildErrorResult("未指定 skillId");
+        if (skillId == null) return buildErrorResult("未指定 skillId");
+
+        emitStage(events, "packaging", "正在打包技能...", 30);
+
+        Skill skill = skillMapper.selectById(skillId);
+        if (skill == null) return buildErrorResult("技能不存在: " + skillId);
+
+        // 1. 先持久化当前文件快照（确保 zip 包含最新内容）
+        persistSkillFiles(skill, tenantId, userId);
+
+        // 2. 真正打包并上传 MinIO
+        SkillPackagerTool.PackageResult pkgResult = skillPackagerTool.packageAndUpload(skillId, tenantId);
+        if (!pkgResult.isSuccess()) {
+            emitStage(events, "failed", "打包失败: " + pkgResult.getMessage(), 100);
+            return buildErrorResult(pkgResult.getMessage());
         }
-        emitStage(events, "packaging", "正在打包技能...", 50);
-        String fileName = "skill_" + skillId + ".zip";
-        emitPackageResult(events, skillId, true, fileName);
-        return buildResultMap(true, "打包完成", skillId, null)
-                .appendData("fileName", fileName)
+
+        // 3. 记录打包元数据到 res_skill_package
+        SkillPackage pkg = SkillPackage.builder()
+                .tenantId(tenantId)
+                .skillId(skillId)
+                .skillCode(skill.getSkillCode())
+                .skillVersion(skill.getVersion() != null ? skill.getVersion() : "0.0.1")
+                .packageName(pkgResult.getFileName())
+                .storedKey(pkgResult.getStoredKey())
+                .storageSize(pkgResult.getData() != null ? pkgResult.getData().length : 0)
+                .triggerSource("USER_ACTION")
+                .createBy(userId)
+                .build();
+        skillPackageMapper.insert(pkg);
+
+        emitStage(events, "completed", "打包完成", 100);
+        emitPackageResult(events, skillId, true, pkgResult.getFileName());
+
+        log.info("技能打包完成: skillId={}, fileName={}, storedKey={}, size={}",
+                skillId, pkgResult.getFileName(), pkgResult.getStoredKey(), pkg.getStorageSize());
+
+        return buildResultMap(true, "打包完成", skillId, skill.getSkillCode())
+                .appendData("fileName", pkgResult.getFileName())
+                .appendData("packageUrl", pkgResult.getPackageUrl())
                 .appendData("packageSuccess", true)
                 .build();
     }
 
     /**
-     * 提交审核：创建 ResourceReview 审核记录并更新技能状态，支持幂等。
-     * 提交前执行 {@link SkillContentScanner} 安全扫描，HIGH 级风险直接阻断提交，扫描结果写入审核单。
+     * 拒绝 LLM 自动调 SUBMIT。
+     *
+     * <p>提交审核是用户显式操作，LLM 不应自动链式调用。
+     * 用户提交走 REST 端点 {@code POST /runtime/skill/{id}/submit-review}（SkillChatController）。
+     * LLM 误调时返回明确引导，不执行任何 DB 操作。</p>
      */
+    private Map<String, Object> rejectLlmSubmit(List<AgentEvent> events) {
+        log.warn("LLM 尝试自动 SUBMIT，已拒绝。提交审核须由用户显式触发（REST 端点）");
+        emitStage(events, "rejected", "提交审核需用户显式操作，技能保持草稿态", 100);
+        Map<String, Object> result = new HashMap<>();
+        result.put("success", false);
+        result.put("message", "提交审核须由用户显式触发（点击右侧面板\"提交审核\"按钮），不支持 AI 自动提交。技能保持草稿态，可继续调试或保存。");
+        result.put("llmSubmitRejected", true);
+        return result;
+    }
+
     private Map<String, Object> handleSubmit(Long tenantId, Long userId,
                                               Map<String, Object> inputs,
                                               List<AgentEvent> events) {
         Long skillId = getLong(inputs, "skillId");
-        if (skillId == null) {
-            return buildErrorResult("未指定 skillId");
-        }
+        if (skillId == null) return buildErrorResult("未指定 skillId");
         emitStage(events, "submitting", "正在提交审核...", 50);
-
         Skill skill = skillMapper.selectById(skillId);
         if (skill == null) return buildErrorResult("技能不存在: " + skillId);
 
-        // 用户级权限校验
         if (skill.getAuthorUserId() != null && !skill.getAuthorUserId().equals(userId)) {
             return buildErrorResult("无权提交他人创建的技能");
         }
 
-        // 状态校验：仅 DRAFT/REJECTED 可提交审核
         if (skill.getLifeStatus() != AgentLifeStatus.DRAFT
                 && skill.getLifeStatus() != AgentLifeStatus.REJECTED) {
             if (skill.getLifeStatus() == AgentLifeStatus.REVIEWING) {
                 emitStage(events, "completed", "已在审核中", 100);
                 return buildResultMap(true, "技能已在审核中", skillId, skill.getSkillCode())
-                        .appendData("submitted", true)
-                        .build();
+                        .appendData("submitted", true).build();
             }
             return buildErrorResult("当前状态不可提交审核: " + skill.getLifeStatus());
         }
 
-        // 时间窗口保护：技能创建后 60 秒内拒绝自动提交审核。
-        // 防止 LLM 在 CREATE 后紧接着自动调 SUBMIT，导致用户还没看清草稿就被锁进 REVIEWING。
         if (skill.getCreateTime() != null) {
             long ageSec = java.time.Duration.between(skill.getCreateTime(), java.time.LocalDateTime.now()).getSeconds();
             if (ageSec < 60) {
                 emitStage(events, "failed", "技能刚创建，请确认内容后再提交审核", 100);
-                log.warn("技能提交审核被时间窗口保护拦截: skillId={}, ageSec={}", skillId, ageSec);
                 return buildErrorResult("技能刚创建（" + ageSec + "秒前），请先确认内容无误后，由用户显式发起提交审核。");
             }
         }
 
-        // 安全扫描（不静默，HIGH 风险阻断提交）
         SkillContentScanner.ScanResult scanResult = skillContentScanner.scan(skill);
         if (!scanResult.isPassed()) {
-            log.warn("技能提交审核被安全扫描阻断: skillId={}, summary={}", skillId, scanResult.getSummary());
             emitStage(events, "failed", "安全扫描未通过，提交已阻断", 100);
-            Map<String, Object> blocked = buildErrorResult("安全扫描未通过（P0 风险阻断）: " + scanResult.getSummary());
-            blocked.put("scanResult", scanResult);
-            return blocked;
+            return buildErrorResult("安全扫描未通过（P0 风险阻断）: " + scanResult.getSummary());
         }
 
-        // 幂等检查：同一资源已有 PENDING 审核时直接返回
         ResourceReview existingReview = resourceReviewMapper.selectOne(
                 new QueryWrapper<ResourceReview>()
                         .eq("resource_type", ResourceType.SKILL.name())
                         .eq("resource_id", skillId)
                         .eq("review_status", ReviewStatus.PENDING.name())
-                        .orderByDesc("id")
-                        .last("LIMIT 1"));
+                        .orderByDesc("id").last("LIMIT 1"));
 
         if (existingReview != null) {
-            // 确保技能状态正确
             if (skill.getLifeStatus() != AgentLifeStatus.REVIEWING) {
                 skill.setLifeStatus(AgentLifeStatus.REVIEWING);
                 skillMapper.updateById(skill);
             }
             emitStage(events, "completed", "已提交审核", 100);
             return buildResultMap(true, "提交审核成功（已有待审核单）", skillId, skill.getSkillCode())
-                    .appendData("submitted", true)
-                    .appendData("reviewId", existingReview.getId())
-                    .build();
+                    .appendData("submitted", true).appendData("reviewId", existingReview.getId()).build();
         }
 
-        // 创建审核记录（附扫描结果，供审核员查看）
         ResourceReview review = ResourceReview.builder()
                 .resourceType(ResourceType.SKILL)
                 .resourceId(skillId)
@@ -336,28 +414,31 @@ public class SkillCreatorOrchestrator {
         review.setScanResult(toScanJson(scanResult));
         resourceReviewMapper.insert(review);
 
-        // 更新技能状态为审核中
+        // ★ SUBMIT 前自动升 MINOR 版本 + 写快照
+        String nextVersion = SkillDomainHelper.bumpVersion(skill.getVersion(), "MINOR");
+        createVersionSnapshot(skill, nextVersion, tenantId, userId);
+        skill.setVersion(nextVersion);
+        skill.setLatestVersion(nextVersion);
+        skill.setActiveVersion(nextVersion);
         skill.setLifeStatus(AgentLifeStatus.REVIEWING);
         skillMapper.updateById(skill);
 
-        log.info("技能提交审核: skillId={}, skillCode={}, reviewId={}, userId={}, scanPassed={}",
-                skillId, skill.getSkillCode(), review.getId(), userId, scanResult.isPassed());
+        // 提交前再持久化一次文件快照（用新版本号）
+        persistSkillFiles(skill, tenantId, userId);
+
+        log.info("技能提交审核: skillId={}, skillCode={}, version={}, reviewId={}", skillId, skill.getSkillCode(), nextVersion, review.getId());
 
         emitStage(events, "completed", "已提交审核", 100);
         return buildResultMap(true, "提交审核成功", skillId, skill.getSkillCode())
-                .appendData("submitted", true)
-                .appendData("reviewId", review.getId())
-                .build();
+                .appendData("submitted", true).appendData("reviewId", review.getId()).build();
     }
 
-    private Map<String, Object> handleQuery(Map<String, Object> inputs,
-                                             List<AgentEvent> events) {
+    private Map<String, Object> handleQuery(Map<String, Object> inputs, List<AgentEvent> events) {
         Long skillId = getLong(inputs, "skillId");
         if (skillId == null) {
             String skillCode = getString(inputs, "skillCode", "");
             if (!skillCode.isEmpty()) {
-                Skill s = skillMapper.selectOne(new QueryWrapper<Skill>()
-                        .eq("skill_code", skillCode).last("LIMIT 1"));
+                Skill s = skillMapper.selectOne(new QueryWrapper<Skill>().eq("skill_code", skillCode).last("LIMIT 1"));
                 if (s != null) skillId = s.getId();
             }
         }
@@ -381,6 +462,96 @@ public class SkillCreatorOrchestrator {
                 .build();
     }
 
+    // ============ 文件持久化（CREATE / MODIFY / SUBMIT 时写入 res_skill_file） ============
+
+    /**
+     * 将当前技能的虚拟文件树（SKILL.md / skill.json / README.md）落库到 res_skill_file。
+     *
+     * <p>同版本同路径的文件：已存在则 update（UPSERT 语义），不存在则 insert。</p>
+     */
+    private void persistSkillFiles(Skill skill, Long tenantId, Long userId) {
+        String version = skill.getVersion() != null ? skill.getVersion() : "0.0.1";
+        List<Map<String, Object>> tree = buildSkillFileTree(skill);
+        List<SkillFile> toInsert = new ArrayList<>();
+        List<SkillFile> toUpdate = new ArrayList<>();
+
+        for (Map<String, Object> node : tree) {
+            String filePath = (String) node.get("path");
+            String content = (String) node.get("content");
+
+            SkillFile existing = skillFileMapper.selectOne(
+                    new LambdaQueryWrapper<SkillFile>()
+                            .eq(SkillFile::getSkillId, skill.getId())
+                            .eq(SkillFile::getVersion, version)
+                            .eq(SkillFile::getFilePath, filePath));
+
+            SkillFile file = existing != null ? existing : new SkillFile();
+            file.setTenantId(tenantId);
+            file.setSkillId(skill.getId());
+            file.setSkillCode(skill.getSkillCode());
+            file.setVersion(version);
+            file.setFilePath(filePath);
+            file.setFileName((String) node.get("name"));
+            file.setFileType(detectFileType(filePath));
+            file.setContent(content);
+            file.setContentHash(sha256Hex(content));
+            file.setSize(content != null ? content.getBytes(StandardCharsets.UTF_8).length : 0);
+            file.setIsEntry("SKILL.md".equals(filePath) ? 1 : 0);
+            file.setCreateBy(userId);
+
+            if (existing != null) toUpdate.add(file);
+            else toInsert.add(file);
+        }
+
+        for (SkillFile f : toInsert) skillFileMapper.insert(f);
+        for (SkillFile f : toUpdate) skillFileMapper.updateById(f);
+
+        log.info("技能文件持久化: skillId={}, version={}, insert={}, update={}",
+                skill.getId(), version, toInsert.size(), toUpdate.size());
+    }
+
+    private String detectFileType(String filePath) {
+        if (filePath == null) return "OTHER";
+        if (filePath.endsWith(".md")) return "MARKDOWN";
+        if (filePath.endsWith(".json")) return "JSON";
+        if (filePath.endsWith(".py")) return "PYTHON";
+        if (filePath.endsWith(".js") || filePath.endsWith(".ts")) return "SCRIPT";
+        return "OTHER";
+    }
+
+    private String sha256Hex(String s) {
+        if (s == null) return null;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(s.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : digest) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ============ 枚举解析（尊重 LLM 输入） ============
+
+    private SkillType parseSkillType(String s) {
+        if (s == null) return null;
+        try { return SkillType.valueOf(s.toUpperCase()); }
+        catch (Exception e) { return null; }
+    }
+
+    private SecurityLevel parseSecurityLevel(String s) {
+        if (s == null) return null;
+        try { return SecurityLevel.valueOf(s.toUpperCase()); }
+        catch (Exception e) { return null; }
+    }
+
+    private SkillCategory parseCategory(String s) {
+        if (s == null || s.isEmpty()) return SkillCategory.INTEGRATION;
+        try { return SkillCategory.valueOf(s.toUpperCase()); }
+        catch (Exception e) { return SkillCategory.INTEGRATION; }
+    }
+
     // ============ 事件发射 ============
 
     private void emitStage(List<AgentEvent> events, String phase, String description, int progress) {
@@ -392,23 +563,14 @@ public class SkillCreatorOrchestrator {
     }
 
     private void emitDraftCreated(List<AgentEvent> events, Skill skill) {
-        Map<String, Object> data = new HashMap<>();
-        data.put("skillId", skill.getId() != null ? String.valueOf(skill.getId()) : null);
-        data.put("skillCode", skill.getSkillCode());
-        data.put("skillName", skill.getSkillName());
-        data.put("description", skill.getDescription());
-        data.put("instructions", skill.getInstructions());
-        data.put("skillType", skill.getSkillType() != null ? skill.getSkillType().name() : null);
-        data.put("category", skill.getCategory() != null ? skill.getCategory().name() : null);
-        data.put("securityLevel", skill.getSecurityLevel() != null ? skill.getSecurityLevel().name() : null);
-        data.put("scope", skill.getScope() != null ? skill.getScope().name() : null);
-        data.put("bindingTools", skill.getBindingTools() != null ? skill.getBindingTools() : "");
-        // 返回技能文件树数据
-        data.put("files", buildSkillFileTree(skill));
-        events.add(AgentEvent.of("skill.draft.created", data));
+        events.add(AgentEvent.of("skill.draft.created", buildDraftEventData(skill)));
     }
 
     private void emitDraftUpdated(List<AgentEvent> events, Skill skill) {
+        events.add(AgentEvent.of("skill.draft.updated", buildDraftEventData(skill)));
+    }
+
+    private Map<String, Object> buildDraftEventData(Skill skill) {
         Map<String, Object> data = new HashMap<>();
         data.put("skillId", skill.getId() != null ? String.valueOf(skill.getId()) : null);
         data.put("skillCode", skill.getSkillCode());
@@ -420,17 +582,8 @@ public class SkillCreatorOrchestrator {
         data.put("securityLevel", skill.getSecurityLevel() != null ? skill.getSecurityLevel().name() : null);
         data.put("scope", skill.getScope() != null ? skill.getScope().name() : null);
         data.put("bindingTools", skill.getBindingTools() != null ? skill.getBindingTools() : "");
-        // 返回技能文件树数据
         data.put("files", buildSkillFileTree(skill));
-        events.add(AgentEvent.of("skill.draft.updated", data));
-    }
-
-    private void emitDebugResult(List<AgentEvent> events, Long skillId, boolean success, String message) {
-        Map<String, Object> data = new HashMap<>();
-        data.put("skillId", skillId != null ? String.valueOf(skillId) : null);
-        data.put("success", success);
-        data.put("message", message);
-        events.add(AgentEvent.of("skill.debug.result", data));
+        return data;
     }
 
     private void emitPackageResult(List<AgentEvent> events, Long skillId, boolean success, String fileName) {
@@ -441,27 +594,13 @@ public class SkillCreatorOrchestrator {
         events.add(AgentEvent.of("skill.package.result", data));
     }
 
-    // ============ 工具方法 ============
+    // ============ 虚拟文件树构建（保留原逻辑） ============
 
-    /**
-     * 构建技能文件树。
-     *
-     * <p>根据技能元数据生成虚拟文件树，包含：
-     * <ul>
-     *   <li>SKILL.md - 技能说明文档</li>
-     *   <li>skill.json - 技能元数据配置</li>
-     *   <li>README.md - 使用说明</li>
-     * </ul>
-     *
-     * @param skill 技能实体
-     * @return 文件树列表（每个节点包含 path, name, type, content 字段）
-     */
     private List<Map<String, Object>> buildSkillFileTree(Skill skill) {
         List<Map<String, Object>> files = new ArrayList<>();
         String skillMd = skillPackagerTool.generateSkillMd(skill.getId());
-        String version = skill.getVersion() != null ? skill.getVersion() : "0.1.0";
+        String version = skill.getVersion() != null ? skill.getVersion() : "0.0.1";
 
-        // SKILL.md
         Map<String, Object> skillMdFile = new HashMap<>();
         skillMdFile.put("path", "SKILL.md");
         skillMdFile.put("name", "SKILL.md");
@@ -470,7 +609,6 @@ public class SkillCreatorOrchestrator {
         skillMdFile.put("language", "markdown");
         files.add(skillMdFile);
 
-        // skill.json
         Map<String, Object> skillJson = new HashMap<>();
         skillJson.put("skill_code", skill.getSkillCode());
         skillJson.put("skill_name", skill.getSkillName());
@@ -478,12 +616,6 @@ public class SkillCreatorOrchestrator {
         skillJson.put("type", skill.getSkillType() != null ? skill.getSkillType().name() : "COMPOSITE");
         skillJson.put("scope", skill.getScope() != null ? skill.getScope().name() : "LOCAL");
         skillJson.put("description", skill.getDescription());
-        skillJson.put("category", skill.getCategory() != null ? skill.getCategory().name() : null);
-        skillJson.put("security_level", skill.getSecurityLevel() != null ? skill.getSecurityLevel().name() : null);
-        skillJson.put("inputs", skill.getInputs() != null ? JSON.parse(skill.getInputs()) : new HashMap<>());
-        skillJson.put("outputs", skill.getOutputs() != null ? JSON.parse(skill.getOutputs()) : new HashMap<>());
-        skillJson.put("binding_tools", skill.getBindingTools() != null ? JSON.parse(skill.getBindingTools()) : new ArrayList<>());
-        skillJson.put("instructions", skill.getInstructions());
 
         Map<String, Object> skillJsonFile = new HashMap<>();
         skillJsonFile.put("path", "skill.json");
@@ -493,7 +625,6 @@ public class SkillCreatorOrchestrator {
         skillJsonFile.put("language", "json");
         files.add(skillJsonFile);
 
-        // README.md
         String readme = buildReadme(skill, version);
         Map<String, Object> readmeFile = new HashMap<>();
         readmeFile.put("path", "README.md");
@@ -506,9 +637,6 @@ public class SkillCreatorOrchestrator {
         return files;
     }
 
-    /**
-     * 构建技能 README.md 内容。
-     */
     private String buildReadme(Skill skill, String version) {
         StringBuilder sb = new StringBuilder();
         sb.append("# ").append(skill.getSkillName()).append("\n\n");
@@ -520,26 +648,12 @@ public class SkillCreatorOrchestrator {
         }
         sb.append("## 使用方法\n\n");
         sb.append("在 Aegis 平台对话中通过 `@").append(skill.getSkillCode()).append("` 调用此技能。\n\n");
-        sb.append("## 版权\n\n");
-        sb.append("由 Aegis 技能生成器创建。\n");
+        sb.append("## 版权\n\n由 Aegis 技能生成器创建。\n");
         return sb.toString();
     }
 
-    /**
-     * S2: 从 Map 中提取字符串值，兼容多种输入类型。
-     *
-     * <p>处理逻辑：
-     * <ul>
-     *   <li>值为 null → 返回 defaultValue</li>
-     *   <li>值为 String → 直接返回（已正确序列化）</li>
-     *   <li>值为 Map/List → 用 JSON.toJSONString 序列化（而不是 Java toString 生成 {k=v}）</li>
-     *   <li>其他类型 → String.valueOf 兜底</li>
-     * </ul>
-     *
-     * <p>这解决了 LLM 在 MODIFY 时直觉传 object 而非 JSON string 的问题——
-     * AgentScope ToolValidator 已因 S1 schema 宽松化而不拦截，但 Java 后端
-     * 需要正确地把 object/array 转成可存入数据库的 JSON string。
-     */
+    // ============ 工具方法 ============
+
     private String getString(Map<String, Object> map, String key, String defaultValue) {
         Object v = map.get(key);
         if (v == null) return defaultValue;
@@ -558,12 +672,6 @@ public class SkillCreatorOrchestrator {
         try { return Long.parseLong(String.valueOf(v)); } catch (Exception e) { return null; }
     }
 
-    private SkillCategory parseCategory(String category) {
-        if (category == null || category.isEmpty()) return SkillCategory.INTEGRATION;
-        try { return SkillCategory.valueOf(category.toUpperCase()); }
-        catch (Exception e) { return SkillCategory.INTEGRATION; }
-    }
-
     private SkillResultBuilder buildResultMap(boolean success, String message, Long skillId, String skillCode) {
         return new SkillResultBuilder(success, message, skillId, skillCode);
     }
@@ -575,164 +683,23 @@ public class SkillCreatorOrchestrator {
         return result;
     }
 
-    // ============ 内联 SkillLifecycleService 方法（Phase 1 迁移，runtime 侧直接操作） ============
-    // U5: skillCode 生成器已收敛至 com.aegis.core.util.SkillCodeGenerator（三套实现合一）
-
-    /**
-     * 统一创建技能草稿（内联自 SkillLifecycleService.createDraft）。
-     */
-    private Skill createDraftSkill(Long tenantId, Long userId,
-                                   String skillCode, String skillName,
-                                   SkillType skillType, SkillCategory category,
-                                   SecurityLevel securityLevel) {
-        if (tenantId == null) {
-            throw new BusinessException(ResultCode.PARAM_ERROR, "租户ID不能为空");
-        }
-        if (userId == null) {
-            throw new BusinessException(ResultCode.PARAM_ERROR, "用户ID不能为空");
-        }
-        if (skillCode == null || skillCode.trim().isEmpty()) {
-            throw new BusinessException(ResultCode.PARAM_ERROR, "技能编码不能为空");
-        }
-        if (skillName == null || skillName.trim().isEmpty()) {
-            throw new BusinessException(ResultCode.PARAM_ERROR, "技能名称不能为空");
-        }
-
-        String code = skillCode.trim();
-        String name = skillName.trim();
-
-        // XSS 清洗
-        name = XssSanitizer.sanitize(name, 200);
-
-        // 编码唯一性（租户内）
-        Long exists = skillMapper.selectCount(
-                new LambdaQueryWrapper<Skill>()
-                        .eq(Skill::getTenantId, tenantId)
-                        .eq(Skill::getSkillCode, code));
-        if (exists != null && exists > 0) {
-            throw new BusinessException(ResultCode.CONFLICT, "技能编码已存在: " + code);
-        }
-
-        // 构建实体（统一默认值）
-        Skill skill = new Skill();
-        skill.setTenantId(tenantId);
-        skill.setSkillCode(code);
-        skill.setSkillName(name);
-        skill.setSkillType(skillType != null ? skillType : SkillType.ATOMIC);
-        skill.setCategory(category != null ? category : SkillCategory.CONTENT);
-        skill.setSecurityLevel(securityLevel != null ? securityLevel : SecurityLevel.L1);
-        skill.setVisibility(Visibility.TENANT);
-        skill.setLifeStatus(AgentLifeStatus.DRAFT);
-        skill.setVersion("0.0.1");
-        skill.setLatestVersion("0.0.1");
-        skill.setActiveVersion("0.0.1");
-        skill.setTags("[]");
-        skill.setBindingTools("[]");
-        skill.setInputs("{}");
-        skill.setOutputs("{}");
-        skill.setMappingConfig("{}");
-        skill.setSubsCount(0);
-        skill.setHealthScore(new java.math.BigDecimal("100.00"));
-        skill.setAuthorUserId(userId);
-        skill.setIsSystem(false);
-        skill.setCertified(false);
-        skill.setCreateBy(userId);
-        skill.setCreateTime(LocalDateTime.now());
-        skill.setDeleted(0);
-
-        skillMapper.insert(skill);
-
-        log.info("Skill draft created (unified via runtime): id={}, code={}, tenantId={}, authorUserId={}, type={}",
-                skill.getId(), code, tenantId, userId, skill.getSkillType());
-        return skill;
-    }
-
-    /**
-     * 增量更新技能字段（内联自 SkillLifecycleService.patchFields）。
-     */
-    private boolean patchSkillFields(Skill skill,
-                                     String skillName,
-                                     String description,
-                                     String instructions,
-                                     SkillCategory category,
-                                     SecurityLevel securityLevel,
-                                     String bindingTools) {
-        boolean updated = false;
-
-        if (skillName != null && !skillName.trim().isEmpty()) {
-            String sanitized = XssSanitizer.sanitize(skillName.trim(), 200);
-            if (!sanitized.equals(skill.getSkillName())) {
-                skill.setSkillName(sanitized);
-                updated = true;
-            }
-        }
-        if (description != null) {
-            String sanitized = XssSanitizer.sanitize(description, 1000);
-            if (!sanitized.equals(skill.getDescription())) {
-                skill.setDescription(sanitized);
-                updated = true;
-            }
-        }
-        if (instructions != null) {
-            if (!instructions.equals(skill.getInstructions())) {
-                skill.setInstructions(instructions);
-                updated = true;
-            }
-        }
-        if (category != null && !category.equals(skill.getCategory())) {
-            skill.setCategory(category);
-            updated = true;
-        }
-        if (securityLevel != null && !securityLevel.equals(skill.getSecurityLevel())) {
-            skill.setSecurityLevel(securityLevel);
-            updated = true;
-        }
-        if (bindingTools != null) {
-            if (!bindingTools.equals(skill.getBindingTools())) {
-                skill.setBindingTools(bindingTools);
-                updated = true;
-            }
-        }
-
-        if (updated) {
-            skillMapper.updateById(skill);
-            log.debug("Skill fields patched: skillId={}, fields updated", skill.getId());
-        }
-        return updated;
-    }
-
-    /** 扫描结果序列化为 JSON（失败时返回 null，不阻断主流程） */
     private String toScanJson(SkillContentScanner.ScanResult scanResult) {
-        try {
-            return JSON.toJSONString(scanResult);
-        } catch (Exception e) {
-            log.warn("扫描结果序列化失败，审核单将不含 scanResult: {}", e.getMessage());
-            return null;
-        }
+        try { return JSON.toJSONString(scanResult); }
+        catch (Exception e) { log.warn("扫描结果序列化失败", e); return null; }
     }
 
-    // ============ 内部类 ============
-
-    /**
-     * 链式结果构建器，支持 appendData 追加额外字段。
-     */
     public static class SkillResultBuilder {
         private final Map<String, Object> result = new HashMap<>();
-
         public SkillResultBuilder(boolean success, String message, Long skillId, String skillCode) {
             result.put("success", success);
             result.put("message", message);
             if (skillId != null) result.put("skillId", String.valueOf(skillId));
             if (skillCode != null) result.put("skillCode", skillCode);
         }
-
         public SkillResultBuilder appendData(String key, Object value) {
             if (value != null) result.put(key, value);
             return this;
         }
-
-        public Map<String, Object> build() {
-            return result;
-        }
+        public Map<String, Object> build() { return result; }
     }
 }

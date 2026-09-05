@@ -59,7 +59,6 @@ import {
   SECURITY_TAG,
   SKILL_TYPE_TAG,
   parseJsonArray,
-  parseJsonObject,
 } from './constants';
 import { safeJsonParse } from '@/utils/number';
 
@@ -633,10 +632,8 @@ const SkillConfigTab: React.FC<{ skill: Skill }> = ({ skill }) => {
   const [config, setConfig] = useState<SkillConfig>({});
 
   useEffect(() => {
-    // 尝试从 skill 对象或 mappingConfig 解析配置
     const skillRecord = skill as unknown as Record<string, unknown>;
-    const configStr = skillRecord['config'] as string | undefined
-      ?? skillRecord['executionConfig'] as string | undefined;
+    const configStr = skillRecord.execConfig as string | undefined;
     if (configStr) {
       setConfig(parseSkillConfig(configStr));
     }
@@ -693,13 +690,6 @@ const SkillConfigTab: React.FC<{ skill: Skill }> = ({ skill }) => {
           </Card>
         </Col>
       </Row>
-
-      {/* 映射配置 */}
-      {skill.mappingConfig && Object.keys(parseJsonObject(skill.mappingConfig)).length > 0 && (
-        <Card size="small" title="🔗 入参映射配置" style={{ marginTop: 12 }}>
-          <MappingViewer mappingStr={skill.mappingConfig} />
-        </Card>
-      )}
     </div>
   );
 };
@@ -707,37 +697,6 @@ const SkillConfigTab: React.FC<{ skill: Skill }> = ({ skill }) => {
 const SwitchBadge: React.FC<{ on?: boolean }> = ({ on }) => (
   <Tag color={on ? 'green' : 'default'}>{on ? '已启用' : '未启用'}</Tag>
 );
-
-const MappingViewer: React.FC<{ mappingStr: string }> = ({ mappingStr }) => {
-  const mapping = parseJsonObject(mappingStr);
-  const rows: { tool: string; param: string; value: string }[] = [];
-
-  Object.entries(mapping).forEach(([key, val]) => {
-    if (val !== null && typeof val === 'object') {
-      Object.entries(val as Record<string, unknown>).forEach(([param, v]) => {
-        rows.push({ tool: key, param, value: String(v) });
-      });
-    } else {
-      rows.push({ tool: key, param: '-', value: String(val) });
-    }
-  });
-
-  if (rows.length === 0) return <Empty description="无映射配置" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
-
-  return (
-    <Table
-      size="small"
-      rowKey={(r) => `${r.tool}.${r.param}`}
-      pagination={false}
-      columns={[
-        { title: '工具/参数', dataIndex: 'tool', width: 200, render: (v: string) => <Text code>{v}</Text> },
-        { title: '参数', dataIndex: 'param', width: 160 },
-        { title: '映射值', dataIndex: 'value', render: (v: string) => <Text code>{v}</Text> },
-      ]}
-      dataSource={rows}
-    />
-  );
-};
 
 // ============================================================================
 // 子组件：版本历史 Tab

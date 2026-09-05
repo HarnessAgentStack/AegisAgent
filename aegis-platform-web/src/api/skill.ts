@@ -30,6 +30,26 @@ export async function getSkillMetadata(id: string): Promise<SkillMetadataRespons
   return http.get<SkillMetadataResponse>(`/runtime/skill/${id}/metadata`);
 }
 
+/** 技能持久化文件项（res_skill_file） */
+export interface SkillFileRecord {
+  filePath: string;
+  fileName: string;
+  fileType: string;
+  content: string;
+  size: number;
+  isEntry: number;
+}
+
+/**
+ * 从 DB 拉取技能持久化文件（res_skill_file）。
+ *
+ * 供右侧面板在页面刷新后恢复文件树 —— SSE 事件只在创建瞬间下发，
+ * 刷新后 skillFiles state 清空，需从此接口从 DB 重建。
+ */
+export async function getSkillFiles(id: string): Promise<SkillFileRecord[]> {
+  return http.get<SkillFileRecord[]>(`/runtime/skill/${id}/files`);
+}
+
 /** 调试技能 */
 export async function debugSkill(id: string, testInputs?: Record<string, unknown>): Promise<SkillDebugResult> {
   return http.post<SkillDebugResult>(`/runtime/skill/${id}/debug`, testInputs);

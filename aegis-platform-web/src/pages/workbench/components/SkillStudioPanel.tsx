@@ -9,6 +9,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Button,
+  Input,
   Modal,
   Space,
   Tag,
@@ -39,23 +40,12 @@ export interface SkillDraft {
   description: string;
   instructions: string;
   securityLevel: string;
-  scope: string;
   tags: string[];
   bindingTools: string;
   /** 输入参数定义（JSON Schema 字符串） */
   inputs?: string;
   /** 输出参数定义（JSON Schema 字符串） */
   outputs?: string;
-  executionConfig: {
-    modelTier?: string;
-    temperature?: number;
-    maxTurns?: number;
-    enableInputFilter?: boolean;
-    enableOutputAudit?: boolean;
-    enablePiiDetection?: boolean;
-    enableRateLimit?: boolean;
-    memoryStrategy?: string;
-  };
 }
 
 /** 技能文件目录项 */
@@ -97,6 +87,7 @@ export interface SkillStudioPanelProps {
   onAIDirective: (message: string) => void;
   onClose: () => void;
   onSubmitted?: (skillId: string) => void;
+  onTagsChange?: (tags: string[]) => void;
   streaming?: boolean;
 }
 
@@ -110,6 +101,7 @@ export const SkillStudioPanel: React.FC<SkillStudioPanelProps> = ({
   onSave,
   onClose,
   onSubmitted,
+  onTagsChange,
   streaming,
 }) => {
   const [expandedFiles, setExpandedFiles] = useState(true);
@@ -256,6 +248,32 @@ export const SkillStudioPanel: React.FC<SkillStudioPanelProps> = ({
           display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         }}>
           {draft.description}
+        </div>
+      )}
+      {onTagsChange && (
+        <div style={{ marginTop: 8 }}>
+          <span style={{ fontSize: 12, color: '#999' }}>标签</span>
+          <div style={{ marginTop: 4 }}>
+            {(draft.tags ?? []).map((t) => (
+              <Tag
+                key={t}
+                closable
+                onClose={() => onTagsChange((draft.tags ?? []).filter((x) => x !== t))}
+              >
+                {t}
+              </Tag>
+            ))}
+            <Input
+              size="small"
+              style={{ width: 100 }}
+              placeholder="添加标签"
+              onPressEnter={(e) => {
+                const v = (e.target as HTMLInputElement).value.trim();
+                if (v && !draft.tags?.includes(v)) onTagsChange([...(draft.tags ?? []), v]);
+                (e.target as HTMLInputElement).value = '';
+              }}
+            />
+          </div>
         </div>
       )}
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 8 }}>

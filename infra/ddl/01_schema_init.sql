@@ -1068,6 +1068,49 @@ CREATE TABLE `res_skill_version` (
   UNIQUE KEY `uk_skill_version` (`tenant_id`,`skill_code`,`version`),
   KEY `idx_skill_id` (`skill_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='技能版本快照（不可变，指针式发布/回滚/灰度）';
+DROP TABLE IF EXISTS `res_skill_file`;
+CREATE TABLE `res_skill_file` (
+  `id` bigint NOT NULL COMMENT '主键ID',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `skill_id` bigint NOT NULL COMMENT '关联 res_skill.id',
+  `skill_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '技能编码（冗余）',
+  `version` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '快照所属版本',
+  `file_path` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '相对路径，如 SKILL.md / skill.json',
+  `file_name` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件名',
+  `file_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件类型：MARKDOWN / JSON / PYTHON / OTHER',
+  `content` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件内容（UTF-8）',
+  `content_hash` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'SHA-256，用于变更检测',
+  `size` int NOT NULL DEFAULT '0' COMMENT '字节数',
+  `is_entry` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否为入口文件（SKILL.md=1）',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人ID',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `deleted` tinyint NOT NULL DEFAULT '0' COMMENT '逻辑删除：0-正常，1-已删除',
+  PRIMARY KEY (`id`),
+  KEY `idx_skill_version` (`skill_id`,`version`),
+  KEY `idx_tenant` (`tenant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='技能文件持久化（SKILL.md / skill.json / README.md 等）';
+DROP TABLE IF EXISTS `res_skill_package`;
+CREATE TABLE `res_skill_package` (
+  `id` bigint NOT NULL COMMENT '主键ID',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `skill_id` bigint NOT NULL COMMENT '关联 res_skill.id',
+  `skill_code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '技能编码（冗余）',
+  `skill_version` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '打包对应的技能版本',
+  `package_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '文件名',
+  `stored_key` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '对象存储完整键',
+  `storage_size` int NOT NULL DEFAULT '0' COMMENT '压缩包大小（字节）',
+  `content_hash` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'SHA-256，下载时校验',
+  `trigger_source` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '触发源：USER_ACTION / AUTO_SUBMIT / AUTO_PUBLISH',
+  `build_report` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci COMMENT '打包时的 debug_report + security_report 快照',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人ID',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `deleted` tinyint NOT NULL DEFAULT '0' COMMENT '逻辑删除：0-正常，1-已删除',
+  PRIMARY KEY (`id`),
+  KEY `idx_skill_version` (`skill_id`,`skill_version`),
+  KEY `idx_stored_key` (`stored_key`(191)),
+  KEY `idx_tenant` (`tenant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='技能打包产物元数据';
 DROP TABLE IF EXISTS `res_tool`;
 DROP TABLE IF EXISTS `res_tool`;
 CREATE TABLE `res_tool` (

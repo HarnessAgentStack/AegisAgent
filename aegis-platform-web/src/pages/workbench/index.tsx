@@ -13,7 +13,7 @@ import { PlusOutlined, RobotOutlined, SwapOutlined, HistoryOutlined, CompressOut
 
 // ---- API ----
 import { getSessionList, getMessages, getAvailableResources } from '@/api/session';
-import { getAvailableSkills, debugSkill, submitSkillForReview } from '@/api/skill';
+import { getAvailableSkills, debugSkill, submitSkillForReview, getSkillFiles } from '@/api/skill';
 import { skillApi, extractList } from '@/api/resource';
 
 // ---- Types & Enum ----
@@ -41,6 +41,7 @@ import { SkillPanel } from './components/SkillPanel';
 import { EnhancedMessageInput } from '@/components/chat/EnhancedMessageInput';
 import { SkillStudioPanel, type SkillDraft, type SkillFileItem } from './components/SkillStudioPanel';
 import { SkillEditPanel } from './components/SkillEditPanel';
+import { collectEditablePayload, type SkillEditableFields } from '@/pages/resource/skill/skill-field-contract';
 
 // ---- Utils ----
 import { ROUTE_PATH } from '@/utils/constants';
@@ -51,9 +52,8 @@ import { DEFAULT_COLLAPSE_POLICY } from '@/types/collapsePolicy';
 /** 空技能草稿工厂 */
 const createEmptySkillDraft = (): SkillDraft => ({
   skillName: '', skillCode: '', skillType: 'ATOMIC' as SkillType, category: '',
-  description: '', instructions: '', securityLevel: 'L1', scope: 'LOCAL',
+  description: '', instructions: '', securityLevel: 'L1',
   tags: [], bindingTools: '',
-  executionConfig: { modelTier: 'STANDARD', temperature: 0.7, maxTurns: 10, enableInputFilter: true, enableOutputAudit: true, enablePiiDetection: true, enableRateLimit: true, memoryStrategy: 'SESSION_LEVEL' },
 });
 
 /** 技能模板按钮 */
@@ -104,6 +104,23 @@ const Workbench: React.FC = () => {
     message,
     loadSessions: sessionMgr.loadSessions,
   });
+
+  // 页面刷新后从 DB 恢复技能文件树（SSE 事件只在创建瞬间下发，刷新即丢失）
+  useEffect(() => {
+    if (!draftSkillId || skillFiles.length > 0) return;
+    let cancelled = false;
+    getSkillFiles(draftSkillId).then((records) => {
+      if (cancelled || !records || records.length === 0) return;
+      const mapped: SkillFileItem[] = records.map((r) => ({
+        name: r.fileName,
+        type: 'file' as const,
+        path: r.filePath,
+        content: r.content,
+      }));
+      setSkillFiles(mapped);
+    }).catch(() => { /* 静默：DB 无文件时不阻塞 */ });
+    return () => { cancelled = true; };
+  }, [draftSkillId, skillFiles.length]);
 
   // ---------- 资源引用状态 ----------
   const [selectedKbIds, setSelectedKbIds] = useState<string[]>([]);
@@ -405,26 +422,28 @@ const Workbench: React.FC = () => {
             onSave={async () => {
               if (!draftSkillId) return;
               try {
-                // P0 修复：改用 admin 完整更新接口（原 updateSkillMetadata 仅覆盖
-                // description/instructions/inputs/outputs 四个字段，skillName/category/
-                // securityLevel/bindingTools 等全部丢失）
-                const payload: Partial<Skill> = {
+                const fields: SkillEditableFields = {
                   skillName: skillDraft.skillName,
+                  category: skillDraft.category,
                   description: skillDraft.description,
                   instructions: skillDraft.instructions,
-                  bindingTools: skillDraft.bindingTools,
+                  skillType: skillDraft.skillType,
+                  securityLevel: skillDraft.securityLevel,
+                  tags: skillDraft.tags ?? [],
+                  bindingTools: skillDraft.bindingTools ?? '[]',
                   inputs: typeof skillDraft.inputs === 'string' ? skillDraft.inputs : JSON.stringify(skillDraft.inputs ?? {}),
                   outputs: typeof skillDraft.outputs === 'string' ? skillDraft.outputs : JSON.stringify(skillDraft.outputs ?? {}),
                 };
-                // 枚举字段有效性过滤：无效值会导致后端反序列化 400
-                if (skillDraft.category && ['DATA', 'CONTENT', 'INTEGRATION', 'COMPUTE', 'RETRIEVAL'].includes(skillDraft.category)) {
-                  payload.category = skillDraft.category;
-                }
-                if (skillDraft.securityLevel && ['L1', 'L2', 'L3', 'L4'].includes(skillDraft.securityLevel)) {
-                  payload.securityLevel = skillDraft.securityLevel as Skill['securityLevel'];
-                }
+                const payload = collectEditablePayload(fields);
                 await skillApi.update(String(draftSkillId), payload);
                 message.success('技能已保存');
+                Modal.confirm({
+                  title: '技能已保存',
+                  content: '技能草稿已成功保存到「我的技能」。是否立即前往查看？',
+                  okText: '前往我的技能',
+                  cancelText: '继续编辑',
+                  onOk: () => { setSkillCreatorMode(false); resetSkillDraft(); navigate(ROUTE_PATH.RESOURCE_SKILL); },
+                });
               } catch { message.error('保存失败'); }
             }}
             onSubmitted={async (sid: string) => {
@@ -437,6 +456,7 @@ const Workbench: React.FC = () => {
               } catch { message.error('提交审核请求失败'); }
             }}
             onClose={() => { setSkillCreatorMode(false); resetSkillDraft(); message.info('已退出技能创建模式'); }}
+            onTagsChange={(tags) => setSkillDraft((prev) => ({ ...prev, tags }))}
             streaming={chat.streaming}
           />
         )}

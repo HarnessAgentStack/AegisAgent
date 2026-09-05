@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file 聊天 SSE Hook
  * @description 封装 streamChat SSE 连接、事件处理（reasoning/tool_call/assistant/hitl/skill_creator 等）、
  *              草稿同步、turnStream（per-message 执行流）驱动、HITL 自动恢复、附件/资源/技能选择。
@@ -667,7 +667,6 @@ function syncSkillDraftFromToolResult(opts: UseWorkbenchChatOptions, result: unk
       }
       if ('category' in resultObj) { patch.category = resultObj.category as string; needUpdate = true; }
       if ('securityLevel' in resultObj) { patch.securityLevel = resultObj.securityLevel as string; needUpdate = true; }
-      if ('scope' in resultObj) { patch.scope = resultObj.scope as string; needUpdate = true; }
       if ('bindingTools' in resultObj) { patch.bindingTools = resultObj.bindingTools as string; needUpdate = true; }
 
       if (needUpdate) {
@@ -730,7 +729,6 @@ function syncSkillDraftFromEvent(opts: UseWorkbenchChatOptions, data: Record<str
   }
   if (payload.category) { patch.category = payload.category as string; needUpdate = true; }
   if (payload.securityLevel) { patch.securityLevel = payload.securityLevel as string; needUpdate = true; }
-  if (payload.scope) { patch.scope = payload.scope as string; needUpdate = true; }
   if (payload.bindingTools) { patch.bindingTools = payload.bindingTools as string; needUpdate = true; }
   if (needUpdate) {
     opts.setSkillDraft((prev: SkillDraft) => ({ ...prev, ...patch }));

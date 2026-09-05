@@ -12,6 +12,7 @@ import {
   Badge,
   Button,
   Card,
+  Collapse,
   Divider,
   Drawer,
   Empty,
@@ -41,7 +42,7 @@ import {
 } from '@ant-design/icons';
 import type { Skill, McpServer } from '@/types/resource';
 import { skillApi, mcpApi } from '@/api/resource';
-import { CATEGORY_OPTIONS, parseJsonArray } from '@/pages/resource/skill/constants';
+import { CATEGORY_OPTIONS, parseJsonArray, SECURITY_OPTIONS, SKILL_TYPE_TAG } from '@/pages/resource/skill/constants';
 import { safeJsonParse } from '@/utils/number';
 
 const { Text } = Typography;
@@ -173,6 +174,10 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
   const [editInstructions, setEditInstructions] = useState(skill.instructions ?? '');
   const [editTags, setEditTags] = useState<string[]>(parseJsonArray(skill.tags));
   const [tagInput, setTagInput] = useState('');
+  const [editSkillType, setEditSkillType] = useState<string>(skill.skillType ?? 'ATOMIC');
+  const [editSecurityLevel, setEditSecurityLevel] = useState<string>(skill.securityLevel ?? 'L1');
+  const [editInputs, setEditInputs] = useState<string>(skill.inputs ?? '');
+  const [editOutputs, setEditOutputs] = useState<string>(skill.outputs ?? '');
 
   // 绑定工具
   const [bindingGroups, setBindingGroups] = useState<ToolBindingGroup[]>(
@@ -260,15 +265,19 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
       category: editCategory,
       description: editDescription,
       instructions: editInstructions,
+      skillType: editSkillType as Skill['skillType'],
+      securityLevel: editSecurityLevel as Skill['securityLevel'],
       tags: editTags.length > 0 ? JSON.stringify(editTags) : undefined,
       bindingTools: bindingsJson || undefined,
+      inputs: editInputs,
+      outputs: editOutputs,
       // P1-ITEM-4：修复空 spread bug —— execConfig 序列化后提交，编辑配置不再丢失
       execConfig:
         execConfig && Object.keys(execConfig).length > 0
           ? JSON.stringify(execConfig)
           : undefined,
     };
-  }, [editName, editCategory, editDescription, editInstructions, editTags, bindingGroups, execConfig, skill]);
+  }, [editName, editCategory, editDescription, editInstructions, editSkillType, editSecurityLevel, editTags, bindingGroups, editInputs, editOutputs, execConfig, skill]);
 
   // ========== 标签管理 ==========
 
@@ -490,6 +499,34 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
                 options={CATEGORY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
               />
             </Form.Item>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Form.Item label="技能类型" style={{ marginBottom: 8 }}>
+                <Select
+                  value={editSkillType}
+                  onChange={(v) => {
+                    setEditSkillType(v);
+                    markDirty();
+                  }}
+                  options={(Object.keys(SKILL_TYPE_TAG) as Array<keyof typeof SKILL_TYPE_TAG>).map((k) => ({
+                    value: k,
+                    label: SKILL_TYPE_TAG[k].text,
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item label="安全等级" style={{ marginBottom: 8 }}>
+                <Select
+                  value={editSecurityLevel}
+                  onChange={(v) => {
+                    setEditSecurityLevel(v);
+                    markDirty();
+                  }}
+                  options={SECURITY_OPTIONS.filter((o) => o.value !== 'all').map((o) => ({
+                    value: o.value,
+                    label: o.label,
+                  }))}
+                />
+              </Form.Item>
+            </div>
             <Form.Item label="描述">
               <TextArea
                 value={editDescription}
@@ -599,6 +636,44 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
             </div>
           )}
         </Card>
+
+        {/* =============== 入参/出参 =============== */}
+        <Collapse
+          defaultActiveKey={['inputs-outputs']}
+          items={[{
+            key: 'inputs-outputs',
+            label: (
+              <Space>
+                <ApiOutlined />
+                <span>入参 / 出参（JSON Schema）</span>
+              </Space>
+            ),
+            children: (
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>输入参数 Schema</Text>
+                  <TextArea
+                    value={editInputs}
+                    onChange={(e) => { setEditInputs(e.target.value); markDirty(); }}
+                    placeholder={'输入 JSON Schema，如 {"type":"object","properties":{...}}'}
+                    autoSize={{ minRows: 4, maxRows: 12 }}
+                    style={{ fontFamily: 'Consolas, "Courier New", monospace', fontSize: 13, marginTop: 4 }}
+                  />
+                </div>
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>输出参数 Schema</Text>
+                  <TextArea
+                    value={editOutputs}
+                    onChange={(e) => { setEditOutputs(e.target.value); markDirty(); }}
+                    placeholder={'输入 JSON Schema，如 {"type":"object","properties":{...}}'}
+                    autoSize={{ minRows: 4, maxRows: 12 }}
+                    style={{ fontFamily: 'Consolas, "Courier New", monospace', fontSize: 13, marginTop: 4 }}
+                  />
+                </div>
+              </Space>
+            ),
+          }]}
+        />
 
         {/* =============== 绑定工具 =============== */}
         <Card

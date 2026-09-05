@@ -4,6 +4,7 @@ import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.agent.AgentDef;
 import com.aegis.core.domain.resource.ResourceReview;
 import com.aegis.core.domain.resource.Skill;
+import com.aegis.core.domain.resource.SkillFile;
 import com.aegis.core.domain.resource.SkillSubscription;
 import com.aegis.core.enums.agent.AgentLifeStatus;
 import com.aegis.core.enums.agent.AgentType;
@@ -19,6 +20,7 @@ import com.aegis.dal.mapper.agent.AgentBindingMapper;
 import com.aegis.dal.mapper.agent.AgentDefMapper;
 import com.aegis.dal.mapper.resource.ResourceReviewMapper;
 import com.aegis.dal.mapper.resource.SkillMapper;
+import com.aegis.dal.mapper.resource.SkillFileMapper;
 import com.aegis.dal.mapper.resource.SkillSubscriptionMapper;
 import com.aegis.runtime.integration.skill.SkillCreatorTool;
 import com.aegis.runtime.integration.skill.SkillDebuggerTool;
@@ -49,6 +51,7 @@ import java.util.stream.Collectors;
 public class SkillChatController {
 
     private final SkillMapper skillMapper;
+    private final SkillFileMapper skillFileMapper;
     private final AgentDefMapper agentDefMapper;
     private final AgentBindingMapper agentBindingMapper;
     private final SkillSubscriptionMapper skillSubscriptionMapper;
@@ -431,6 +434,54 @@ public class SkillChatController {
 
     // U6: 删除 getVersions 空实现端点——版本历史由 admin SkillVersionService
     // （GET /api/admin/resource/skill/{id}/versions）提供完整实现，runtime 无需重复建设
+
+    /**
+     * 查询技能持久化文件（res_skill_file）。
+     *
+     * <p>供前端右侧面板在页面刷新后从 DB 恢复文件树，避免 SSE 事件丢失导致空面板。
+     * 返回当前版本（skill.version）下的所有文件。
+     */
+    @GetMapping("/{id}/files")
+    public List<SkillFileResponse> getSkillFiles(@PathVariable Long id, @UserId Long userId,
+                                                @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
+        try (var ignore = TenantContextScope.bound(tenantId)) {
+            Skill skill = skillMapper.selectById(id);
+            if (skill == null) return List.of();
+            if (!canAccessSkill(skill, userId)) {
+                throw new com.aegis.core.common.error.BusinessException(
+                        com.aegis.core.common.web.ResultCode.FORBIDDEN, "无权查看该技能文件");
+            }
+            String version = skill.getVersion() != null ? skill.getVersion() : "0.0.1";
+            List<SkillFile> files = skillFileMapper.selectList(
+                    new QueryWrapper<SkillFile>()
+                            .eq("skill_id", id)
+                            .eq("version", version)
+                            .orderByDesc("is_entry")
+                            .orderByAsc("file_path"));
+            return files.stream().map(SkillFileResponse::from).collect(Collectors.toList());
+        }
+    }
+
+    @Data
+    public static class SkillFileResponse {
+        private String filePath;
+        private String fileName;
+        private String fileType;
+        private String content;
+        private Integer size;
+        private Integer isEntry;
+
+        public static SkillFileResponse from(SkillFile f) {
+            SkillFileResponse r = new SkillFileResponse();
+            r.filePath = f.getFilePath();
+            r.fileName = f.getFileName();
+            r.fileType = f.getFileType();
+            r.content = f.getContent();
+            r.size = f.getSize();
+            r.isEntry = f.getIsEntry();
+            return r;
+        }
+    }
 
     @GetMapping("/{id}/package/download")
     public ResponseEntity<byte[]> downloadPackage(
