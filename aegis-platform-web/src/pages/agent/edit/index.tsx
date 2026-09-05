@@ -24,7 +24,6 @@ import {
   Space,
   Spin,
   Steps,
-  Switch,
   Tag,
   Typography,
 } from 'antd';
@@ -129,10 +128,6 @@ const AgentEdit: React.FC = () => {
           temperature: data.temperature ?? 0.7,
           maxTurns: data.maxTurns ?? 20,
           memoryStrategy: data.memoryStrategy || 'SESSION_LEVEL',
-          permissionMode: data.permissionMode || 'DEFAULT',
-          enablePlanMode: data.enablePlanMode ?? false,
-          compactionThreshold: data.compactionThreshold ?? null,
-          memoryFlushStrategy: data.memoryFlushStrategy || 'NONE',
           deploymentPoolCode: data.deploymentPoolCode,
           reservedReplicas: data.reservedReplicas ?? 1,
         });
@@ -429,60 +424,6 @@ const AgentEdit: React.FC = () => {
                 </Form.Item>
               </Col>
 
-              {/* 运行时配置（Phase 1 展示，Phase 3 生效） */}
-              <Col span={12}>
-                <Form.Item
-                  name="permissionMode"
-                  label="权限模式"
-                  tooltip="DEFAULT：危险操作询问用户；DONT_ASK：不询问直接执行"
-                >
-                  <Select
-                    options={[
-                      { value: 'DEFAULT', label: '默认（询问用户）' },
-                      { value: 'DONT_ASK', label: '不询问' },
-                    ]}
-                  />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item
-                  name="enablePlanMode"
-                  label="规划模式"
-                  tooltip="启用后生成执行计划（Phase 3 生效）"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item
-                  name="compactionThreshold"
-                  label="压缩阈值"
-                  tooltip="上下文达到该阈值时压缩，留空表示不压缩"
-                >
-                  <InputNumber
-                    min={1}
-                    max={100000}
-                    style={{ width: '100%' }}
-                    placeholder="留空表示不压缩"
-                  />
-                </Form.Item>
-              </Col>
-              <Col span={12}>
-                <Form.Item
-                  name="memoryFlushStrategy"
-                  label="记忆刷写策略"
-                  tooltip="NONE：不刷写 / PROGRESSIVE：渐进式 / FULL：全量"
-                >
-                  <Select
-                    options={[
-                      { value: 'NONE', label: '不刷写' },
-                      { value: 'PROGRESSIVE', label: '渐进式' },
-                      { value: 'FULL', label: '全量' },
-                    ]}
-                  />
-                </Form.Item>
-              </Col>
             </Row>
 
             {/* 系统智能体：API 发布配置 + 部署目标 */}
@@ -651,10 +592,6 @@ const AgentEdit: React.FC = () => {
                       <p>温度：{v.temperature}</p>
                       <p>最大对话轮数：{v.maxTurns}</p>
                       <p>记忆策略：{v.memoryStrategy}</p>
-                      <p>权限模式：{v.permissionMode ?? 'DEFAULT'}</p>
-                      <p>规划模式：{v.enablePlanMode ? '启用' : '关闭'}</p>
-                      <p>压缩阈值：{v.compactionThreshold ?? '不压缩'}</p>
-                      <p>记忆刷写策略：{v.memoryFlushStrategy ?? 'NONE'}</p>
                       <p>系统提示词：{v.systemPrompt ? `${v.systemPrompt.slice(0, 60)}...` : '-'}</p>
                     </Card>
                     {v.agentType === AgentType.SYSTEM && (

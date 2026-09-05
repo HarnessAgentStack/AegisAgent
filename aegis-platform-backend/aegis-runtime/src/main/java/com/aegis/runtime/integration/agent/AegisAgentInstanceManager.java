@@ -539,7 +539,7 @@ public class AegisAgentInstanceManager {
 
         // 3. 构建权限上下文（必须在 loadToolkit 之后构建，才能扫描 Toolkit 中的动态工具
         //    注册 ALLOW 规则，避免 DONT_ASK 模式下 PermissionEngine 对无规则工具默认 DENY）
-        PermissionContextState permissionContext = buildPermissionContext(agentId, tenantId, toolkit, agentConfig);
+        PermissionContextState permissionContext = buildPermissionContext(agentId, tenantId, toolkit);
 
         // 4. 装配 Builder 基础属性
         IsolationScope isolationScope = resolveIsolationScope(agentType);
@@ -714,60 +714,31 @@ public class AegisAgentInstanceManager {
                 .agentId(String.valueOf(agentId))
                 // 中间件链由 AgentScope 内核按 order 降序驱动
                 .middlewares(standaloneMiddlewares)
-                // 压缩配置由 AgentConfig.compactionThreshold / memoryFlushStrategy 驱动
-                .compaction(buildCompactionConfig(agentConfig))
+                // 压缩配置：Phase 3 compactionThreshold/memoryFlushStrategy 死字段已移除，统一默认（不主动压缩）
+                .compaction(buildCompactionConfig())
                 .toolResultEviction(ToolResultEvictionConfig.defaults())
                 .maxRetries(3)
                 .maxContextTokens(100_000)
                 .permissionContext(permissionContext);
-        // memoryFlushStrategy != NONE 时启用 AS 内置记忆钩子；
-        // 否则禁用（跨会话记忆由 AegisMemoryMiddleware 在应用层异步处理）
-        if (!shouldEnableMemory(agentConfig)) {
-            builder.disableMemoryHooks();
-        }
-        // enablePlanMode 由 AgentConfig 驱动（默认关闭）
-        if (agentConfig != null && Boolean.TRUE.equals(agentConfig.getEnablePlanMode())) {
-            builder.enablePlanMode();
-        }
+        // Phase 3 memoryFlushStrategy 死字段已移除：跨会话记忆统一由 AegisMemoryMiddleware
+        // 在应用层异步处理，AS 内置记忆钩子保持禁用。
+        builder.disableMemoryHooks();
         return builder;
     }
 
-    /** 根据 AgentConfig 构建上下文压缩配置。 */
-    private CompactionConfig buildCompactionConfig(AgentConfig agentConfig) {
-        Integer threshold = (agentConfig != null) ? agentConfig.getCompactionThreshold() : null;
-        if (threshold == null || threshold <= 0) {
-            return CompactionConfig.builder()
-                    .triggerMessages(Integer.MAX_VALUE)
-                    .keepMessages(Integer.MAX_VALUE)
-                    .triggerTokens(Integer.MAX_VALUE)
-                    .flushBeforeCompact(false)
-                    .offloadBeforeCompact(true)
-                    .truncateArgs(CompactionConfig.TruncateArgsConfig.builder()
-                            .maxArgLength(2000)
-                            .truncationText("... [truncated] ...")
-                            .build())
-                    .build();
-        }
+    /** 构建上下文压缩配置（Phase 3 compactionThreshold/memoryFlushStrategy 死字段移除后统一默认，不主动压缩）。 */
+    private CompactionConfig buildCompactionConfig() {
         return CompactionConfig.builder()
-                .triggerMessages(threshold)
-                .keepMessages(Math.max(5, threshold / 4))
-                .triggerTokens(120_000)
-                .flushBeforeCompact("PROGRESSIVE".equalsIgnoreCase(agentConfig.getMemoryFlushStrategy()))
+                .triggerMessages(Integer.MAX_VALUE)
+                .keepMessages(Integer.MAX_VALUE)
+                .triggerTokens(Integer.MAX_VALUE)
+                .flushBeforeCompact(false)
                 .offloadBeforeCompact(true)
                 .truncateArgs(CompactionConfig.TruncateArgsConfig.builder()
                         .maxArgLength(2000)
                         .truncationText("... [truncated] ...")
                         .build())
                 .build();
-    }
-
-    /** Phase 3：判断是否启用 AS 内置记忆钩子（memoryFlushStrategy 非 NONE 即启用）。 */
-    private boolean shouldEnableMemory(AgentConfig agentConfig) {
-        if (agentConfig == null) {
-            return false;
-        }
-        String strategy = agentConfig.getMemoryFlushStrategy();
-        return strategy != null && !"NONE".equalsIgnoreCase(strategy);
     }
 
     /** 文件系统配置结果（供 buildAgent 组装 AgentEntry） */
@@ -902,11 +873,10 @@ public class AegisAgentInstanceManager {
      * @param toolkit 已加载工具的 Toolkit，用于扫描动态工具注册 ALLOW 规则
      * @return 动态构建的 PermissionContextState
      */
-    private PermissionContextState buildPermissionContext(long agentId, long tenantId, Toolkit toolkit,
-                                                           AgentConfig agentConfig) {
-        PermissionMode mode = (agentConfig != null && "DONT_ASK".equalsIgnoreCase(agentConfig.getPermissionMode()))
-                ? PermissionMode.DONT_ASK
-                : PermissionMode.DEFAULT;
+    private PermissionContextState buildPermissionContext(long agentId, long tenantId, Toolkit toolkit) {
+        // Phase 3 permissionMode 死字段已移除：权限模式统一 DEFAULT，
+        // 高风险工具的 ASK/DENY 由 AegisPermissionRuleLoader 从 sec_tool_policy 映射驱动。
+        PermissionMode mode = PermissionMode.DEFAULT;
         // PermissionMode.DONT_ASK：对已注册规则的工具按规则评估；对无规则工具默认 DENY
         // （因为无人回答审批请求）。此模式下必须确保 Toolkit 中每个工具都有对应规则，
         // 否则动态工具（skill_creator、订阅技能、MCP 工具）会被 PermissionEngine 默认拒绝。

@@ -230,7 +230,6 @@ public class AgentPublishService {
                     .requestSchema(normalizeJsonSchema(apiReq != null ? apiReq.getRequestSchema() : null))
                     .responseSchema(normalizeJsonSchema(apiReq != null ? apiReq.getResponseSchema() : null))
                     .concurrentLimit(apiReq != null ? apiReq.getConcurrentLimit() : null)
-                    .validityType(apiReq != null ? apiReq.getValidityType() : null)
                     .bearerTokenMode(apiReq != null ? apiReq.getBearerTokenMode() : null)
                     .bearerJwtAlgorithm(apiReq != null ? apiReq.getBearerJwtAlgorithm() : null)
                     .bearerJwtSecret(apiReq != null ? apiReq.getBearerJwtSecret() : null)
@@ -425,7 +424,6 @@ public class AgentPublishService {
             if (apiReq.getRateLimit() != null) current.setRateLimit(apiReq.getRateLimit());
             if (apiReq.getConcurrentLimit() != null) current.setConcurrentLimit(apiReq.getConcurrentLimit());
             if (apiReq.getAuthType() != null) current.setAuthType(apiReq.getAuthType());
-            if (apiReq.getValidityType() != null) current.setValidityType(apiReq.getValidityType());
             if (apiReq.getRequestSchema() != null) current.setRequestSchema(normalizeJsonSchema(apiReq.getRequestSchema()));
             if (apiReq.getResponseSchema() != null) current.setResponseSchema(normalizeJsonSchema(apiReq.getResponseSchema()));
             if (apiReq.getBearerTokenMode() != null) current.setBearerTokenMode(apiReq.getBearerTokenMode());
@@ -849,15 +847,17 @@ public class AgentPublishService {
     }
 
     /**
-     * 保障 SYSTEM 智能体的 agent_api 记录可用（启用 + 沙箱池 + API Key），缺失则补建。
+     * 保障 SYSTEM 智能体的 agent_api 记录可用（启用 + 沙箱池），缺失则补建。
      *
      * <p>三层防御：
      * <ol>
-     *   <li>存在有效记录（deleted=0）-> 启用 + 匹配沙箱池 + 补 API Key；</li>
+     *   <li>存在有效记录（deleted=0）-> 启用 + 匹配沙箱池；</li>
      *   <li>仅存在逻辑删除残留行（deleted=1，删除智能体遗留）-> 恢复复用该行，
      *       规避 {@code uk_agent_api_path(tenant_id, api_path)} 唯一键冲突导致的补建失败；</li>
-     *   <li>完全无记录 -> 按默认值补建一条 NORMAL 记录（含 API Key 与沙箱池）。</li>
+     *   <li>完全无记录 -> 按默认值补建一条 NORMAL 记录（含沙箱池）。</li>
      * </ol>
+     *
+     * <p>注：API Key 不在此处生成，由 KeyManager 经 {@code agent_api_key} 表独立管理（哈希存储 + 轮换/吊销）。
      *
      * @param def         智能体定义（含 agentCode/agentName/tenantId）
      * @param matchedPool 已匹配的沙箱池（可为 null，置 PENDING）
@@ -866,16 +866,13 @@ public class AgentPublishService {
     private AgentApi ensureSystemAgentApi(AgentDef def, SandboxPool matchedPool) {
         Long agentId = def.getId();
 
-        // 1. 有效记录：启用 + 沙箱池 + API Key
+        // 1. 有效记录：启用 + 沙箱池
         AgentApi api = agentApiMapper.selectOne(new LambdaQueryWrapper<AgentApi>()
                 .eq(AgentApi::getAgentId, agentId)
                 .last("LIMIT 1"));
         if (api != null) {
             api.setStatus(CommonStatus.NORMAL);
             applyPool(api, matchedPool);
-            if (api.getApiKey() == null || api.getApiKey().isEmpty()) {
-                api.setApiKey(generateApiKey());
-            }
             agentApiMapper.updateById(api);
             return api;
         }
@@ -887,9 +884,6 @@ public class AgentPublishService {
             // revive 已置 deleted=0/status=NORMAL，此处补齐业务字段
             legacy.setStatus(CommonStatus.NORMAL);
             applyPool(legacy, matchedPool);
-            if (legacy.getApiKey() == null || legacy.getApiKey().isEmpty()) {
-                legacy.setApiKey(generateApiKey());
-            }
             if (legacy.getApiName() == null || legacy.getApiName().isBlank()) {
                 legacy.setApiName(def.getAgentName() + " API");
             }
@@ -912,7 +906,6 @@ public class AgentPublishService {
                 .status(CommonStatus.NORMAL)
                 .reservedReplicas(1)
                 .version("1.0.0")
-                .apiKey(generateApiKey())
                 .build();
         created.setTenantId(def.getTenantId());
         applyPool(created, matchedPool);
@@ -931,11 +924,6 @@ public class AgentPublishService {
         } else {
             api.setPoolAllocateStatus("PENDING");
         }
-    }
-
-    /** 生成 API Key（aegis_ 前缀 UUID） */
-    private String generateApiKey() {
-        return "aegis_" + java.util.UUID.randomUUID().toString().replace("-", "");
     }
 
     /**

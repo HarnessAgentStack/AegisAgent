@@ -19,6 +19,7 @@ import com.aegis.dal.mapper.org.UserBaseMapper;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
 import com.aegis.runtime.service.conversation.SessionManageService;
 import com.aegis.runtime.service.conversation.ContentAdapter;
+import com.aegis.runtime.service.policy.HitlFlowService;
 import com.aegis.runtime.service.document.FileStorageService;
 import com.aegis.runtime.infrastructure.document.AttachmentStrategy;
 import com.aegis.runtime.infrastructure.document.ImageResizeUtil;
@@ -80,6 +81,7 @@ public class AgentAssemblyService {
     private final ModelRouteResolver modelRouteResolver;
     private final ResourceQueryService resourceQueryService;
     private final UserBaseMapper userMapper;
+    private final HitlFlowService hitlFlowService;
 
     /**
      * 装配执行上下文 —— 整个装配流程的核心入口。
@@ -145,6 +147,23 @@ public class AgentAssemblyService {
             Session session = ts.session();
             builder.sessionId(session.getSessionId());
             AgentConfig cfg = ts.restoredConfig();
+
+            // ============ HITL 保护：暂停会话拒绝新消息 ============
+            // 场景：会话因工具调用待审批（hitl.request）转 PAUSED 后，用户未处理审批卡
+            // 直接发送新消息。若放行：persistIncomingMessage 会将 PAUSED 覆盖为 THINKING，
+            // 智能体内核随即抛 "Agent is paused for human-in-the-loop confirmation"，
+            // 外层 doFinally 兜底把会话强制终态为 EXCEPTION——审批卡失效、会话永久死亡。
+            // 修复：在此阶段直接阻断（不落用户消息、不改会话状态），会话保持 PAUSED，
+            // 审批卡（同意/拒绝）保持可用。审批恢复流（空消息）不受影响。
+            String incomingMessage = request.getMessage();
+            if (session.getStatus() == SessionStatus.PAUSED
+                    && incomingMessage != null && !incomingMessage.isBlank()
+                    && hitlFlowService.hasPendingRequest(session.getSessionId())) {
+                log.warn("HITL 保护：暂停会话拒绝新消息，保持 PAUSED: sessionId={}", session.getSessionId());
+                builder.blocked(true).blockReason(
+                        "当前会话有待审批的工具调用，请先处理上方审批卡（同意/拒绝）后再继续，或新建会话");
+                return blockedContext(builder);
+            }
 
             // ============ Phase 2 上下文构建（P2-7② 分相）============
             // 2a. 附件处理 + 用户消息持久化 + 会话状态流转
@@ -472,17 +491,30 @@ public class AgentAssemblyService {
                         .filter(code -> code != null && !code.isBlank())
                         .toList();
 
+        String resolvedAgentType = agentType != null ? agentType : "UNIVERSAL";
         RuntimeContext.Builder builder = RuntimeContext.builder()
                 .sessionId(sessionId)
                 .userId(String.valueOf(userId))
                 // Phase 1: typedAttributes 注入 tenant/agent/governance，替代散落的 string key
                 .put(AegisTenant.class, new AegisTenant(tenantId))
-                .put(AegisAgentMeta.class, new AegisAgentMeta(agentId, agentType != null ? agentType : "UNIVERSAL"))
+                .put(AegisAgentMeta.class, new AegisAgentMeta(agentId, resolvedAgentType))
                 .put(AegisSkillRepository.CTX_REQUESTED_SKILLS, requestedCodes)
                 .put(AssemblyResourceContext.CTX_ENABLED_BINDINGS,
                         resources != null ? resources.enabledBindings() : List.of())
                 .put(AssemblyResourceContext.CTX_BOUND_SKILLS,
-                        resources != null ? resources.boundSkills() : List.of());
+                        resources != null ? resources.boundSkills() : List.of())
+                // FIX(技能草稿态调用失败): 同步写字符串 key，供 AegisSkillRepository/SandboxRoutingMiddleware
+                // 等以字符串 key 读取的消费方使用。原先仅写 typed 属性，导致 ctx.get("tenantId") == null，
+                // queryUserSkills 在租户判空处直接返回空，UNIVERSAL 轨道用户自建 DRAFT 技能无法装载。
+                // FIX(BLOCKED NPE): RuntimeContext 内部是 ConcurrentHashMap，拒绝 null value——
+                // deptId 是可选身份（用户未挂部门时网关不下发），仅非空时写入；
+                // 消费方 AegisSkillRepository 以 ctx.get("deptId") 读取，缺省 null 语义不变。
+                .put("tenantId", tenantId)
+                .put(AegisSkillRepository.CTX_AGENT_TYPE, resolvedAgentType)
+                .put(AegisSkillRepository.CTX_AGENT_ID, agentId);
+        if (deptId != null) {
+            builder.put("deptId", deptId);
+        }
 
         // P1: 注入会话级资源引用（合并智能体绑定资源 + 会话选择资源 + UNIVERSAL 用户订阅/自建）
         SessionResourcesRef mergedResources = mergeResourcesWithAgentBindings(

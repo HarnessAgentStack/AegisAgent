@@ -51,7 +51,7 @@ export const AgentDrawer: React.FC<AgentDrawerProps> = ({
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{a.agentName}</div>
                 <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.description || a.agentType === AgentType.UNIVERSAL ? '通用智能体' : '应用智能体'}
+                  {a.description || (a.agentType === AgentType.UNIVERSAL ? '通用智能体' : '应用智能体')}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>

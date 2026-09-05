@@ -640,7 +640,7 @@ public class TaskExecutionService {
         if (msg != null && msg.contains("is paused for human-in-the-loop confirmation")) {
             return Map.of(
                     "code", "HITL_PENDING",
-                    "message", "智能体需要您确认工具调用，请在新的对话中继续（错误代码：HITL_PENDING）",
+                    "message", "智能体有待审批的工具调用，请先处理审批卡（同意/拒绝）后再继续（错误代码：HITL_PENDING）",
                     "detail", msg,
                     "timestamp", System.currentTimeMillis());
         }
@@ -651,7 +651,7 @@ public class TaskExecutionService {
             if (causeMsg != null && causeMsg.contains("is paused for human-in-the-loop confirmation")) {
                 return Map.of(
                         "code", "HITL_PENDING",
-                        "message", "智能体需要您确认工具调用，请在新的对话中继续（错误代码：HITL_PENDING）",
+                        "message", "智能体有待审批的工具调用，请先处理审批卡（同意/拒绝）后再继续（错误代码：HITL_PENDING）",
                         "detail", causeMsg,
                         "timestamp", System.currentTimeMillis());
             }

@@ -142,9 +142,6 @@ const ResourceReadOnlyDetail: React.FC<ResourceReadOnlyDetailProps> = ({
           {agent.agentType === 'APPLICATION' ? '应用智能体' : agent.agentType === 'UNIVERSAL' ? '通用智能体' : agent.agentType === 'SYSTEM' ? '系统智能体' : '-'}
         </Descriptions.Item>
         <Descriptions.Item label="模型档位">{agent.modelTier || '-'}</Descriptions.Item>
-        <Descriptions.Item label="安全等级">
-          {agent.securityLevel || '-'}
-        </Descriptions.Item>
         <Descriptions.Item label="可见性">{agent.visibility || 'TENANT'}</Descriptions.Item>
         <Descriptions.Item label="订阅数">{agent.subsCount ?? 0}</Descriptions.Item>
         <Descriptions.Item label="描述" span={2}>

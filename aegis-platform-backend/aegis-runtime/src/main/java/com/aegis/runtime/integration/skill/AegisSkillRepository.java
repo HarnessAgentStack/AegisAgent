@@ -1,5 +1,6 @@
 package com.aegis.runtime.integration.skill;
 
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.core.domain.agent.AgentBinding;
 import com.aegis.core.domain.resource.Skill;
 import com.aegis.core.domain.resource.SkillSubscription;
@@ -194,7 +195,24 @@ public class AegisSkillRepository implements RuntimeContextSkillRepository {
             return new SkillResolution(List.of(), requested == null ? List.of() : requested);
         }
 
+        // 框架 HarnessSkillMiddleware 在装配段结束后（boundedElastic 线程已归还/上下文已清空）
+        // 才调用本仓库加载技能。下游 queryUserSkills/queryBoundSkills/findPublishedByCode 走
+        // 租户敏感的 res_skill_subscription / res_skill 表，MyBatis-Plus 租户插件 fail-closed，
+        // 缺上下文直接抛"租户上下文缺失"——导致用户订阅/自建(含 DRAFT)技能在工作台永远不加载。
+        // 修复：从 RuntimeContext 取 tenantId 自绑定（恢复式 of，结束后还原进入前状态），
+        // 与 SkillAsToolAdapter 的 bound 模式对齐；GLOBAL 走 @InterceptorIgnore 不受影响。
         Long tenantId = parseLong(ctx == null ? null : ctx.get("tenantId"));
+        try (TenantContextScope scope = TenantContextScope.of(tenantId)) {
+            return doResolve(ctx, tenantId);
+        } catch (Exception e) {
+            log.warn("AegisSkillRepository.resolve 租户上下文绑定后仍失败，降级空技能集: tenantId={}, err={}",
+                    tenantId, e.getMessage());
+            List<String> requested = extractRequestedCodes(ctx);
+            return new SkillResolution(List.of(), requested == null ? List.of() : requested);
+        }
+    }
+
+    private SkillResolution doResolve(RuntimeContext ctx, Long tenantId) {
         Long userId = parseLong(ctx == null ? null : ctx.getUserId());
         Long deptId = parseLong(ctx == null ? null : ctx.get("deptId"));
         Long agentId = parseLong(ctx == null ? null : ctx.get(CTX_AGENT_ID));

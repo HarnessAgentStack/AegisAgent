@@ -31,6 +31,7 @@ export function useAgentSelection() {
       }
 
       for (const agent of myAgents) {
+        if (agent.agentType === AgentType.SYSTEM) continue;
         if (!allIds.has(agent.id)) {
           result.push(agent);
           allIds.add(agent.id);

@@ -47,6 +47,8 @@ export interface Agent {
   authorDeptId?: string;
   /** 订阅数（市场客观排序用缓存统计） */
   subsCount?: number;
+  /** 当前用户是否已订阅（市场列表接口返回，B-3） */
+  subscribed?: boolean;
   /** 发布可见范围：当前仅 TENANT（本租户可见） */
   visibility?: Visibility;
   /** 发布时间 */
@@ -67,18 +69,8 @@ export interface Agent {
   temperature?: number;
   /** 最大对话轮数 */
   maxTurns?: number;
-  /** 安全等级（L1/L2/L3） */
-  securityLevel?: string;
   /** 记忆策略：SESSION_LEVEL / LONG_TERM */
   memoryStrategy?: string;
-  /** 权限模式：DEFAULT（默认，危险操作询问用户）/ DONT_ASK（不询问直接执行） */
-  permissionMode?: string;
-  /** 是否启用规划模式（Phase 3 生效） */
-  enablePlanMode?: boolean;
-  /** 压缩阈值，上下文达到该阈值时压缩；null 表示不压缩 */
-  compactionThreshold?: number | null;
-  /** 记忆刷写策略：NONE（不刷写）/ PROGRESSIVE（渐进式）/ FULL（全量） */
-  memoryFlushStrategy?: string;
   /** 启用工具ID列表 JSON 数组字符串（详情接口返回，如 "[1,2,3]"） */
   enabledTools?: string;
 
@@ -157,14 +149,6 @@ export interface AgentSaveParams {
   maxTurns?: number;
   /** 记忆策略 */
   memoryStrategy?: string;
-  /** 权限模式：DEFAULT / DONT_ASK */
-  permissionMode?: string;
-  /** 是否启用规划模式 */
-  enablePlanMode?: boolean;
-  /** 压缩阈值，null 表示不压缩 */
-  compactionThreshold?: number | null;
-  /** 记忆刷写策略：NONE / PROGRESSIVE / FULL */
-  memoryFlushStrategy?: string;
   /** 启用工具ID列表（雪花ID，前端一律 string[]） */
   enabledTools?: string[];
   /** 资源绑定列表（创建时绑定 SKILL/MCP/知识库） */

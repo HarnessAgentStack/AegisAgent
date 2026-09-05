@@ -1,4 +1,4 @@
-﻿server:
+server:
   port: 8080
   shutdown: graceful
   http2:
@@ -36,3 +36,6 @@ aegis:
       - /api/admin/auth/**
       - /actuator/**
       - /api/runtime/task/download/**
+      # FIX(B-2): 系统智能体对外 API 走独立鉴权域（X-API-Key / Bearer Token），
+      # 不使用平台用户 JWT。网关放行该路径，由 AgentApiRuntimeController 自治鉴权。
+      - /api/runtime/agent-api/**

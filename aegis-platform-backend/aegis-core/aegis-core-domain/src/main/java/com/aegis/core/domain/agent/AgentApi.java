@@ -4,8 +4,6 @@ import com.aegis.core.base.TenantEntity;
 import com.aegis.core.enums.api.ApiAuthType;
 import com.aegis.core.enums.api.ApiResponseMode;
 import com.aegis.core.enums.common.CommonStatus;
-import com.aegis.core.enums.common.ScopeType;
-import com.aegis.core.enums.common.ValidityType;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -19,15 +17,15 @@ import java.time.LocalDateTime;
 /**
  * 智能体开放API实体，支持外部系统调用。
  *
- * <p>将智能体能力以REST API形式对外开放，含认证方式、限流、超时、有效期与数据出境合规配置。
- * 外部系统通过API Key/Bearer/OAuth2认证后调用智能体会话接口。
+ * <p>将智能体能力以REST API形式对外开放，含认证方式、限流、超时与 Bearer 鉴权配置。
+ * 外部系统通过 API Key（{@code agent_api_key} 表，哈希存储 + 轮换/吊销生命周期）
+ * 或 Bearer Token 认证后调用智能体会话接口。
  * 继承 TenantEntity，按租户隔离。
  *
  * <h3>设计约束</h3>
  * <ul>
  *   <li>apiPath租户内唯一，HTTP方法+路径组合唯一</li>
- *   <li>数据出境场景需配置scopeType合规范围</li>
- *   <li>apiKey仅创建时返回明文，后续仅展示脱敏值</li>
+ *   <li>API Key 明文仅生成时返回，仅存储哈希值于 {@code agent_api_key} 表</li>
  * </ul>
  *
  * @author wang.zhen
@@ -69,30 +67,13 @@ public class AgentApi extends TenantEntity {
     /** 超时时间（秒），默认30 */
     private Integer timeout;
 
-    /** 有效期类型：{@link ValidityType#PERMANENT}（永久）、{@link ValidityType#DAYS_7}（7天）、{@link ValidityType#DAYS_30}（30天）、{@link ValidityType#CUSTOM}（自定义），控制API可用时间 */
-    private ValidityType validityType;
-
-    /** 固定有效期截止时间，validityType非PERMANENT时生效 */
-    private LocalDateTime validUntil;
-
-    /** 数据出境范围类型：{@link ScopeType#INTERNAL_IP}（企业内部白名单IP）、{@link ScopeType#DEPT}（指定部门）、{@link ScopeType#PARTNER}（指定外部合作伙伴） */
-    private ScopeType scopeType;
-
-    /** 出境范围配置，JSON格式（含白名单域名/字段等） */
-    private String scopeConfig;
-
-    /** API密钥，仅创建时明文返回，存储哈希值 */
-    private String apiKey;
-
-    /** 回调地址，异步模式结果回调URL */
-    private String webhookUrl;
-
     /** API状态：{@link CommonStatus#NORMAL}（正常）、{@link CommonStatus#DISABLED}（停用） */
     private CommonStatus status;
 
     // ===== 部署目标（仅 agentType=SYSTEM 时生效）=====
 
-    /** 部署目标沙箱池编码（外键 sbx_pool.pool_code + tenantId）。系统智能体对外 API 必须绑定部署目标，默认填好租户系统保留池。 */
+    /** 部署目标沙箱池编码（外键 sbx_pool.pool_code + tenantId）。系统智能体对外 API 必须绑定部署目标，默认填好租户系统保留池。
+     * 注:本字段为审核通过瞬间的池分配快照(只读展示+审计),不参与运行时沙箱路由决策(实际路由由 sec_sandbox_policy 驱动)。 */
     private String deploymentPoolCode;
 
     /** 该智能体在绑定池内的预留常驻副本数，默认 1，保证对外 API 的冷启动与容量（对应沙箱常驻钉扎）。 */
@@ -123,9 +104,6 @@ public class AgentApi extends TenantEntity {
 
     /** 示例响应体（JSON 字符串） */
     private String exampleResponse;
-
-    /** API 文档 URL */
-    private String apiDocUrl;
 
     /** 最近测试时间 */
     private LocalDateTime lastTestedAt;

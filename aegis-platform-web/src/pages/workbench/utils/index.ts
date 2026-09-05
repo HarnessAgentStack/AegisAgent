@@ -22,8 +22,13 @@ export const markdownStyles = `
 
 /** 错误码到用户友好提示的映射 */
 export function friendlyErrorMap(code: string, rawMsg: string): string {
+  // BLOCKED 优先透出后端真实原因（如"智能体当前状态不可使用: DRAFT"），
+  // 后端 message 为空才回退通用文案——避免"配额超限或内容审核"误导排障方向。
+  if (code === 'BLOCKED' && rawMsg && rawMsg !== '生成失败') {
+    return `智能体执行被拦截：${rawMsg}`;
+  }
   const map: Record<string, string> = {
-    BLOCKED: '智能体执行被拦截，可能原因：配额超限或内容审核。请稍后重试或联系管理员。',
+    BLOCKED: '智能体执行被拦截，请稍后重试或联系管理员。',
     HARNESS_UNAVAILABLE: '智能体运行时暂不可用，请稍后重试。',
     INTERNAL_ERROR: '智能体处理请求时遇到内部错误，请稍后重试。',
     QUOTA_EXCEEDED: '今日对话配额已用完，请明天再试或联系管理员。',

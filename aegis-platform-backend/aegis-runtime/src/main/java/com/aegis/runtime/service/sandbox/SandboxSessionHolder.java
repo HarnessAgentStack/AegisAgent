@@ -2,13 +2,7 @@ package com.aegis.runtime.service.sandbox;
 
 import com.aegis.core.domain.sandbox.SandboxInstance;
 import com.aegis.runtime.integration.sandbox.AegisSandbox;
-import com.aegis.runtime.integration.sandbox.AegisSandboxClient;
-import com.aegis.runtime.integration.sandbox.AegisSandboxClientOptionsExt;
-import com.aegis.runtime.integration.sandbox.AegisSandboxState;
-import io.agentscope.harness.agent.sandbox.Sandbox;
-import io.agentscope.harness.agent.sandbox.SandboxContext;
-import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
-import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
+import com.aegis.runtime.service.sandbox.AegisSandboxAllocator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -16,29 +10,26 @@ import org.springframework.stereotype.Service;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 沙箱会话持有器（周期 3，per-session 粘性持有）。
+ * 沙箱会话持有器（周期 3，per-session 粘性持有，framework-drive 模式下的释放记账层）。
  *
- * <p>核心语义：首次沙箱能力工具触发 {@code AegisSandboxClient.create}（惰性会话分配）；
- * 会话内持有复用（非 per-call）；会话结束触发 {@code release}（OCCUPIED→IDLE 复用不杀 Pod）。
- * 纯对话会话永不分配 = 真零容器。</p>
+ * <p>核心语义：跨轮/跨调用 Pod 复用由框架优先级 3（Redis 持久化 state resume）承担，
+ * 本类只负责<b>释放记账</b>——记录"当前会话正在使用哪个沙箱实例"，
+ * 供任务终态/会话关闭时调用 {@code release}（OCCUPIED→IDLE 复用不杀 Pod）。</p>
  *
- * <h3>职责分工</h3>
+ * <h3>职责分工（framework-drive.enabled=true 生产链路）</h3>
  * <ul>
- *   <li>本类：会话级缓存 Sandbox 实例，避免 per-call 重复 acquire</li>
+ *   <li>框架 {@code SandboxManager} 优先级 3：Redis stateStore 加载 → {@code AegisSandboxClient.resume}
+ *       → 探活复用 Pod（跨轮粘性的权威机制）</li>
+ *   <li>{@code AegisSandboxClient.create/resume}：分配或复用成功后调 {@link #register} 登记本表</li>
+ *   <li>{@code TaskExecutionService}（每轮 doFinally 终态）/ {@code SessionManageService}（会话关闭）：
+ *       调 {@link #releaseOnSessionEnd} 释放（幂等）</li>
  *   <li>{@link AegisSandboxAllocator}：admin 池分配权威（四级退化 + slotKey 隔离）</li>
- *   <li>{@link AegisSandboxClient}：框架 {@code SandboxClient} 适配（create/resume 委托 allocator）</li>
- *   <li>框架 {@code SandboxLifecycleMiddleware}：per-call acquire/release（AegisSandbox.stop/shutdown no-op 保护 Pod）</li>
+ *   <li>框架 {@code SandboxLifecycleMiddleware}：per-call acquire/release（AegisSandbox.stop/shutdown
+ *       no-op 保护 Pod，真正的释放走本表 → allocator.release）</li>
  * </ul>
  *
- * <h3>与框架 per-call 的协同</h3>
- * <p>框架 {@code SandboxLifecycleMiddleware} 在每次 agent.call 时 acquire/release。
- * 本类的 {@code acquireIfNeeded} 在工具执行前先查会话缓存，命中则直接返回缓存的 AegisSandbox，
- * 跳过框架 create；未命中（首次沙箱工具）才调 {@code AegisSandboxClient.create}。
- * 会话结束 {@code releaseOnSessionEnd} 调 {@code AegisSandboxAllocator.release}（IDLE 复用不杀 Pod）。</p>
- *
- * <p>注：{@code aegis.runtime.sandbox.framework-drive.enabled=true}（生产默认）时，
- * 框架工具（execute / read_file / write_file 等）经 SandboxBackedFilesystem 走本类
- * 委托的 AegisSandboxClient；自建 aegis_execute 已删除（与框架 ShellExecuteTool 重复）。</p>
+ * <p>纯对话会话（智能体未绑定 sandbox_execution=true 工具）不装配 SandboxContext，
+ * 框架不注册 SandboxLifecycleMiddleware，永不触发分配 = 真零容器。</p>
  *
  * @author wang.zhen
  */
@@ -47,54 +38,33 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class SandboxSessionHolder {
 
-    private final AegisSandboxClient aegisSandboxClient;
     private final AegisSandboxAllocator allocator;
-    private final SandboxSnapshotSpec snapshotSpec;
 
-    /** 会话级缓存：sessionId → AegisSandbox（首次沙箱工具触发后缓存，会话结束清理） */
+    /** 会话级登记：sessionId → AegisSandbox（分配/复用成功后登记，释放时移除） */
     private final ConcurrentHashMap<String, AegisSandbox> sessionSandboxes = new ConcurrentHashMap<>();
 
     /**
-     * 按需获取沙箱：首次需沙箱才 create，会话内复用。
+     * 登记会话沙箱（由 {@code AegisSandboxClient.create/resume} 在分配或探活复用成功后调用）。
      *
-     * <p>纯对话会话永不调用本方法（仅沙箱能力工具触发：execute / read_file /
-     * write_file / list_files / grep_files / glob_files / edit_file），
-     * 因此纯对话真零容器。</p>
+     * <p>幂等：同一会话重复登记时覆盖旧值（并发边界下以最后一次成功分配为准）。</p>
      *
      * @param sessionId 会话 ID
-     * @param tenantId  租户 ID
-     * @param userId    用户 ID
-     * @param agentId   智能体 ID
-     * @param agentType 智能体类型（UNIVERSAL/APPLICATION/SYSTEM）
-     * @return 已 start 的 AegisSandbox（exec 可直接用）
+     * @param sandbox   已就绪的 AegisSandbox
      */
-    public AegisSandbox acquireIfNeeded(String sessionId, Long tenantId, Long userId,
-                                         Long agentId, String agentType) {
-        return sessionSandboxes.computeIfAbsent(sessionId, sid -> {
-            log.info("[sandbox-session] 首次沙箱分配: sessionId={}, agentType={}, agentId={}",
-                    sid, agentType, agentId);
-            AegisSandboxClientOptionsExt options = new AegisSandboxClientOptionsExt(
-                    agentType, tenantId, userId, agentId, sid);
-            try {
-                Sandbox sandbox = aegisSandboxClient.create(
-                        new WorkspaceSpec(), snapshotSpec, options);
-                sandbox.start();
-                AegisSandbox aegis = (AegisSandbox) sandbox;
-                log.info("[sandbox-session] 沙箱已分配并启动: sessionId={}, instanceId={}, pod={}",
-                        sid, aegis.getInstance().getInstanceId(), aegis.getInstance().getPodName());
-                return aegis;
-            } catch (Exception e) {
-                log.error("[sandbox-session] 沙箱分配失败: sessionId={}, error={}",
-                        sid, e.getMessage(), e);
-                throw new RuntimeException("沙箱分配失败: " + e.getMessage(), e);
-            }
-        });
+    public void register(String sessionId, AegisSandbox sandbox) {
+        if (sessionId == null || sandbox == null) {
+            return;
+        }
+        sessionSandboxes.put(sessionId, sandbox);
+        log.debug("[sandbox-session] 登记会话沙箱: sessionId={}, instanceId={}",
+                sessionId, sandbox.getInstance().getInstanceId());
     }
 
     /**
-     * 会话结束释放沙箱（OCCUPIED→IDLE，复用不杀 Pod）。
+     * 会话结束/任务终态释放沙箱（OCCUPIED→IDLE，复用不杀 Pod）。
      *
-     * <p>由 {@code TaskExecutionService} 在会话结束/驱逐时调用。
+     * <p>由 {@code TaskExecutionService}（每轮 doFinally 终态兜底）与
+     * {@code SessionManageService}（会话关闭/删除）调用，幂等安全。
      * 框架 {@code SandboxLifecycleMiddleware} 的 per-call release 调 AegisSandbox.stop/shutdown
      * (no-op)，本方法才是真正释放（清占用字段 + IDLE）。</p>
      *
@@ -112,13 +82,13 @@ public class SandboxSessionHolder {
     }
 
     /**
-     * 查询会话当前沙箱实例（供调试/观测用，不触发分配）。
+     * 查询会话当前已物化的沙箱（供 LazyAegisSandbox create 轨道物化快速路径，
+     * 同会话并发工具调用复用同一实例，不触发分配；不物化、不触发分配）。
      *
      * @param sessionId 会话 ID
-     * @return 沙箱实例，未分配返回 null
+     * @return 已登记的沙箱，未登记返回 null
      */
-    public SandboxInstance getCurrent(String sessionId) {
-        AegisSandbox sandbox = sessionSandboxes.get(sessionId);
-        return sandbox != null ? sandbox.getInstance() : null;
+    public AegisSandbox getCurrentSandbox(String sessionId) {
+        return sessionSandboxes.get(sessionId);
     }
 }

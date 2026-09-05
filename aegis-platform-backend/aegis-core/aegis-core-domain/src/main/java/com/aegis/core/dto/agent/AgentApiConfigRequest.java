@@ -2,7 +2,6 @@ package com.aegis.core.dto.agent;
 
 import com.aegis.core.enums.api.ApiAuthType;
 import com.aegis.core.enums.api.ApiResponseMode;
-import com.aegis.core.enums.common.ValidityType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -14,7 +13,7 @@ import java.io.Serializable;
  * 系统智能体 API 配置请求（嵌套在 AgentCreateRequest / AgentUpdateRequest 中）。
  *
  * <p>对齐前端 {@code api/agentApi.AgentApiConfigParams}，后端落库到 {@code agent_api} 表。
- * 审核通过后由平台自动生成 apiKey，创建期若未填写 apiName 默认使用 agentName + " API"。
+ * Key 有效期属于 {@code agent_api_key} 生命周期（KeyManager 生成 Key 时单独指定），不在本配置内。
  *
  *  @author aegis
  */
@@ -46,9 +45,6 @@ public class AgentApiConfigRequest implements Serializable {
 
     /** 鉴权类型：API_KEY / BEARER / OAUTH2 / BASIC / NONE，默认 API_KEY */
     private ApiAuthType authType;
-
-    /** 密钥有效期，默认 PERMANENT */
-    private ValidityType validityType;
 
     /** 入参 JSON Schema（JSON 字符串） */
     private String requestSchema;

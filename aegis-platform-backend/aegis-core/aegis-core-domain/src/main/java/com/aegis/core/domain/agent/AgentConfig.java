@@ -64,16 +64,4 @@ public class AgentConfig extends TenantEntity {
 
     /** 启用工具ID列表，JSON数组格式（如 ["t1","t2"]），空表示不启用任何工具 */
     private String enabledTools;
-
-    /** Phase 3: 权限模式 DEFAULT/DONT_ASK，从 governance_tier 映射或独立配置 */
-    private String permissionMode;
-
-    /** Phase 3: 是否启用计划模式（plan mode） */
-    private Boolean enablePlanMode;
-
-    /** Phase 3: 上下文压缩阈值（消息条数），null=不压缩 */
-    private Integer compactionThreshold;
-
-    /** Phase 3: 记忆刷写策略 NONE/PROGRESSIVE/FULL */
-    private String memoryFlushStrategy;
 }

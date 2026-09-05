@@ -1,7 +1,6 @@
 package com.aegis.admin.service.agent;
 
 import com.aegis.core.domain.agent.AgentApi;
-import com.aegis.core.enums.common.CommonStatus;
 import com.aegis.dal.mapper.agent.AgentApiMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -38,16 +37,6 @@ public class AgentApiManageService {
      */
     public AgentApi getById(Long id) {
         return agentApiMapper.selectById(id);
-    }
-
-    /**
-     * 按 API Key 查询有效配置。
-     */
-    public AgentApi findByApiKey(String apiKey) {
-        return agentApiMapper.selectOne(new LambdaQueryWrapper<AgentApi>()
-                .eq(AgentApi::getApiKey, apiKey)
-                .eq(AgentApi::getStatus, CommonStatus.NORMAL)
-                .last("LIMIT 1"));
     }
 
     /**

@@ -2,7 +2,7 @@
  * @file 智能体市场
  * @description 用户视角的智能体市场与我的智能体管理（重构版）：
  *  1. 双标签（智能体市场 / 我的智能体）
- *  2. 市场卡片：图标 + 名称 + 描述 + 作者 + 订阅数 / 治理档位 + 安全等级 + 订阅/试用/开始任务
+ *  2. 市场卡片：图标 + 名称 + 描述 + 作者 + 订阅数 / 治理档位 + 订阅/试用/开始任务
  *  3. 筛选器：关键词 + 分类 + 治理档位 + 重置
  *  4. 我的智能体：按状态分组（草稿/审核中/已发布/已驳回/已归档）
  *  5. 订阅状态：批量查询，实时更新
@@ -116,23 +116,6 @@ const GOVERNANCE_FILTER_OPTIONS = [
   { value: GovernanceTier.STRICT, label: '🔴 严格档' },
 ];
 
-/** 安全等级筛选选项 */
-const SECURITY_FILTER_OPTIONS = [
-  { value: '', label: '全部等级' },
-  { value: 'L1', label: 'L1 公开' },
-  { value: 'L2', label: 'L2 内部' },
-  { value: 'L3', label: 'L3 机密' },
-  { value: 'L4', label: 'L4 绝密' },
-];
-
-/** 安全等级标签样式 */
-const SECURITY_LEVEL_STYLE: Record<string, { color: string; text: string }> = {
-  L1: { color: 'green', text: 'L1 公开' },
-  L2: { color: 'blue', text: 'L2 内部' },
-  L3: { color: 'orange', text: 'L3 机密' },
-  L4: { color: 'red', text: 'L4 绝密' },
-};
-
 const AgentList: React.FC = () => {
   const navigate = useNavigate();
   const { message, modal } = App.useApp();
@@ -144,7 +127,6 @@ const AgentList: React.FC = () => {
   const [marketKw, setMarketKw] = useState('');
   const [marketKwInput, setMarketKwInput] = useState('');
   const [marketGov, setMarketGov] = useState<string>('');
-  const [marketSec, setMarketSec] = useState<string>('');
   const [marketCategory, setMarketCategory] = useState<string>('');
 
   // ===== 订阅状态 =====
@@ -167,15 +149,9 @@ const AgentList: React.FC = () => {
     try {
       const list = await getSubscribableAgents();
       setMarketAgents(list);
-      // 批量查询订阅状态
-      const agentIds = list.map((a) => a.id);
-      if (agentIds.length > 0) {
-        // 简化处理：逐个查询订阅状态（实际项目中应有批量接口）
-        const subsSet = new Set<string>();
-        // 这里假设后端返回的数据中已包含订阅标识，或使用逐个查询
-        // 为避免N+1问题，暂使用前端状态管理
-        setSubscribedIds(subsSet);
-      }
+      // B-3: 后端 listSubscribable 已批量回填 subscribed 字段，前端直接消费，无需逐个查询
+      const subsSet = new Set<string>(list.filter((a) => a.subscribed).map((a) => a.id));
+      setSubscribedIds(subsSet);
     } catch (err) {
       console.error('加载市场数据失败:', err);
       message.error('加载智能体市场失败');
@@ -317,13 +293,11 @@ const AgentList: React.FC = () => {
       }
       // 治理档位筛选
       if (marketGov && a.governanceTier !== marketGov) return false;
-      // 安全等级筛选
-      if (marketSec && a.securityLevel !== marketSec) return false;
       // 分类筛选
       if (marketCategory && a.category !== marketCategory) return false;
       return true;
     });
-  }, [marketAgents, marketKw, marketGov, marketSec, marketCategory]);
+  }, [marketAgents, marketKw, marketGov, marketCategory]);
 
   // ===== 过滤我的智能体数据 =====
   const filteredMyAgents = useMemo(() => {
@@ -356,13 +330,12 @@ const AgentList: React.FC = () => {
     return c;
   }, [myAgents]);
 
-  const hasMarketFilter = !!marketKw || !!marketGov || !!marketSec || !!marketCategory;
+  const hasMarketFilter = !!marketKw || !!marketGov || !!marketCategory;
 
   const resetMarketFilter = () => {
     setMarketKw('');
     setMarketKwInput('');
     setMarketGov('');
-    setMarketSec('');
     setMarketCategory('');
   };
 
@@ -394,7 +367,6 @@ const AgentList: React.FC = () => {
     const isSubscribed = subscribedIds.has(a.id);
     const govCfg = GOVERNANCE_COLOR[a.governanceTier ?? 'STANDARD'];
     const govLabel = GOVERNANCE_LABEL[a.governanceTier ?? 'STANDARD'];
-    const secCfg = a.securityLevel ? SECURITY_LEVEL_STYLE[a.securityLevel] : null;
 
     return (
       <Col xs={24} sm={12} md={8} lg={6} key={a.id}>
@@ -458,16 +430,11 @@ const AgentList: React.FC = () => {
             {a.description ?? '暂无描述'}
           </div>
 
-          {/* 标签行：治理档位 + 安全等级 */}
+          {/* 标签行：治理档位 */}
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
             <Tag color={govCfg} style={{ fontSize: 10, margin: 0 }}>
               {govLabel}
             </Tag>
-            {secCfg && (
-              <Tag color={secCfg.color} style={{ fontSize: 10, margin: 0 }}>
-                {secCfg.text}
-              </Tag>
-            )}
           </div>
 
           {/* 元信息：订阅数 + 版本 + 作者 */}
@@ -640,9 +607,6 @@ const AgentList: React.FC = () => {
           {a.category && (
             <Tag style={{ fontSize: 10, margin: 0 }}>{a.category}</Tag>
           )}
-          {a.securityLevel && (
-            <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>{a.securityLevel}</Tag>
-          )}
         </div>
 
         {/* 版本信息 */}
@@ -781,14 +745,6 @@ const AgentList: React.FC = () => {
             options={GOVERNANCE_FILTER_OPTIONS.filter((o) => o.value !== '')}
           />
           <Select
-            placeholder="全部等级"
-            value={marketSec || undefined}
-            onChange={(v) => setMarketSec(v ?? '')}
-            style={{ width: 140 }}
-            allowClear
-            options={SECURITY_FILTER_OPTIONS.filter((o) => o.value !== '')}
-          />
-          <Select
             placeholder="全部分类"
             value={marketCategory || undefined}
             onChange={(v) => setMarketCategory(v ?? '')}
@@ -807,19 +763,12 @@ const AgentList: React.FC = () => {
         </Text>
       </Space>
 
-      {/* 说明：治理档位 vs 安全等级 */}
-      <div style={{ marginBottom: 12, fontSize: 12, color: '#6b7280', background: '#f3f4f6', padding: '8px 12px', borderRadius: 6 }}>
-        💡 <strong>治理档位</strong>：控制智能体的护栏强度（标准/增强/严格），影响工具管控与审计粒度 ·
-        <strong> 安全等级</strong>：标记数据敏感级别（L1公开~L4绝密），影响可见范围与访问权限
-      </div>
-
       {/* 当前筛选条件显示 */}
       {hasMarketFilter && (
         <Space style={{ marginBottom: 12, fontSize: 12 }}>
           <Text type="secondary">筛选：</Text>
           {marketKw && <Tag color="blue">关键词: {marketKw}</Tag>}
           {marketGov && <Tag color="green">{GOVERNANCE_LABEL[marketGov]}</Tag>}
-          {marketSec && <Tag color="orange">安全: {marketSec}</Tag>}
           {marketCategory && <Tag>{marketCategory}</Tag>}
         </Space>
       )}
@@ -1064,7 +1013,7 @@ const AgentList: React.FC = () => {
                 minHeight: 60,
               }}
             >
-              审核未通过，请前往管理控制台 → 审核中心查看详细驳回理由，并根据反馈修改后重新提交。
+              {rejectDetailAgent.rejectReason || '审核未通过，请前往管理控制台 → 审核中心查看详细驳回理由，并根据反馈修改后重新提交。'}
             </div>
             <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
               💡 提示：审核操作已统一迁移至管理控制台，您可以在管理控制台的「审核中心」查看详细的驳回原因。

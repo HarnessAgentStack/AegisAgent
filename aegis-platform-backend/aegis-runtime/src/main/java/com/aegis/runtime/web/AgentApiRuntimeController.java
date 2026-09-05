@@ -119,6 +119,13 @@ public class AgentApiRuntimeController {
                 if (api == null) {
                     return Result.fail(ResultCode.NOT_FOUND, "API 配置不存在");
                 }
+                // FIX(B-2): 配置驱动校验——API 声明 authType 必须为 API_KEY。
+                // 防止前端平台 JWT 噪声头(被 resolveAuthType 误判)旁路真实配置。
+                if (api.getAuthType() != null && api.getAuthType() != com.aegis.core.enums.api.ApiAuthType.API_KEY) {
+                    log.warn("AuthType mismatch: api declared {} but got API_KEY path, apiId={}",
+                            api.getAuthType(), api.getId());
+                    return Result.fail(ResultCode.FORBIDDEN, "鉴权方式与 API 配置不匹配");
+                }
             }
             case "BEARER" -> {
                 // 通过 agentId 查找 API 配置
@@ -126,15 +133,23 @@ public class AgentApiRuntimeController {
                 if (api == null) {
                     return Result.fail(ResultCode.NOT_FOUND, "API 配置不存在");
                 }
+                // FIX(B-2): 配置驱动校验——API 声明 authType 必须为 BEARER。
+                if (api.getAuthType() != null && api.getAuthType() != com.aegis.core.enums.api.ApiAuthType.BEARER) {
+                    log.warn("AuthType mismatch: api declared {} but got BEARER path, apiId={}",
+                            api.getAuthType(), api.getId());
+                    return Result.fail(ResultCode.FORBIDDEN, "鉴权方式与 API 配置不匹配");
+                }
                 // 校验 Bearer Token
                 bearerToken = extractBearerToken(authorization);
                 if (bearerToken == null) {
-                    return Result.fail(ResultCode.UNAUTHORIZED, "无效的 Bearer Token 格式");
+                    // FIX(B-7): 凭证失败统一 FORBIDDEN，避免 401 触发前端会话过期跳转。
+                    return Result.fail(ResultCode.FORBIDDEN, "无效的 Bearer Token 格式");
                 }
                 BearerAuthService.AuthResult authResult = bearerAuthService.verify(bearerToken, api);
                 if (!authResult.isSuccess()) {
                     log.warn("Bearer auth failed: apiId={}, error={}", api.getId(), authResult.getErrorMessage());
-                    return Result.fail(ResultCode.UNAUTHORIZED, authResult.getErrorMessage());
+                    // FIX(B-7): 凭证失败统一 FORBIDDEN，避免 401 污染会话语义。
+                    return Result.fail(ResultCode.FORBIDDEN, authResult.getErrorMessage());
                 }
                 // 透传配置
                 bearerPassThrough = Boolean.TRUE.equals(api.getBearerPassThrough());
@@ -146,6 +161,12 @@ public class AgentApiRuntimeController {
                 api = findApiByAgentId(request.getAgentId());
                 if (api == null) {
                     return Result.fail(ResultCode.NOT_FOUND, "API 配置不存在");
+                }
+                // FIX(B-2): 配置驱动校验——API 声明 authType 必须为 NONE。
+                if (api.getAuthType() != null && api.getAuthType() != com.aegis.core.enums.api.ApiAuthType.NONE) {
+                    log.warn("AuthType mismatch: api declared {} but got NONE path, apiId={}",
+                            api.getAuthType(), api.getId());
+                    return Result.fail(ResultCode.FORBIDDEN, "鉴权方式与 API 配置不匹配");
                 }
             }
             default -> {
@@ -325,7 +346,8 @@ public class AgentApiRuntimeController {
                 String token = extractBearerToken(authorization);
                 BearerAuthService.AuthResult result = bearerAuthService.verify(token, api);
                 if (!result.isSuccess()) {
-                    return Result.fail(ResultCode.UNAUTHORIZED, result.getErrorMessage());
+                    // FIX(B-7): 凭证失败统一 FORBIDDEN，与 invoke 端点一致，避免 401 污染。
+                    return Result.fail(ResultCode.FORBIDDEN, result.getErrorMessage());
                 }
             }
         } else if (agentId != null) {
@@ -333,7 +355,8 @@ public class AgentApiRuntimeController {
         }
 
         if (api == null) {
-            return Result.fail(ResultCode.UNAUTHORIZED, "无法定位 API 配置");
+            // FIX(B-7): 无法定位 API 属凭证/参数问题，统一 FORBIDDEN。
+            return Result.fail(ResultCode.FORBIDDEN, "无法定位 API 配置");
         }
 
         Map<String, Object> status = new HashMap<>();
@@ -346,10 +369,6 @@ public class AgentApiRuntimeController {
         status.put("rateLimit", api.getRateLimit() != null ? api.getRateLimit() : DEFAULT_RATE_LIMIT);
         status.put("deploymentPool", api.getDeploymentPoolCode());
         status.put("reservedReplicas", api.getReservedReplicas() != null ? api.getReservedReplicas() : 1);
-
-        if (api.getValidUntil() != null) {
-            status.put("validUntil", api.getValidUntil().toString());
-        }
 
         return Result.success(status);
     }

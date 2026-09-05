@@ -5,6 +5,7 @@
  * @since 2.0.0
  */
 import { http } from './request';
+import axios from 'axios';
 import type {
   AgentApiConfig,
   AgentApiConfigParams,
@@ -14,6 +15,19 @@ import type {
   ApiErrorCode,
   OpenApiSpec,
 } from '@/types/agentApi';
+
+/**
+ * 系统智能体对外 API 专用 axios 实例（FIX B-2）。
+ *
+ * 与平台会话 JWT 鉴权域隔离：
+ * - 不注入 Authorization: Bearer <平台JWT>，避免噪声头干扰 runtime 鉴权决策；
+ * - 不挂全局响应拦截器的 401→跳登录 逻辑，API 凭证失败仅抛业务错误由调用方展示；
+ * - 仅携带用户填写的 X-API-Key / Bearer Token（系统智能体凭证）。
+ */
+const apiRequest = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  timeout: 120_000,
+});
 
 const BASE = '/admin/agent-api';
 
@@ -47,11 +61,6 @@ export function updateAgentApiSchema(id: string, params: AgentApiConfigParams): 
   return http.put<void>(`${BASE}/${id}/schema`, params);
 }
 
-/** 重置 API 密钥 */
-export function resetAgentApiKey(id: string): Promise<string> {
-  return http.post<string>(`${BASE}/${id}/reset-key`);
-}
-
 /** 启用/禁用 API */
 export function updateAgentApiStatus(id: string, enabled: boolean): Promise<void> {
   return http.post<void>(`${BASE}/${id}/status`, null, { params: { enabled } });
@@ -60,11 +69,6 @@ export function updateAgentApiStatus(id: string, enabled: boolean): Promise<void
 /** 在线测试 API */
 export function testAgentApi(id: string): Promise<AgentApiConfig> {
   return http.post<AgentApiConfig>(`${BASE}/${id}/test`);
-}
-
-/** 验证 API Key */
-export function verifyAgentApiKey(apiKey: string): Promise<AgentApiConfig> {
-  return http.post<AgentApiConfig>(`${BASE}/verify-key`, null, { params: { apiKey } });
 }
 
 /** 列出 API Key */
@@ -100,15 +104,28 @@ export function getAgentApiOpenApiSpec(apiId: string): Promise<OpenApiSpec> {
   return http.get<OpenApiSpec>(`${BASE}/${apiId}/openapi.json`);
 }
 
-/** 在线测试 API 调用（通过运行时服务） */
-export function testAgentApiInvoke(
+/**
+ * 在线测试 API 调用（通过运行时服务）。
+ *
+ * FIX(B-2): 使用独立 axios 实例 apiRequest，与平台会话 JWT 鉴权域隔离：
+ * - 不携带平台 JWT，仅带用户填写的 X-API-Key；
+ * - 响应拦截器不触发 401→跳登录，凭证失败由调用方（ApiTester）展示。
+ */
+export async function testAgentApiInvoke(
   _apiId: string,
   body: Record<string, unknown>,
   apiKey: string,
 ): Promise<AgentApiInvokeResponse> {
-  return http.post<AgentApiInvokeResponse>('/runtime/agent-api/invoke', body, {
-    headers: { 'X-API-Key': apiKey },
+  const resp = await apiRequest.post('/runtime/agent-api/invoke', body, {
+    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
   });
+  const data = resp.data;
+  if (data && typeof data === 'object' && 'code' in data) {
+    const r = data as { code?: number; data?: AgentApiInvokeResponse; message?: string; success?: boolean };
+    if (r.code === 200 || r.success === true) return r.data as AgentApiInvokeResponse;
+    throw new Error(r.message || `API 调用失败（${r.code}）`);
+  }
+  return data as AgentApiInvokeResponse;
 }
 
 /** 获取 API 错误码定义 */

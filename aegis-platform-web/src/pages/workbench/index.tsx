@@ -19,7 +19,7 @@ import { skillApi, extractList } from '@/api/resource';
 // ---- Types & Enum ----
 import type { Message, AgentSkill } from '@/types/session';
 import type { Skill } from '@/types/resource';
-import { MessageRole } from '@/types/enum';
+import { MessageRole, HitlStatus } from '@/types/enum';
 import type { SkillType } from '@/pages/resource/skill/constants';
 import type { AttachmentRef, SkillRef } from '@/api/session';
 
@@ -396,14 +396,25 @@ const Workbench: React.FC = () => {
                 ))}
               </div>
             )}
-            <EnhancedMessageInput
-              onSend={handleSend} onStop={handleStop} onClear={handleClearAll}
-              onResourceClick={() => setShowKbPanel(true)}
-              onAttachmentClick={() => setShowUploadPanel(true)}
-              onSkillClick={() => setShowSkillPanel(true)}
-              loading={chat.streaming}
-              placeholder={skillCreatorMode ? '输入技能创建需求，AI将辅助你完成开发...' : '输入消息... (Enter 发送)'}
-            />
+            {/* HITL 待审批：最后一条 assistant 消息存在 PENDING 审批卡时禁用输入，
+                防止新消息打死 PAUSED 会话（后端 assemble 亦有兜底拦截） */}
+            {(() => {
+              const lastAssistant = [...chat.messages].reverse().find(m => m.role === MessageRole.ASSISTANT);
+              const hitlPending = !!lastAssistant?.hitl && lastAssistant.hitl.status === HitlStatus.PENDING;
+              return (
+                <EnhancedMessageInput
+                  onSend={handleSend} onStop={handleStop} onClear={handleClearAll}
+                  onResourceClick={() => setShowKbPanel(true)}
+                  onAttachmentClick={() => setShowUploadPanel(true)}
+                  onSkillClick={() => setShowSkillPanel(true)}
+                  loading={chat.streaming}
+                  disabled={hitlPending}
+                  placeholder={hitlPending
+                    ? '有待审批的工具调用，请先处理上方审批卡（同意/拒绝）后再继续'
+                    : skillCreatorMode ? '输入技能创建需求，AI将辅助你完成开发...' : '输入消息... (Enter 发送)'}
+                />
+              );
+            })()}
           </div>
         </div>
 

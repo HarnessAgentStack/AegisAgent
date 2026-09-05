@@ -26,7 +26,6 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 智能体开放 API 管理控制器。
@@ -123,26 +122,6 @@ public class AgentApiController {
     }
 
     /**
-     * 重置 API 密钥。
-     */
-    @PostMapping("/{id}/reset-key")
-    @ResourceOwner(resourceType = ResourceType.AGENT_API, permission = ResourcePermission.EDIT, resourceIdParam = "id")
-    @Auditable(operation = "RESET_AGENT_API_KEY", resourceType = "AGENT_API", resourceIdParam = "id")
-    public Result<String> resetApiKey(@PathVariable Long id,
-                                  @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId,
-                                  @RequestHeader(value = "X-User-Id", required = false) Long userId) {
-        TenantContextHolder.bind(tenantId);
-        AgentApi api = agentApiManageService.getById(id);
-        if (api == null) {
-            return Result.fail(ResultCode.NOT_FOUND, "API配置不存在: " + id);
-        }
-        String newKey = "aegis_" + UUID.randomUUID().toString().replace("-", "");
-        api.setApiKey(newKey);
-        agentApiManageService.update(api);
-        return Result.success(newKey);
-    }
-
-    /**
      * 启用/禁用 API。
      */
     @PostMapping("/{id}/status")
@@ -170,25 +149,6 @@ public class AgentApiController {
                                         @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
         TenantContextHolder.bind(tenantId);
         return Result.success(agentApiManageService.page(page, size, tenantId));
-    }
-
-    /**
-     * 验证 API Key 有效性（供运行时调用）。
-     */
-    @PostMapping("/verify-key")
-    public Result<AgentApi> verifyApiKey(@RequestParam String apiKey,
-                                     @RequestHeader(value = "X-Tenant-Id", required = false) Long tenantId) {
-        TenantContextHolder.bind(tenantId);
-        AgentApi api = agentApiManageService.findByApiKey(apiKey);
-        if (api == null) {
-            return Result.fail(ResultCode.UNAUTHORIZED, "无效的 API Key");
-        }
-        if (api.getValidityType() != null && api.getValidityType() != com.aegis.core.enums.common.ValidityType.PERMANENT) {
-            if (api.getValidUntil() != null && api.getValidUntil().isBefore(LocalDateTime.now())) {
-                return Result.fail(ResultCode.UNAUTHORIZED, "API Key 已过期");
-            }
-        }
-        return Result.success(api);
     }
 
     /**

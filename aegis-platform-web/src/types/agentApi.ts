@@ -65,8 +65,6 @@ export interface AgentApiConfig {
   timeout: number;
   rateLimit: number;
   concurrentLimit: number;
-  validityType: ApiValidityType;
-  validUntil?: string;
   requestSchema?: string;
   responseSchema?: string;
   exampleRequest?: string;
@@ -93,8 +91,6 @@ export interface AgentApiConfigParams {
   timeout?: number;
   rateLimit?: number;
   concurrentLimit?: number;
-  validityType?: ApiValidityType;
-  validUntil?: string;
   requestSchema?: string;
   responseSchema?: string;
   exampleRequest?: string;

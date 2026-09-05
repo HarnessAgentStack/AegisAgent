@@ -114,6 +114,39 @@ public class AegisSandboxAllocator {
     }
 
     /**
+     * 按 instanceId 反查池内实例（供 AegisSandboxClient.resume 补全 DB 持久化字段）。
+     *
+     * <p>resume 从 Redis state 反序列化只含 instanceId/podName 等标识，缺 DB 主键 id/version，
+     * 直接用于 {@link #rebind}（updateById 路径）或 {@link #release} 会因 id 缺失静默失效。
+     * 本方法补全全量字段，并做租户一致性校验（state 可能来自历史会话，跨租户防误用）。</p>
+     *
+     * @param tenantId   租户 ID（与记录不匹配视为不存在）
+     * @param instanceId 实例 UUID
+     * @return 实例记录，查无或租户不匹配返回 null
+     */
+    public SandboxInstance findByInstanceId(Long tenantId, String instanceId) {
+        if (instanceId == null) {
+            return null;
+        }
+        try {
+            List<SandboxInstance> list = instanceMapper.selectByInstanceIds(List.of(instanceId));
+            if (list == null || list.isEmpty()) {
+                return null;
+            }
+            SandboxInstance inst = list.get(0);
+            if (tenantId != null && !tenantId.equals(inst.getTenantId())) {
+                log.warn("resume 反查实例租户不匹配（拒绝复用）: instanceId={}, stateTenantId={}, dbTenantId={}",
+                        instanceId, tenantId, inst.getTenantId());
+                return null;
+            }
+            return inst;
+        } catch (Exception e) {
+            log.warn("resume 反查实例失败: instanceId={}, error={}", instanceId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * 探活实例（供 AegisSandboxClient/AegisSandbox 调用）。
      */
     public boolean probeAlive(Long tenantId, SandboxInstance inst) {
@@ -122,6 +155,51 @@ public class AegisSandboxAllocator {
         } catch (Exception e) {
             log.debug("沙箱探活异常: pod={}, error={}", inst.getPodName(), e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * 优先级 3 resume 复用后的重绑（IDLE → OCCUPIED + 会话/心跳刷新）。
+     *
+     * <p>框架持久化 state resume 命中且探活通过时，实例可能已因上一轮终态释放转为 IDLE
+     * （内存态 SandboxInstance.status 可能滞后为 OCCUPIED）。本方法以 DB 写回为准：
+     * 重标 OCCUPIED + 绑定当前会话 + 刷新心跳，保证 admin 后台可见性准确
+     * （避免"IDLE 但实际在用"期间实例被其他会话的第三级退化错误占用，造成跨会话工作区污染）。</p>
+     *
+     * @param inst      探活通过的实例（含 instanceId/tenantId）
+     * @param userId    当前用户 ID
+     * @param agentId   当前智能体 ID
+     * @param sessionId 当前会话 ID
+     */
+    public void rebind(SandboxInstance inst, Long userId, Long agentId, String sessionId) {
+        if (inst == null) {
+            return;
+        }
+        TenantContextHolder.bind(inst.getTenantId());
+        try {
+            SandboxInstanceStatus from = inst.getStatus();
+            SandboxInstance patch = new SandboxInstance();
+            patch.setId(inst.getId());
+            patch.setStatus(SandboxInstanceStatus.OCCUPIED);
+            patch.setUserId(userId);
+            patch.setAgentId(agentId);
+            patch.setSessionId(sessionId);
+            patch.setLastHeartbeatTime(LocalDateTime.now());
+            instanceMapper.updateById(patch);
+            inst.setStatus(SandboxInstanceStatus.OCCUPIED);
+            inst.setUserId(userId);
+            inst.setAgentId(agentId);
+            inst.setSessionId(sessionId);
+            inst.setLastHeartbeatTime(LocalDateTime.now());
+            writeOpLog(inst, null, "REBIND", from, SandboxInstanceStatus.OCCUPIED,
+                    userId, agentId, sessionId, inst.getSlotKey(), true, null, null);
+            log.info("沙箱实例resume重绑: pod={}, instanceId={}, slotKey={}, from={}",
+                    inst.getPodName(), inst.getInstanceId(), inst.getSlotKey(), from);
+        } catch (Exception e) {
+            log.warn("沙箱重绑失败（复用继续，记账降级）: pod={}, error={}",
+                    inst.getPodName(), e.getMessage());
+        } finally {
+            TenantContextHolder.clear();
         }
     }
 

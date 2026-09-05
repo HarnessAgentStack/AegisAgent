@@ -33,7 +33,6 @@ import SchemaEditor from './SchemaEditor';
 import {
   ApiAuthType,
   ApiResponseMode,
-  ApiValidityType,
   BearerTokenMode,
   JwtAlgorithm,
 } from '@/types/agentApi';
@@ -196,31 +195,15 @@ const ApiConfigForm: React.FC<ApiConfigFormProps> = ({ form, agentCode, agentNam
       <Divider orientation="left" plain>
         鉴权配置
       </Divider>
-      <Row gutter={16}>
-        <Col span={12}>
-          <Form.Item name={['apiConfig', 'authType']} label="鉴权方式" initialValue={ApiAuthType.API_KEY}>
-            <Radio.Group>
-              <Radio value={ApiAuthType.API_KEY}>API Key</Radio>
-              <Radio value={ApiAuthType.BEARER}>Bearer</Radio>
-              <Radio value={ApiAuthType.OAUTH2}>OAuth2</Radio>
-              <Radio value={ApiAuthType.BASIC}>Basic</Radio>
-              <Radio value={ApiAuthType.NONE}>无认证</Radio>
-            </Radio.Group>
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item name={['apiConfig', 'validityType']} label="密钥有效期" initialValue={ApiValidityType.PERMANENT}>
-            <Select
-              options={[
-                { value: ApiValidityType.PERMANENT, label: '永久' },
-                { value: ApiValidityType.DAYS_7, label: '7天' },
-                { value: ApiValidityType.DAYS_30, label: '30天' },
-                { value: ApiValidityType.CUSTOM, label: '自定义' },
-              ]}
-            />
-          </Form.Item>
-        </Col>
-      </Row>
+      <Form.Item name={['apiConfig', 'authType']} label="鉴权方式" initialValue={ApiAuthType.API_KEY}>
+        <Radio.Group>
+          <Radio value={ApiAuthType.API_KEY}>API Key</Radio>
+          <Radio value={ApiAuthType.BEARER}>Bearer</Radio>
+          <Radio value={ApiAuthType.OAUTH2}>OAuth2</Radio>
+          <Radio value={ApiAuthType.BASIC}>Basic</Radio>
+          <Radio value={ApiAuthType.NONE}>无认证</Radio>
+        </Radio.Group>
+      </Form.Item>
 
       {renderAuthNotice()}
 
