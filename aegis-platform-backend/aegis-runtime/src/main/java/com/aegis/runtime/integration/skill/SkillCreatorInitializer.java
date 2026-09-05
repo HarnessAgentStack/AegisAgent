@@ -83,7 +83,6 @@ public class SkillCreatorInitializer implements CommandLineRunner {
                 .activeVersion(SKILL_VERSION)
                 .latestVersion(SKILL_VERSION)
                 .isSystem(true)
-                .certified(true)
                 .instructions(buildDefaultInstructions())
                 .triggerExamples(buildDefaultTriggerExamples())
                 .inputs(buildDefaultInputsSchema())

@@ -79,8 +79,6 @@ public class Skill extends TenantEntity {
     private String bindingTools;
     /** 输入输出映射配置，JSON 字符串，描述技能入参与工具入参的转换关系 */
     private String mappingConfig;
-    /** 执行配置，JSON 字符串：模型档位/温度/maxTurns/安全护栏等运行时参数 */
-    private String execConfig;
     /** 订阅数，该技能被其他智能体订阅的总次数，用于热门排序 */
     private Integer subsCount;
     /** 最近发布时间，技能从草稿转为已发布时写入 */
@@ -102,14 +100,8 @@ public class Skill extends TenantEntity {
     /** 触发示例，JSON 数组，用于市场检索与模型召回 */
     private String triggerExamples;
 
-    /** 交互式创建表单 Schema（JSON Schema），驱动 SKILL_CREATEOR 落盘元数据 */
-    private String skillForm;
-
     /** 是否系统内置技能（如 SKILL_CREATEOR），1=系统 0=用户 */
     private Boolean isSystem;
-
-    /** 是否官方认证（认证技能在市场优先展示） */
-    private Boolean certified;
 
     /** 当前生效版本指针（指针式发布，回滚=改此列），对应 res_skill_version.version */
     private String activeVersion;
@@ -122,12 +114,6 @@ public class Skill extends TenantEntity {
 
     /** 最新版本号（含草稿态） */
     private String latestVersion;
-
-    /** 技能健康分 0-100，由失败率/评分/弃用率推导 */
-    private java.math.BigDecimal healthScore;
-
-    /** 最近一次被调用时间，用于活跃度与治理 */
-    private LocalDateTime lastInvokedAt;
 
     /** 技能作用域：GLOBAL=全局（所有用户自动加载）/ LOCAL=局部（权限过滤），默认 LOCAL */
     private SkillScope scope;

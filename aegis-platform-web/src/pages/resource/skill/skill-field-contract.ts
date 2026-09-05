@@ -19,7 +19,6 @@ export interface SkillEditableFields {
   bindingTools: string;
   inputs: string;
   outputs: string;
-  execConfig?: string;
 }
 
 /** 合法安全等级枚举值（与后端 SecurityLevel 对齐） */
@@ -30,8 +29,6 @@ const VALID_SKILL_TYPES = ['ATOMIC', 'COMPOSITE'];
 
 /**
  * 从后端 Skill VO 提取可编辑字段（编辑面板回填 / 详情页展示用）。
- *
- * <p>修正点：execConfig 字段名与后端一致（历史代码误读 config/executionConfig）。
  * tags 从 JSON 字符串解析为 string[]。
  */
 export function extractEditableFields(skill: Partial<Skill> & Record<string, unknown>): SkillEditableFields {
@@ -47,7 +44,6 @@ export function extractEditableFields(skill: Partial<Skill> & Record<string, unk
     bindingTools: (skill.bindingTools as string) ?? '[]',
     inputs: (skill.inputs as string) ?? '{}',
     outputs: (skill.outputs as string) ?? '{}',
-    execConfig: (skill.execConfig as string | undefined) ?? undefined,
   };
 }
 
@@ -70,7 +66,6 @@ export function collectEditablePayload(fields: SkillEditableFields): Record<stri
   if (fields.category) payload.category = fields.category;
   if (VALID_SKILL_TYPES.includes(fields.skillType)) payload.skillType = fields.skillType;
   if (VALID_SECURITY_LEVELS.includes(fields.securityLevel)) payload.securityLevel = fields.securityLevel;
-  if (fields.execConfig) payload.execConfig = fields.execConfig;
   return payload;
 }
 

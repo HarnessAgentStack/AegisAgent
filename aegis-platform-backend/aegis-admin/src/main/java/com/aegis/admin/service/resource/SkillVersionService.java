@@ -337,7 +337,6 @@ public class SkillVersionService {
         fields.put("instructions", diffField(va.getInstructions(), vb.getInstructions()));
         fields.put("bindingTools", diffField(va.getBindingTools(), vb.getBindingTools()));
         fields.put("mappingConfig", diffField(va.getMappingConfig(), vb.getMappingConfig()));
-        fields.put("execConfig", diffField(va.getExecConfig(), vb.getExecConfig()));
         fields.put("securityLevel", diffField(va.getSecurityLevel(), vb.getSecurityLevel()));
         fields.put("tags", diffField(va.getTags(), vb.getTags()));
         diff.put("fields", fields);
@@ -397,7 +396,6 @@ public class SkillVersionService {
                 .triggerExamples(skill.getTriggerExamples())
                 .bindingTools(skill.getBindingTools())
                 .mappingConfig(skill.getMappingConfig())
-                .execConfig(skill.getExecConfig())
                 .isSystem(Boolean.TRUE.equals(skill.getIsSystem()) ? 1 : 0)
                 .createBy(skill.getAuthorUserId())
                 .createTime(LocalDateTime.now())

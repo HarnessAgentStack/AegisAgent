@@ -80,8 +80,6 @@ export interface Skill {
   outputs?: string;
   bindingTools?: string;
   mappingConfig?: string;
-  /** 执行配置（P1-ITEM-4）：模型档位/温度/maxTurns/安全护栏等运行时参数，JSON 字符串 */
-  execConfig?: string;
   subsCount?: number;
   visibility?: string;
   scope?: 'GLOBAL' | 'LOCAL';

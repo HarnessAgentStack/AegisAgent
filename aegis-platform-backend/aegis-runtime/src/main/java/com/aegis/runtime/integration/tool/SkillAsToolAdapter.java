@@ -2,11 +2,13 @@ package com.aegis.runtime.integration.tool;
 
 import com.aegis.core.domain.resource.Skill;
 import com.aegis.core.dto.agent.AgentEvent;
+import com.aegis.core.common.tenant.TenantContextScope;
 import com.aegis.runtime.integration.agent.ToolResultCache;
 import com.aegis.runtime.integration.skill.SkillCreatorOrchestrator;
 import com.aegis.runtime.service.conversation.AegisTaskContext;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolResultState;
@@ -134,16 +136,20 @@ public class SkillAsToolAdapter extends ToolBase {
         }
 
         // 普通技能路径
+        // boundedElastic 池化线程不继承入口 TenantContext，需在执行线程显式绑定（与 handleSkillCreatorCall 对齐）
+        final Long sessionTenantId = resolveSessionTenantId(param, tenantId);
         return Mono.fromCallable(() -> {
-            Map<String, Object> result = skillExecutor.execute(tenantId, skillId, inputs);
-            String resultJson = JSON.toJSONString(result);
-            if (callId != null) {
-                toolResultCache.put(callId, resultJson);
+            try (var ignore = TenantContextScope.bound(sessionTenantId)) {
+                Map<String, Object> result = skillExecutor.execute(sessionTenantId, skillId, inputs);
+                String resultJson = JSON.toJSONString(result);
+                if (callId != null) {
+                    toolResultCache.put(callId, resultJson);
+                }
+                boolean isError = result != null && Boolean.FALSE.equals(result.get("success"));
+                log.info("SkillAsToolAdapter 调用完成: skillCode={}, status={}",
+                        skill.getSkillCode(), isError ? "ERROR" : "SUCCESS");
+                return buildResult(callId, skill.getSkillCode(), resultJson, isError);
             }
-            boolean isError = result != null && Boolean.FALSE.equals(result.get("success"));
-            log.info("SkillAsToolAdapter 调用完成: skillCode={}, status={}",
-                    skill.getSkillCode(), isError ? "ERROR" : "SUCCESS");
-            return buildResult(callId, skill.getSkillCode(), resultJson, isError);
         }).onErrorResume(e -> {
             log.error("SkillAsToolAdapter 调用异常: skillCode={}", skill.getSkillCode(), e);
             String errJson = "{\"success\":false,\"error\":\"" + escapeJson(e.getMessage()) + "\"}";
@@ -152,6 +158,30 @@ public class SkillAsToolAdapter extends ToolBase {
             }
             return Mono.just(buildResult(callId, skill.getSkillCode(), errJson, true));
         });
+    }
+
+    /**
+     * 从 ToolCallParam 的 RuntimeContext 解析当前会话租户 ID。
+     *
+     * <p>boundedElastic 池化线程不继承入口 TenantContext，普通技能执行前需在执行线程显式绑定。
+     * 优先取会话级 tenantId（RuntimeContext.AegisTaskContext），回落 skill.tenantId，
+     * 最后为 null（TenantContextScope.bound(null) 为 NOOP，仅 GLOBAL 跨租户技能会到此）。</p>
+     */
+    private Long resolveSessionTenantId(ToolCallParam param, Long fallbackTenantId) {
+        try {
+            if (param != null) {
+                RuntimeContext rc = param.getRuntimeContext();
+                if (rc != null) {
+                    AegisTaskContext taskCtx = rc.get(AegisTaskContext.class);
+                    if (taskCtx != null && taskCtx.getTenantId() != null) {
+                        return taskCtx.getTenantId();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("普通技能执行: 从 RuntimeContext 解析 tenantId 失败, 回退 skill.tenantId: {}", e.getMessage());
+        }
+        return fallbackTenantId;
     }
 
     /**

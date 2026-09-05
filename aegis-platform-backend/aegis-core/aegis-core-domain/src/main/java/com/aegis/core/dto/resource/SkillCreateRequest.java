@@ -84,7 +84,4 @@ public class SkillCreateRequest implements Serializable {
 
     /** 触发示例 JSON 数组 */
     private String triggerExamples;
-
-    /** 交互式创建表单 Schema JSON */
-    private String skillForm;
 }

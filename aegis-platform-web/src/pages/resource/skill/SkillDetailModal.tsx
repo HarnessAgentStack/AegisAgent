@@ -1,6 +1,6 @@
 /**
  * @file 技能详情弹窗（增强版）
- * @description 多Tab结构化展示SKILL完整产物：概览、指令/方法论、绑定工具、执行配置、版本历史。
+ * @description 多Tab结构化展示SKILL完整产物：概览、指令/方法论、绑定工具、版本历史。
  *              支持编辑权限判断，有权限者可跳转工作台编辑SKILL。
  * @author aegis
  * @since 2.0.0
@@ -37,7 +37,6 @@ import {
   EyeOutlined,
   HistoryOutlined,
   InfoCircleOutlined,
-  SettingOutlined,
   StarFilled,
   ThunderboltOutlined,
   ToolOutlined,
@@ -90,17 +89,6 @@ interface BoundTool {
   signature?: string;
   description?: string;
   selected: boolean;
-}
-
-interface SkillConfig {
-  modelTier?: string;
-  temperature?: number;
-  maxTurns?: number;
-  enableInputFilter?: boolean;
-  enableOutputAudit?: boolean;
-  enablePiiDetection?: boolean;
-  enableRateLimit?: boolean;
-  memoryStrategy?: string;
 }
 
 // ============================================================================
@@ -165,12 +153,6 @@ function parseBindingTools(bindingToolsStr?: string): SkillBinding[] {
     return [{ mcpName: '默认', tools }];
   }
   return [];
-}
-
-/** 解析执行配置 */
-function parseSkillConfig(configStr?: string): SkillConfig {
-  if (!configStr) return {};
-  return safeJsonParse<SkillConfig>(configStr) ?? {};
 }
 
 // ============================================================================
@@ -625,80 +607,6 @@ const ToolTable: React.FC<{ tools: BoundTool[] }> = ({ tools }) => {
 };
 
 // ============================================================================
-// 子组件：执行配置 Tab
-// ============================================================================
-
-const SkillConfigTab: React.FC<{ skill: Skill }> = ({ skill }) => {
-  const [config, setConfig] = useState<SkillConfig>({});
-
-  useEffect(() => {
-    const skillRecord = skill as unknown as Record<string, unknown>;
-    const configStr = skillRecord.execConfig as string | undefined;
-    if (configStr) {
-      setConfig(parseSkillConfig(configStr));
-    }
-  }, [skill]);
-
-  return (
-    <div>
-      <Alert
-        type="info"
-        showIcon
-        icon={<SettingOutlined />}
-        message="执行配置说明"
-        description="以下是 SKILL 的运行时配置参数，包括模型档位、温度、安全护栏等。这些参数在 SKILL 执行时生效。"
-        style={{ marginBottom: 16 }}
-      />
-
-      <Row gutter={[16, 16]}>
-        <Col span={12}>
-          <Card size="small" title="🤖 模型配置">
-            <Descriptions column={1} size="small">
-              <Descriptions.Item label="模型档位">
-                <Tag color="blue">{config.modelTier ?? 'STANDARD'}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="温度">
-                <Text>{config.temperature ?? 0.7}</Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="最大轮数">
-                <Text>{config.maxTurns ?? 10}</Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="记忆策略">
-                <Tag color={config.memoryStrategy === 'LONG_TERM' ? 'purple' : 'blue'}>
-                  {config.memoryStrategy === 'LONG_TERM' ? '长期记忆' : '会话级'}
-                </Tag>
-              </Descriptions.Item>
-            </Descriptions>
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card size="small" title="🛡️ 安全护栏">
-            <Descriptions column={1} size="small">
-              <Descriptions.Item label="输入过滤">
-                <SwitchBadge on={config.enableInputFilter} />
-              </Descriptions.Item>
-              <Descriptions.Item label="输出审核">
-                <SwitchBadge on={config.enableOutputAudit} />
-              </Descriptions.Item>
-              <Descriptions.Item label="PII 检测">
-                <SwitchBadge on={config.enablePiiDetection} />
-              </Descriptions.Item>
-              <Descriptions.Item label="速率限制">
-                <SwitchBadge on={config.enableRateLimit} />
-              </Descriptions.Item>
-            </Descriptions>
-          </Card>
-        </Col>
-      </Row>
-    </div>
-  );
-};
-
-const SwitchBadge: React.FC<{ on?: boolean }> = ({ on }) => (
-  <Tag color={on ? 'green' : 'default'}>{on ? '已启用' : '未启用'}</Tag>
-);
-
-// ============================================================================
 // 子组件：版本历史 Tab
 // ============================================================================
 
@@ -945,16 +853,6 @@ const SkillDetailModal: React.FC<SkillDetailModalProps> = ({
         </Space>
       ),
       children: s ? <SkillToolsTab skill={s} /> : null,
-    },
-    {
-      key: 'config',
-      label: (
-        <Space>
-          <SettingOutlined />
-          执行配置
-        </Space>
-      ),
-      children: s ? <SkillConfigTab skill={s} /> : null,
     },
     {
       key: 'history',

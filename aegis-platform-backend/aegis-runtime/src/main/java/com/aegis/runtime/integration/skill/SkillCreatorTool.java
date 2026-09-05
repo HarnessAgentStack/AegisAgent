@@ -128,9 +128,7 @@ public class SkillCreatorTool {
         skill.setTags("[]");
         skill.setMappingConfig("{}");
         skill.setSubsCount(0);
-        skill.setHealthScore(new java.math.BigDecimal("100.00"));
         skill.setIsSystem(false);
-        skill.setCertified(false);
         skill.setCreateBy(userId);
         skill.setCreateTime(java.time.LocalDateTime.now());
         skill.setDeleted(0);

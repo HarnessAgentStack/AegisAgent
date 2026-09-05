@@ -87,9 +87,6 @@ public class SkillVO implements Serializable {
     /** 输入输出映射配置 */
     private String mappingConfig;
 
-    /** 执行配置：模型档位/温度/maxTurns/安全护栏等运行时参数，JSON 字符串 */
-    private String execConfig;
-
     /** 指令/方法论（技能核心内容，编辑面板回显依赖此字段） */
     private String instructions;
 

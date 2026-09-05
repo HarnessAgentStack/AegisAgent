@@ -117,10 +117,6 @@ public class SkillManageService {
         if (req.getTriggerExamples() != null && !req.getTriggerExamples().isEmpty()) {
             skill.setTriggerExamples(req.getTriggerExamples());
         }
-        if (req.getSkillForm() != null && !req.getSkillForm().isEmpty()) {
-            skill.setSkillForm(req.getSkillForm());
-        }
-        // 执行配置：创建时不设置（由更新接口设置）
         // inputs / outputs / mappingConfig 若请求中带了则覆盖默认值
         if (req.getInputs() != null && !req.getInputs().isEmpty()) {
             skill.setInputs(req.getInputs());
@@ -179,15 +175,12 @@ public class SkillManageService {
         if (req.getOutputs() != null) wrapper.set(Skill::getOutputs, req.getOutputs());
         if (req.getBindingTools() != null) wrapper.set(Skill::getBindingTools, req.getBindingTools());
         if (req.getMappingConfig() != null) wrapper.set(Skill::getMappingConfig, req.getMappingConfig());
-        // 执行配置持久化
-        if (req.getExecConfig() != null) wrapper.set(Skill::getExecConfig, req.getExecConfig());
         // instructions 是技能核心方法论，空值不覆盖（与 create 路径守卫一致，防止客户端未回显导致误清空）
         if (req.getInstructions() != null && !req.getInstructions().isEmpty()) {
             wrapper.set(Skill::getInstructions, req.getInstructions());
         }
         if (req.getReferencesManifest() != null) wrapper.set(Skill::getReferencesManifest, req.getReferencesManifest());
         if (req.getTriggerExamples() != null) wrapper.set(Skill::getTriggerExamples, req.getTriggerExamples());
-        if (req.getSkillForm() != null) wrapper.set(Skill::getSkillForm, req.getSkillForm());
 
         skillMapper.update(null, wrapper);
         log.info("Skill updated: id={}, tenantId={}", skillId, tenantId);

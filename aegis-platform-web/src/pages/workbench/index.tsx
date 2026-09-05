@@ -464,16 +464,17 @@ const Workbench: React.FC = () => {
 
       {/* SKILL 编辑面板 */}
       {skillEditMode && skillEditLoading && (
-        <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 680, background: '#fff', borderLeft: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+        <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 340, background: '#fff', borderLeft: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
           <div style={{ textAlign: 'center', color: '#999' }}><div style={{ fontSize: 24, marginBottom: 8 }}>⏳</div><div>加载 SKILL 详情中...</div></div>
         </div>
       )}
       {skillEditMode && editingSkill && !skillEditLoading && (
-        <SkillEditPanel skill={editingSkill} onClose={() => { setSkillEditMode(false); setEditingSkill(null); }}
-          onSaved={(updated) => { setEditingSkill(updated); message.success('SKILL 已保存'); }}
-          onSubmitted={() => { setSkillEditMode(false); setEditingSkill(null); message.success('SKILL 已提交审核'); }}
-          getContainer={() => document.getElementById('chat-container') || document.body}
-        />
+        <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 340, zIndex: 50 }}>
+          <SkillEditPanel skill={editingSkill} onClose={() => { setSkillEditMode(false); setEditingSkill(null); }}
+            onSaved={(updated) => { setEditingSkill(updated); message.success('SKILL 已保存'); }}
+            onSubmitted={() => { setSkillEditMode(false); setEditingSkill(null); message.success('SKILL 已提交审核'); }}
+          />
+        </div>
       )}
 
       {/* 抽屉 */}

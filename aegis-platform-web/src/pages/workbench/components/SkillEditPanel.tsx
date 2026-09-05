@@ -1,56 +1,43 @@
 /**
  * @file SKILL 编辑面板
- * @description 工作台 SKILL 编辑模式的右侧面板，支持编辑基础信息、指令、绑定工具、执行配置。
- *              支持自动保存草稿（debounce 2s）、提交审核、权限校验。
+ * @description 工作台 SKILL 编辑模式右侧面板。与 SkillStudioPanel（生成面板）同构：
+ *              相同的 340 侧栏容器、渐变信息卡、分段标题、Tag 颜色体系、底部 flex 操作栏。
+ *              差异仅在控件可编辑性（Input/Select/TextArea/Switch），实现"以生成面板为准"的视觉与字段对齐。
+ *              支持自动保存草稿（debounce 2s）、提交审核、MCP 工具绑定。
  * @author aegis
- * @since 2.0.0
+ * @since 3.1.0
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   App,
-  Badge,
   Button,
-  Card,
-  Collapse,
-  Divider,
-  Drawer,
   Empty,
-  Form,
   Input,
-  InputNumber,
   Modal,
   Select,
   Space,
   Switch,
   Tag,
-  Tooltip,
   Typography,
 } from 'antd';
 import {
   ApiOutlined,
   CheckCircleOutlined,
   CloseOutlined,
-  CloudOutlined,
   CodeOutlined,
-  EditOutlined,
+  FileOutlined,
   SaveOutlined,
-  SettingOutlined,
   ThunderboltOutlined,
   ToolOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
 import type { Skill, McpServer } from '@/types/resource';
 import { skillApi, mcpApi } from '@/api/resource';
 import { CATEGORY_OPTIONS, parseJsonArray, SECURITY_OPTIONS, SKILL_TYPE_TAG } from '@/pages/resource/skill/constants';
+import { getSkillFiles } from '@/api/skill';
 import { safeJsonParse } from '@/utils/number';
 
 const { Text } = Typography;
 const { TextArea } = Input;
-
-// ============================================================================
-// 类型定义
-// ============================================================================
 
 interface SkillEditPanelProps {
   /** 当前编辑的 SKILL */
@@ -61,7 +48,7 @@ interface SkillEditPanelProps {
   onSubmitted?: (skill: Skill) => void;
   /** 保存成功回调 */
   onSaved?: (skill: Skill) => void;
-  /** 容器获取函数（用于嵌入工作台） */
+  /** 容器获取函数（保留接口兼容，侧栏内嵌无需用） */
   getContainer?: () => HTMLElement;
 }
 
@@ -80,23 +67,13 @@ interface ToolBindingItem {
   selected: boolean;
 }
 
-/** 执行配置 */
-interface SkillExecConfig {
-  modelTier?: string;
-  temperature?: number;
-  maxTurns?: number;
-  enableInputFilter?: boolean;
-  enableOutputAudit?: boolean;
-  enablePiiDetection?: boolean;
-  enableRateLimit?: boolean;
-  memoryStrategy?: string;
+/** 技能文件项（编辑面板从 DB 拉取文件树，对齐生成面板） */
+interface SkillFileItem {
+  name: string;
+  path: string;
+  content?: string;
 }
 
-// ============================================================================
-// 解析工具
-// ============================================================================
-
-/** 解析绑定工具 JSON → 按 MCP 分组 */
 function parseBindingTools(bindingToolsStr?: string): ToolBindingGroup[] {
   if (!bindingToolsStr) return [];
   const data = safeJsonParse<unknown>(bindingToolsStr);
@@ -123,7 +100,6 @@ function parseBindingTools(bindingToolsStr?: string): ToolBindingGroup[] {
       mcpId: '',
       mcpName: '默认',
       tools: (data as (string | Record<string, unknown>)[]).map((t) => {
-        // 兼容后端 enrichBindingTools 增强后的混合结构：字符串 toolCode 与 {toolCode,toolName,description,toolType} 对象共存
         if (typeof t === 'string') return { toolCode: t, selected: true };
         const obj = t as Record<string, unknown>;
         return {
@@ -138,7 +114,6 @@ function parseBindingTools(bindingToolsStr?: string): ToolBindingGroup[] {
   return [];
 }
 
-/** 将按 MCP 分组的结构序列化回 JSON */
 function serializeBindingTools(groups: ToolBindingGroup[]): string {
   const obj: Record<string, unknown[]> = {};
   groups.forEach((g) => {
@@ -154,32 +129,24 @@ function serializeBindingTools(groups: ToolBindingGroup[]): string {
   return Object.keys(obj).length > 0 ? JSON.stringify(obj) : '';
 }
 
-// ============================================================================
-// 主组件：SkillEditPanel
-// ============================================================================
-
 export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
   skill,
   onClose,
   onSubmitted,
   onSaved,
-  getContainer,
 }) => {
   const { message } = App.useApp();
 
-  // 本地编辑状态
-  const [editName, setEditName] = useState(skill.skillName);
+  const [editName, setEditName] = useState(skill.skillName ?? '');
   const [editCategory, setEditCategory] = useState(skill.category ?? '');
   const [editDescription, setEditDescription] = useState(skill.description ?? '');
   const [editInstructions, setEditInstructions] = useState(skill.instructions ?? '');
   const [editTags, setEditTags] = useState<string[]>(parseJsonArray(skill.tags));
-  const [tagInput, setTagInput] = useState('');
   const [editSkillType, setEditSkillType] = useState<string>(skill.skillType ?? 'ATOMIC');
   const [editSecurityLevel, setEditSecurityLevel] = useState<string>(skill.securityLevel ?? 'L1');
   const [editInputs, setEditInputs] = useState<string>(skill.inputs ?? '');
   const [editOutputs, setEditOutputs] = useState<string>(skill.outputs ?? '');
 
-  // 绑定工具
   const [bindingGroups, setBindingGroups] = useState<ToolBindingGroup[]>(
     parseBindingTools(skill.bindingTools),
   );
@@ -187,23 +154,16 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
   const [loadingMcp, setLoadingMcp] = useState(false);
   const [showMcpSelector, setShowMcpSelector] = useState(false);
 
-  // 执行配置
-  const [execConfig, setExecConfig] = useState<SkillExecConfig>(() => {
-    // P1-ITEM-4：统一从 skill.execConfig 读取（后端唯一字段名），移除 config/executionConfig 双命名兼容
-    const configStr = skill.execConfig;
-    return configStr ? (safeJsonParse<SkillExecConfig>(configStr) ?? {}) : {};
-  });
+  // 技能文件树（从 DB 拉取，对齐生成面板的文件结构区）
+  const [skillFiles, setSkillFiles] = useState<SkillFileItem[]>([]);
+  const [expandedFiles, setExpandedFiles] = useState(true);
+  const [showInputsOutputs, setShowInputsOutputs] = useState(false);
 
-  // 自动保存状态
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 草稿模式：DRAFT 状态直接编辑，REJECTED 也可编辑
-  // isDraftMode 预留用于后续状态显示增强
-
-  // 加载可用 MCP 服务
   useEffect(() => {
     setLoadingMcp(true);
     mcpApi.listServices({ size: 100 })
@@ -211,18 +171,38 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
         const list = Array.isArray(res) ? res : (res?.records ?? []);
         setMcpList(list);
       })
-      .catch(() => {
-        // 静默失败，MCP 选择器仅影响添加功能
-      })
+      .catch(() => { })
       .finally(() => setLoadingMcp(false));
   }, []);
 
-  // 标记为脏（有未保存修改）
-  const markDirty = useCallback(() => {
-    setDirty(true);
-  }, []);
+  // 从 DB 拉取技能持久化文件（res_skill_file），补齐生成面板同款文件树
+  useEffect(() => {
+    if (!skill.id) return;
+    getSkillFiles(String(skill.id))
+      .then((files) => {
+        setSkillFiles(files.map((f) => ({ name: f.fileName, path: f.filePath, content: f.content })));
+      })
+      .catch(() => { });
+  }, [skill.id]);
 
-  // 自动保存（debounce 2s）
+  const markDirty = useCallback(() => setDirty(true), []);
+
+  const collectFormData = useCallback((): Partial<Skill> => {
+    const bindingsJson = serializeBindingTools(bindingGroups);
+    return {
+      skillName: editName,
+      category: editCategory,
+      description: editDescription,
+      instructions: editInstructions,
+      skillType: editSkillType as Skill['skillType'],
+      securityLevel: editSecurityLevel as Skill['securityLevel'],
+      tags: editTags.length > 0 ? JSON.stringify(editTags) : undefined,
+      bindingTools: bindingsJson || undefined,
+      inputs: editInputs,
+      outputs: editOutputs,
+    };
+  }, [editName, editCategory, editDescription, editInstructions, editSkillType, editSecurityLevel, editTags, bindingGroups, editInputs, editOutputs]);
+
   const autoSave = useCallback(async () => {
     if (!dirty || !skill.id) return;
     setSaving(true);
@@ -238,113 +218,51 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [dirty, skill, onSaved]);
+  }, [dirty, skill, onSaved, collectFormData, message]);
 
-  // debounce 自动保存
   useEffect(() => {
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-    }
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     if (dirty) {
-      autoSaveTimerRef.current = setTimeout(() => {
-        autoSave();
-      }, 2000);
+      autoSaveTimerRef.current = setTimeout(() => { autoSave(); }, 2000);
     }
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-    };
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, [dirty, autoSave]);
 
-  /** 收集所有编辑表单数据 */
-  const collectFormData = useCallback((): Partial<Skill> => {
-    const bindingsJson = serializeBindingTools(bindingGroups);
-    return {
-      skillName: editName,
-      category: editCategory,
-      description: editDescription,
-      instructions: editInstructions,
-      skillType: editSkillType as Skill['skillType'],
-      securityLevel: editSecurityLevel as Skill['securityLevel'],
-      tags: editTags.length > 0 ? JSON.stringify(editTags) : undefined,
-      bindingTools: bindingsJson || undefined,
-      inputs: editInputs,
-      outputs: editOutputs,
-      // P1-ITEM-4：修复空 spread bug —— execConfig 序列化后提交，编辑配置不再丢失
-      execConfig:
-        execConfig && Object.keys(execConfig).length > 0
-          ? JSON.stringify(execConfig)
-          : undefined,
-    };
-  }, [editName, editCategory, editDescription, editInstructions, editSkillType, editSecurityLevel, editTags, bindingGroups, editInputs, editOutputs, execConfig, skill]);
+  const selectedToolCount = useMemo(
+    () => bindingGroups.reduce((sum, g) => sum + g.tools.filter((t) => t.selected).length, 0),
+    [bindingGroups],
+  );
 
-  // ========== 标签管理 ==========
+  const detectedVariables = useMemo(() => {
+    const regex = /\{(\w+)\}/g;
+    const found = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(editInstructions)) !== null) found.add(match[1]);
+    return Array.from(found);
+  }, [editInstructions]);
 
-  const addTag = () => {
-    const t = tagInput.trim();
-    if (t && !editTags.includes(t)) {
-      setEditTags([...editTags, t]);
-      markDirty();
-    }
-    setTagInput('');
+  const addTag = (v: string) => {
+    const t = v.trim();
+    if (t && !editTags.includes(t)) { setEditTags([...editTags, t]); markDirty(); }
   };
-
-  const removeTag = (t: string) => {
-    setEditTags(editTags.filter((x) => x !== t));
-    markDirty();
-  };
-
-  // ========== 绑定工具管理 ==========
+  const removeTag = (t: string) => { setEditTags(editTags.filter((x) => x !== t)); markDirty(); };
 
   const toggleTool = (mcpIdx: number, toolIdx: number) => {
-    setBindingGroups((prev) => {
-      const next = prev.map((g, gi) => {
-        if (gi !== mcpIdx) return g;
-        return {
-          ...g,
-          tools: g.tools.map((t, ti) =>
-            ti === toolIdx ? { ...t, selected: !t.selected } : t,
-          ),
-        };
-      });
-      return next;
-    });
+    setBindingGroups((prev) => prev.map((g, gi) => gi !== mcpIdx ? g : {
+      ...g, tools: g.tools.map((t, ti) => ti === toolIdx ? { ...t, selected: !t.selected } : t),
+    }));
     markDirty();
   };
-
-  const removeGroup = (mcpIdx: number) => {
-    setBindingGroups((prev) => prev.filter((_, i) => i !== mcpIdx));
-    markDirty();
-  };
-
+  const removeGroup = (mcpIdx: number) => { setBindingGroups((prev) => prev.filter((_, i) => i !== mcpIdx)); markDirty(); };
   const addMcpBinding = (mcp: McpServer) => {
-    // 检查是否已添加
     if (bindingGroups.some((g) => g.mcpName === mcp.mcpName || g.mcpId === mcp.id)) {
-      message.info(`MCP「${mcp.mcpName}」已绑定`);
-      return;
+      message.info(`MCP「${mcp.mcpName}」已绑定`); return;
     }
-    // 创建新分组
-    const newGroup: ToolBindingGroup = {
-      mcpId: mcp.id ?? '',
-      mcpName: mcp.mcpName,
-      mcpCode: mcp.mcpCode,
-      tools: [],
-    };
-    setBindingGroups((prev) => [...prev, newGroup]);
+    setBindingGroups((prev) => [...prev, { mcpId: mcp.id ?? '', mcpName: mcp.mcpName, mcpCode: mcp.mcpCode, tools: [] }]);
     setShowMcpSelector(false);
     markDirty();
     message.success(`已添加 MCP「${mcp.mcpName}」，请在下方选择绑定的工具`);
   };
-
-  // ========== 执行配置 ==========
-
-  const updateExecConfig = (key: keyof SkillExecConfig, value: unknown) => {
-    setExecConfig((prev) => ({ ...prev, [key]: value }));
-    markDirty();
-  };
-
-  // ========== 保存与提交 ==========
 
   const handleManualSave = async () => {
     if (!skill.id) return;
@@ -352,21 +270,15 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
     try {
       const data = collectFormData();
       await skillApi.update(skill.id, data);
-      setLastSavedAt(Date.now());
-      setDirty(false);
+      setLastSavedAt(Date.now()); setDirty(false);
       message.success('草稿保存成功');
       onSaved?.({ ...skill, ...data });
-    } catch (err) {
-      console.error('保存失败:', err);
-      message.error('保存失败，请重试');
-    } finally {
-      setSaving(false);
-    }
+    } catch (err) { console.error('保存失败:', err); message.error('保存失败，请重试'); }
+    finally { setSaving(false); }
   };
 
   const handleSubmitReview = async () => {
     if (!skill.id) return;
-    // 先保存
     let updatedData: Record<string, unknown> = {};
     if (dirty) {
       setSaving(true);
@@ -374,556 +286,302 @@ export const SkillEditPanel: React.FC<SkillEditPanelProps> = ({
         updatedData = collectFormData();
         await skillApi.update(skill.id, updatedData);
         setDirty(false);
-      } catch (err) {
-        message.error('保存失败，无法提交审核');
-        setSaving(false);
-        return;
-      }
+      } catch (err) { message.error('保存失败，无法提交审核'); setSaving(false); return; }
     }
     try {
       await skillApi.submitReview(skill.id);
       message.success('已提交审核，等待审核人员审批');
       onSubmitted?.({ ...skill, ...updatedData });
-    } catch (err) {
-      console.error('提交审核失败:', err);
-      message.error('提交审核失败');
-    } finally {
-      setSaving(false);
-    }
+    } catch (err) { console.error('提交审核失败:', err); message.error('提交审核失败'); }
+    finally { setSaving(false); }
   };
 
-  // ========== 变量识别 ==========
-  const detectedVariables = useMemo(() => {
-    const regex = /\{(\w+)\}/g;
-    const found = new Set<string>();
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(editInstructions)) !== null) {
-      found.add(match[1]);
-    }
-    return Array.from(found);
-  }, [editInstructions]);
+  // ============ 渲染：与 SkillStudioPanel 同构 ============
 
-  // ========== 底部按钮 ==========
-
-  const footerButtons = (
-    <Space>
-      <Button
-        icon={<CloseOutlined />}
-        onClick={onClose}
-      >
-        关闭
-      </Button>
-      <Button
-        icon={<SaveOutlined />}
-        onClick={handleManualSave}
-        loading={saving}
-        disabled={!dirty}
-      >
-        保存草稿
-      </Button>
-      <Button
-        type="primary"
-        icon={<CheckCircleOutlined />}
-        onClick={handleSubmitReview}
-        loading={saving}
-        disabled={dirty}
-      >
-        提交审核
-      </Button>
-    </Space>
+  const renderHeader = () => (
+    <div style={{
+      padding: '10px 14px', borderBottom: '1px solid #e8e8e8',
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      background: '#fff', flexShrink: 0,
+    }}>
+      <Space size={8}>
+        <div style={{
+          width: 26, height: 26, borderRadius: 6,
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <ThunderboltOutlined style={{ fontSize: 13, color: '#fff' }} />
+        </div>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 12, color: '#1f2937' }}>编辑技能</div>
+          <div style={{ fontSize: 10, color: '#9ca3af' }}>
+            {dirty ? <span style={{ color: '#faad14' }}>● 有未保存修改</span>
+              : lastSavedAt ? `已保存 ${new Date(lastSavedAt).toLocaleTimeString()}`
+              : `ID: #${skill.id}`}
+          </div>
+        </div>
+      </Space>
+      <Button type="text" size="small" icon={<CloseOutlined style={{ fontSize: 12 }} />} onClick={onClose} title="关闭编辑面板" />
+    </div>
   );
 
-  return (
-    <Drawer
-      title={
-        <Space>
-          <ThunderboltOutlined style={{ color: '#faad14' }} />
-          <span>编辑 SKILL：{editName || skill.skillName}</span>
-          <Tag color="blue">{skill.skillCode}</Tag>
-          {dirty && (
-            <Tag color="orange" style={{ marginLeft: 8 }}>
-              <WarningOutlined /> 有未保存修改
-            </Tag>
-          )}
-          {!dirty && lastSavedAt && (
-            <Tag color="green" style={{ marginLeft: 8 }}>
-              <CheckCircleOutlined /> 已保存 {new Date(lastSavedAt).toLocaleTimeString()}
-            </Tag>
-          )}
-        </Space>
-      }
-      placement="right"
-      width={680}
-      open={true}
-      onClose={onClose}
-      bodyStyle={{ padding: '12px 16px', overflowY: 'auto', height: 'calc(100vh - 64px)' }}
-      footer={footerButtons}
-      footerStyle={{ padding: '12px 16px', borderTop: '1px solid #f0f0f0', background: '#fafafa' }}
-      maskClosable={false}
-      closable={true}
-      getContainer={getContainer}
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {/* =============== 基础信息 =============== */}
-        <Card
-          size="small"
-          title={
-            <Space>
-              <EditOutlined />
-              <span>基础信息</span>
-            </Space>
-          }
-        >
-          <Form layout="vertical" size="small">
-            <Form.Item label="SKILL 名称" required>
-              <Input
-                value={editName}
-                onChange={(e) => {
-                  setEditName(e.target.value);
-                  markDirty();
-                }}
-                placeholder="输入 SKILL 名称"
-                maxLength={64}
-                showCount
-              />
-            </Form.Item>
-            <Form.Item label="分类">
-              <Select
-                value={editCategory || undefined}
-                onChange={(v) => {
-                  setEditCategory(v);
-                  markDirty();
-                }}
-                placeholder="选择分类"
-                allowClear
-                options={CATEGORY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-              />
-            </Form.Item>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <Form.Item label="技能类型" style={{ marginBottom: 8 }}>
-                <Select
-                  value={editSkillType}
-                  onChange={(v) => {
-                    setEditSkillType(v);
-                    markDirty();
-                  }}
-                  options={(Object.keys(SKILL_TYPE_TAG) as Array<keyof typeof SKILL_TYPE_TAG>).map((k) => ({
-                    value: k,
-                    label: SKILL_TYPE_TAG[k].text,
-                  }))}
-                />
-              </Form.Item>
-              <Form.Item label="安全等级" style={{ marginBottom: 8 }}>
-                <Select
-                  value={editSecurityLevel}
-                  onChange={(v) => {
-                    setEditSecurityLevel(v);
-                    markDirty();
-                  }}
-                  options={SECURITY_OPTIONS.filter((o) => o.value !== 'all').map((o) => ({
-                    value: o.value,
-                    label: o.label,
-                  }))}
-                />
-              </Form.Item>
-            </div>
-            <Form.Item label="描述">
-              <TextArea
-                value={editDescription}
-                onChange={(e) => {
-                  setEditDescription(e.target.value);
-                  markDirty();
-                }}
-                placeholder="简要描述此 SKILL 的用途和能力"
-                rows={3}
-                maxLength={500}
-                showCount
-              />
-            </Form.Item>
-            <Form.Item label="标签">
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <Space wrap>
-                  {editTags.map((t) => (
-                    <Tag
-                      key={t}
-                      closable
-                      onClose={() => removeTag(t)}
-                      color="blue"
-                    >
-                      {t}
-                    </Tag>
-                  ))}
-                </Space>
-                <Space.Compact>
-                  <Input
-                    value={tagInput}
-                    onChange={(e) => setTagInput(e.target.value)}
-                    onPressEnter={addTag}
-                    placeholder="输入标签后回车添加"
-                    style={{ width: 200 }}
-                    allowClear
-                  />
-                  <Button onClick={addTag}>添加</Button>
-                </Space.Compact>
-              </Space>
-            </Form.Item>
-          </Form>
-        </Card>
-
-        {/* =============== 指令/方法论 =============== */}
-        <Card
-          size="small"
-          title={
-            <Space>
-              <CodeOutlined />
-              <span>指令 / 方法论（Prompt）</span>
-              <Tag color="blue">{editInstructions.split('\n').length} 行</Tag>
-            </Space>
-          }
-          extra={
-            <Tooltip title="指令是 SKILL 的核心，定义了 AI 的行为逻辑">
-              <InfoCircleIcon />
-            </Tooltip>
-          }
-        >
-          <Alert
-            type="info"
-            showIcon
-            message="指令编写提示"
-            description="使用 {variable} 定义变量；使用 # 或 ## 添加注释；使用 - 创建列表项。指令修改后，SKILL 行为将随之变化。"
-            style={{ marginBottom: 12 }}
-          />
-          <TextArea
-            value={editInstructions}
-            onChange={(e) => {
-              setEditInstructions(e.target.value);
-              markDirty();
-            }}
-            placeholder={`<system_prompt>
-你是一个专业的[领域]助手，帮助用户完成[任务]。
-
-## 工作流程
-1. 理解用户意图
-2. 提取关键信息
-3. 调用对应工具
-4. 返回格式化结果
-
-## 注意事项
-- 使用 {order_id} 作为订单编号
-- 对于 {status} 参数，支持 pending/shipped/delivered
-</system_prompt>`}
-            autoSize={{ minRows: 8, maxRows: 30 }}
-            style={{
-              fontFamily: 'Consolas, "Courier New", monospace',
-              fontSize: 13,
-              lineHeight: '22px',
-            }}
-          />
-
-          {/* 变量识别 */}
-          {detectedVariables.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                已识别变量：
-              </Text>
-              <Space size={[4, 4]} wrap style={{ marginTop: 4 }}>
-                {detectedVariables.map((v) => (
-                  <Tag key={v} color="processing">
-                    {'{'}{v}{'}'}
-                  </Tag>
-                ))}
-              </Space>
-            </div>
-          )}
-        </Card>
-
-        {/* =============== 入参/出参 =============== */}
-        <Collapse
-          defaultActiveKey={['inputs-outputs']}
-          items={[{
-            key: 'inputs-outputs',
-            label: (
-              <Space>
-                <ApiOutlined />
-                <span>入参 / 出参（JSON Schema）</span>
-              </Space>
-            ),
-            children: (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>输入参数 Schema</Text>
-                  <TextArea
-                    value={editInputs}
-                    onChange={(e) => { setEditInputs(e.target.value); markDirty(); }}
-                    placeholder={'输入 JSON Schema，如 {"type":"object","properties":{...}}'}
-                    autoSize={{ minRows: 4, maxRows: 12 }}
-                    style={{ fontFamily: 'Consolas, "Courier New", monospace', fontSize: 13, marginTop: 4 }}
-                  />
-                </div>
-                <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>输出参数 Schema</Text>
-                  <TextArea
-                    value={editOutputs}
-                    onChange={(e) => { setEditOutputs(e.target.value); markDirty(); }}
-                    placeholder={'输入 JSON Schema，如 {"type":"object","properties":{...}}'}
-                    autoSize={{ minRows: 4, maxRows: 12 }}
-                    style={{ fontFamily: 'Consolas, "Courier New", monospace', fontSize: 13, marginTop: 4 }}
-                  />
-                </div>
-              </Space>
-            ),
-          }]}
+  // 渐变信息卡：对齐 SkillStudioPanel.renderSkillInfo，控件换可编辑版本
+  const renderSkillInfo = () => (
+    <div style={{
+      padding: 12,
+      background: 'linear-gradient(135deg, #f8f9ff 0%, #f0f4ff 100%)',
+      border: '1px solid #e0e7ff', borderRadius: 8, marginBottom: 12,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <Input
+          value={editName}
+          onChange={(e) => { setEditName(e.target.value); markDirty(); }}
+          size="small" maxLength={64} placeholder="技能名称"
+          style={{ fontWeight: 600, fontSize: 14, flex: 1, color: '#1f2937' }}
         />
+        <Select
+          value={editSkillType} size="small" style={{ width: 90 }}
+          onChange={(v) => { setEditSkillType(v); markDirty(); }}
+          options={(Object.keys(SKILL_TYPE_TAG) as Array<keyof typeof SKILL_TYPE_TAG>).map((k) => ({ value: k, label: SKILL_TYPE_TAG[k].text }))}
+        />
+      </div>
+      <div style={{ fontSize: 11, color: '#6b7280', fontFamily: 'monospace', marginBottom: 6 }}>
+        @{skill.skillCode || 'SKILL_CODE'}
+      </div>
+      <TextArea
+        value={editDescription}
+        onChange={(e) => { setEditDescription(e.target.value); markDirty(); }}
+        size="small" rows={2} maxLength={500} placeholder="技能描述"
+        style={{ fontSize: 12, color: '#6b7280', lineHeight: '18px', resize: 'none' }}
+      />
+      {/* 标签 —— 对齐生成面板的 closable Tag + 内联小 Input 形态 */}
+      <div style={{ marginTop: 8 }}>
+        <span style={{ fontSize: 12, color: '#999' }}>标签</span>
+        <div style={{ marginTop: 4 }}>
+          {editTags.map((t) => (
+            <Tag key={t} closable onClose={() => removeTag(t)}>{t}</Tag>
+          ))}
+          <Input
+            size="small" style={{ width: 100 }} placeholder="添加标签"
+            onPressEnter={(e) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              if (v && !editTags.includes(v)) addTag(v);
+              (e.target as HTMLInputElement).value = '';
+            }}
+          />
+        </div>
+      </div>
+      {/* meta Tag 行 —— category/securityLevel 改为 Select，对齐生成面板 Tag 颜色 */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8, alignItems: 'center' }}>
+        <Select
+          value={editCategory || undefined} size="small" placeholder="分类" allowClear
+          style={{ width: 110 }}
+          onChange={(v) => { setEditCategory(v ?? ''); markDirty(); }}
+          options={CATEGORY_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        />
+        <Select
+          value={editSecurityLevel} size="small" style={{ width: 90 }}
+          onChange={(v) => { setEditSecurityLevel(v); markDirty(); }}
+          options={SECURITY_OPTIONS.filter((o) => o.value !== 'all').map((o) => ({ value: o.value, label: o.label }))}
+        />
+        {selectedToolCount > 0 && <Tag color="green" style={{ fontSize: 11 }}>{selectedToolCount} 工具</Tag>}
+      </div>
+    </div>
+  );
 
-        {/* =============== 绑定工具 =============== */}
-        <Card
-          size="small"
-          title={
-            <Space>
-              <ToolOutlined />
-              <span>绑定工具</span>
-              {bindingGroups.length > 0 && (
-                <Badge
-                  count={bindingGroups.reduce((sum, g) => sum + g.tools.filter((t) => t.selected).length, 0)}
-                  style={{ backgroundColor: '#1677ff' }}
-                />
-              )}
-            </Space>
-          }
-          extra={
-            <Button
-              size="small"
-              type="primary"
-              icon={<ApiOutlined />}
-              onClick={() => setShowMcpSelector(true)}
-            >
-              添加 MCP
-            </Button>
-          }
-        >
-          {bindingGroups.length === 0 ? (
-            <Empty
-              description={
-                <div>
-                  <div style={{ marginBottom: 4 }}>暂未绑定任何工具</div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    点击"添加 MCP"选择 MCP 服务并绑定其中的工具
-                  </Text>
-                </div>
-              }
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
+  // 指令区 —— 对齐 SkillStudioPanel.renderInstructions（无 Alert 噪声），控件换可编辑 TextArea
+  const renderInstructions = () => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+        <CodeOutlined style={{ fontSize: 12 }} />
+        <span>指令</span>
+        <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>{editInstructions.split('\n').length} 行</Tag>
+      </div>
+      <TextArea
+        value={editInstructions}
+        onChange={(e) => { setEditInstructions(e.target.value); markDirty(); }}
+        autoSize={{ minRows: 5, maxRows: 24 }}
+        style={{
+          fontFamily: 'Consolas, "Courier New", monospace', fontSize: 12, lineHeight: '18px',
+          whiteSpace: 'pre-wrap', border: '1px solid #f0f0f0', borderRadius: 6,
+        }}
+      />
+      {detectedVariables.length > 0 && (
+        <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {detectedVariables.map((v) => (
+            <Tag key={v} color="processing" style={{ fontSize: 10 }}>{'{'}{v}{'}'}</Tag>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // 入参/出参 —— 保留编辑能力（运行时消费），折叠收起降低噪声，对齐生成面板"不默认展开"
+  const renderInputsOutputs = () => (
+    <div style={{ marginBottom: 12 }}>
+      <div
+        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6, cursor: 'pointer' }}
+        onClick={() => setShowInputsOutputs(!showInputsOutputs)}
+      >
+        <ApiOutlined style={{ fontSize: 12 }} />
+        <span>入参 / 出参</span>
+        <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 'auto' }}>{showInputsOutputs ? '收起' : '展开'}</span>
+      </div>
+      {showInputsOutputs && (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 11 }}>输入参数 Schema</Text>
+            <TextArea
+              value={editInputs}
+              onChange={(e) => { setEditInputs(e.target.value); markDirty(); }}
+              autoSize={{ minRows: 3, maxRows: 10 }}
+              style={{ fontFamily: 'Consolas, "Courier New", monospace', fontSize: 12, marginTop: 2 }}
             />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {bindingGroups.map((group, gi) => (
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 11 }}>输出参数 Schema</Text>
+            <TextArea
+              value={editOutputs}
+              onChange={(e) => { setEditOutputs(e.target.value); markDirty(); }}
+              autoSize={{ minRows: 3, maxRows: 10 }}
+              style={{ fontFamily: 'Consolas, "Courier New", monospace', fontSize: 12, marginTop: 2 }}
+            />
+          </div>
+        </Space>
+      )}
+    </div>
+  );
+
+  // 绑定工具 —— 对齐生成面板 renderBindingTools 的分组卡风格，控件加 Switch 勾选 + MCP选择器
+  const renderBindingTools = () => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+        <ToolOutlined style={{ fontSize: 12 }} />
+        <span>绑定工具</span>
+        {selectedToolCount > 0 && <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>{selectedToolCount}</Tag>}
+        <Button size="small" type="text" icon={<ApiOutlined />} onClick={() => setShowMcpSelector(true)} style={{ marginLeft: 'auto', fontSize: 11, color: '#6b7280' }}>
+          添加
+        </Button>
+      </div>
+      {bindingGroups.length === 0 ? (
+        <div style={{ fontSize: 11, color: '#9ca3af', padding: '8px', textAlign: 'center', border: '1px dashed #e5e7eb', borderRadius: 6 }}>
+          暂未绑定工具，点击"添加"选择 MCP
+        </div>
+      ) : (
+        bindingGroups.map((group, gi) => (
+          <div key={group.mcpName} style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '8px 10px', background: '#fafafa', marginBottom: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <span style={{ color: '#1677ff' }}>🔌</span>
+              <Text strong style={{ fontSize: 12 }}>{group.mcpName}</Text>
+              <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>{group.tools.filter((t) => t.selected).length}/{group.tools.length}</Tag>
+              <Button size="small" type="text" danger onClick={() => removeGroup(gi)} style={{ marginLeft: 'auto', fontSize: 11 }}>移除</Button>
+            </div>
+            {group.tools.length === 0 ? (
+              <div style={{ color: '#999', fontSize: 11 }}>尚未选择工具</div>
+            ) : (
+              group.tools.map((tool, ti) => (
+                <div key={tool.toolCode} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontSize: 11 }}>
+                  <Switch size="small" checked={tool.selected} onChange={() => toggleTool(gi, ti)} />
+                  <Text code style={{ fontSize: 11 }}>{tool.toolCode}</Text>
+                  {tool.toolName && <Text type="secondary" style={{ fontSize: 11 }}>{tool.toolName}</Text>}
+                </div>
+              ))
+            )}
+          </div>
+        ))
+      )}
+    </div>
+  );
+
+  // 技能文件 —— 复刻生成面板 renderFileStructure，从 DB 拉取
+  const renderFileStructure = () => {
+    if (skillFiles.length === 0) return null;
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+            <FileOutlined style={{ fontSize: 12 }} />
+            <span>技能文件</span>
+            <Tag color="default" style={{ fontSize: 10, margin: 0 }}>{skillFiles.length}</Tag>
+          </div>
+          <Button size="small" type="text" onClick={() => setExpandedFiles(!expandedFiles)} style={{ fontSize: 11, color: '#6b7280' }}>
+            {expandedFiles ? '收起' : '展开'}
+          </Button>
+        </div>
+        <div style={{ border: '1px solid #e8e8e8', borderRadius: 6, background: '#fafbfc', padding: 6 }}>
+          {expandedFiles ? (
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              {skillFiles.map((f) => (
                 <div
-                  key={group.mcpName}
-                  style={{
-                    border: '1px solid #f0f0f0',
-                    borderRadius: 6,
-                    padding: '8px 12px',
-                    background: '#fafafa',
+                  key={f.path}
+                  style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#e6f4ff'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                  onClick={() => {
+                    if (f.content) Modal.info({
+                      title: f.name, width: 560,
+                      content: <pre style={{ background: '#f5f5f5', padding: 14, borderRadius: 6, maxHeight: 400, overflow: 'auto', fontSize: 12, fontFamily: 'monospace', whiteSpace: 'pre-wrap', lineHeight: '18px' }}>{f.content}</pre>,
+                    });
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Space>
-                      <ApiOutlined style={{ color: '#1677ff' }} />
-                      <Text strong>{group.mcpName}</Text>
-                      <Tag color="blue">
-                        {group.tools.filter((t) => t.selected).length}/{group.tools.length} 已选
-                      </Tag>
-                    </Space>
-                    <Button
-                      size="small"
-                      type="text"
-                      danger
-                      onClick={() => removeGroup(gi)}
-                    >
-                      移除
-                    </Button>
-                  </div>
-                  {group.tools.length === 0 ? (
-                    <div style={{ color: '#999', fontSize: 12 }}>
-                      尚未选择工具，点击下方添加
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {group.tools.map((tool, ti) => (
-                        <div
-                          key={tool.toolCode}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            padding: '4px 8px',
-                            borderRadius: 4,
-                            background: tool.selected ? '#e6f4ff' : 'transparent',
-                            cursor: 'pointer',
-                          }}
-                          onClick={() => toggleTool(gi, ti)}
-                        >
-                          <span onClick={(e) => e.stopPropagation()}>
-                            <Switch
-                              size="small"
-                              checked={tool.selected}
-                              onChange={() => toggleTool(gi, ti)}
-                            />
-                          </span>
-                          <Text code style={{ fontSize: 13 }}>{tool.toolCode}</Text>
-                          {tool.toolName && (
-                            <Text type="secondary" style={{ fontSize: 12 }}>
-                              {tool.toolName}
-                            </Text>
-                          )}
-                          {tool.signature && (
-                            <Tooltip title={tool.signature}>
-                              <Text
-                                type="secondary"
-                                style={{
-                                  fontSize: 11,
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap',
-                                  maxWidth: 200,
-                                }}
-                              >
-                                {tool.signature}
-                              </Text>
-                            </Tooltip>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <FileOutlined style={{ color: f.name === 'SKILL.md' ? '#667eea' : '#1677ff', fontSize: 13 }} />
+                  <span style={{ fontWeight: f.name === 'SKILL.md' ? 600 : 400, color: '#1f2937' }}>{f.name}</span>
+                  <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 'auto', fontFamily: 'monospace' }}>{f.path}</span>
                 </div>
               ))}
             </div>
+          ) : (
+            <div style={{ padding: '4px 8px', fontSize: 12, color: '#6b7280', textAlign: 'center' }}>{skillFiles.length} 个文件</div>
           )}
-        </Card>
-
-        {/* =============== 执行配置 =============== */}
-        <Card
-          size="small"
-          title={
-            <Space>
-              <SettingOutlined />
-              <span>执行配置</span>
-            </Space>
-          }
-        >
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <Form.Item label="模型档位" style={{ marginBottom: 8 }}>
-              <Select
-                value={execConfig.modelTier || 'STANDARD'}
-                onChange={(v) => updateExecConfig('modelTier', v)}
-                options={[
-                  { value: 'LIGHT', label: '轻量版（快速、低成本）' },
-                  { value: 'STANDARD', label: '标准版（平衡）' },
-                  { value: 'STRONG', label: '专业版（高质量）' },
-                ]}
-              />
-            </Form.Item>
-            <Form.Item label="温度" style={{ marginBottom: 8 }}>
-              <InputNumber
-                min={0}
-                max={2}
-                step={0.1}
-                value={execConfig.temperature ?? 0.7}
-                onChange={(v) => updateExecConfig('temperature', v ?? 0.7)}
-                style={{ width: '100%' }}
-              />
-            </Form.Item>
-            <Form.Item label="最大轮数" style={{ marginBottom: 8 }}>
-              <InputNumber
-                min={1}
-                max={50}
-                value={execConfig.maxTurns ?? 10}
-                onChange={(v) => updateExecConfig('maxTurns', v ?? 10)}
-                style={{ width: '100%' }}
-              />
-            </Form.Item>
-            <Form.Item label="记忆策略" style={{ marginBottom: 8 }}>
-              <Select
-                value={execConfig.memoryStrategy || 'SESSION_LEVEL'}
-                onChange={(v) => updateExecConfig('memoryStrategy', v)}
-                options={[
-                  { value: 'SESSION_LEVEL', label: '会话级（不跨会话保留）' },
-                  { value: 'LONG_TERM', label: '长期记忆（跨会话保留）' },
-                ]}
-              />
-            </Form.Item>
-          </div>
-
-          <Divider style={{ margin: '8px 0' }}>安全护栏</Divider>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Form.Item label="输入过滤" style={{ marginBottom: 4 }}>
-              <Switch
-                checked={execConfig.enableInputFilter ?? true}
-                onChange={(v) => updateExecConfig('enableInputFilter', v)}
-              />
-            </Form.Item>
-            <Form.Item label="输出审核" style={{ marginBottom: 4 }}>
-              <Switch
-                checked={execConfig.enableOutputAudit ?? true}
-                onChange={(v) => updateExecConfig('enableOutputAudit', v)}
-              />
-            </Form.Item>
-            <Form.Item label="PII 检测" style={{ marginBottom: 4 }}>
-              <Switch
-                checked={execConfig.enablePiiDetection ?? true}
-                onChange={(v) => updateExecConfig('enablePiiDetection', v)}
-              />
-            </Form.Item>
-            <Form.Item label="速率限制" style={{ marginBottom: 4 }}>
-              <Switch
-                checked={execConfig.enableRateLimit ?? true}
-                onChange={(v) => updateExecConfig('enableRateLimit', v)}
-              />
-            </Form.Item>
-          </div>
-        </Card>
+        </div>
       </div>
+    );
+  };
 
-      {/* MCP 选择弹窗 */}
+  // 底部操作栏 —— 对齐生成面板 renderActionBar 的 flex 等分布局
+  const renderActionBar = () => (
+    <div style={{ borderTop: '1px solid #e8e8e8', padding: '12px 16px', background: '#fff', flexShrink: 0, display: 'flex', gap: 10 }}>
+      <Button
+        size="middle" icon={<SaveOutlined />} onClick={handleManualSave}
+        loading={saving} disabled={!dirty} style={{ flex: 1 }}
+      >
+        保存
+      </Button>
+      <Button
+        size="middle" type="primary" icon={<CheckCircleOutlined />} onClick={handleSubmitReview}
+        loading={saving} disabled={dirty} style={{ flex: 1 }}
+      >
+        提交审核
+      </Button>
+    </div>
+  );
+
+  return (
+    <div style={{
+      width: 340, minWidth: 340, height: '100%',
+      display: 'flex', flexDirection: 'column',
+      background: '#fafbfc', borderLeft: '1px solid #e8e8e8',
+      overflow: 'hidden', boxShadow: '-2px 0 8px rgba(0,0,0,0.04)',
+    }}>
+      {renderHeader()}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px' }}>
+        {renderSkillInfo()}
+        {renderInstructions()}
+        {renderInputsOutputs()}
+        {renderBindingTools()}
+        {renderFileStructure()}
+      </div>
+      {renderActionBar()}
+
       <McpSelectorModal
-        open={showMcpSelector}
-        mcpList={mcpList}
-        loading={loadingMcp}
+        open={showMcpSelector} mcpList={mcpList} loading={loadingMcp}
         existingBindings={bindingGroups.map((g) => g.mcpName)}
         onSelect={(mcp) => addMcpBinding(mcp)}
         onCancel={() => setShowMcpSelector(false)}
       />
-    </Drawer>
+    </div>
   );
 };
-
-// ============================================================================
-// Info Circle 图标组件（内联 SVG）
-// ============================================================================
-const InfoCircleIcon: React.FC = () => (
-  <span
-    style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      width: 16,
-      height: 16,
-      borderRadius: '50%',
-      background: '#e6f4ff',
-      color: '#1677ff',
-      fontSize: 11,
-      fontWeight: 600,
-      cursor: 'help',
-    }}
-  >
-    i
-  </span>
-);
-
-// ============================================================================
-// MCP 选择弹窗
-// ============================================================================
 
 interface McpSelectorModalProps {
   open: boolean;
@@ -935,49 +593,22 @@ interface McpSelectorModalProps {
 }
 
 const McpSelectorModal: React.FC<McpSelectorModalProps> = ({
-  open,
-  mcpList,
-  loading,
-  existingBindings,
-  onSelect,
-  onCancel,
+  open, mcpList, loading, existingBindings, onSelect, onCancel,
 }) => {
   const [keyword, setKeyword] = useState('');
-
   const filteredList = useMemo(() => {
     if (!keyword) return mcpList;
     const kw = keyword.toLowerCase();
-    return mcpList.filter(
-      (m) =>
-        m.mcpName.toLowerCase().includes(kw) ||
-        m.mcpCode.toLowerCase().includes(kw) ||
-        (m.description?.toLowerCase().includes(kw) ?? false),
-    );
+    return mcpList.filter((m) =>
+      m.mcpName.toLowerCase().includes(kw) ||
+      m.mcpCode.toLowerCase().includes(kw) ||
+      (m.description?.toLowerCase().includes(kw) ?? false));
   }, [mcpList, keyword]);
 
   if (!open) return null;
-
   return (
-    <Modal
-      title={
-        <Space>
-          <CloudOutlined />
-          <span>选择 MCP 服务</span>
-        </Space>
-      }
-      open={open}
-      onCancel={onCancel}
-      footer={null}
-      width={520}
-      bodyStyle={{ padding: 16 }}
-    >
-      <Input.Search
-        placeholder="搜索 MCP 服务名称或编码"
-        allowClear
-        value={keyword}
-        onChange={(e) => setKeyword(e.target.value)}
-        style={{ marginBottom: 12 }}
-      />
+    <Modal title={<Space><ApiOutlined /><span>选择 MCP 服务</span></Space>} open={open} onCancel={onCancel} footer={null} width={520}>
+      <Input.Search placeholder="搜索 MCP 服务名称或编码" allowClear value={keyword} onChange={(e) => setKeyword(e.target.value)} style={{ marginBottom: 12 }} />
       {loading ? (
         <div style={{ textAlign: 'center', padding: 24, color: '#999' }}>加载中...</div>
       ) : filteredList.length === 0 ? (
@@ -991,16 +622,9 @@ const McpSelectorModal: React.FC<McpSelectorModalProps> = ({
                 key={mcp.id}
                 onClick={() => !isBound && onSelect(mcp)}
                 style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  padding: '10px 12px',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: 6,
-                  marginBottom: 6,
-                  cursor: isBound ? 'not-allowed' : 'pointer',
-                  background: isBound ? '#f5f5f5' : '#fff',
-                  transition: 'all .15s',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '10px 12px', border: '1px solid #f0f0f0', borderRadius: 6, marginBottom: 6,
+                  cursor: isBound ? 'not-allowed' : 'pointer', background: isBound ? '#f5f5f5' : '#fff', transition: 'all .15s',
                 }}
               >
                 <Space>
@@ -1013,11 +637,7 @@ const McpSelectorModal: React.FC<McpSelectorModalProps> = ({
                     </div>
                   </div>
                 </Space>
-                {isBound ? (
-                  <Tag color="default">已绑定</Tag>
-                ) : (
-                  <Button size="small" type="primary">选择</Button>
-                )}
+                {isBound ? <Tag color="default">已绑定</Tag> : <Button size="small" type="primary">选择</Button>}
               </div>
             );
           })}

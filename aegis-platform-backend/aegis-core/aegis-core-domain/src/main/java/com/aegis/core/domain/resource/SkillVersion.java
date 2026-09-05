@@ -86,9 +86,6 @@ public class SkillVersion implements Serializable {
     /** 映射配置（快照，JSON） */
     private String mappingConfig;
 
-    /** 执行配置（快照，JSON） */
-    private String execConfig;
-
     /** 是否系统技能（快照） */
     private Integer isSystem;
 

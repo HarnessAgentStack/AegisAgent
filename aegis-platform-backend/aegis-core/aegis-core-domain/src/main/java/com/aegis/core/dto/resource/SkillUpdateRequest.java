@@ -66,9 +66,6 @@ public class SkillUpdateRequest implements Serializable {
     /** 输入输出映射配置 */
     private String mappingConfig;
 
-    /** 执行配置：模型档位/温度/maxTurns/安全护栏等运行时参数，JSON 字符串 */
-    private String execConfig;
-
     /** 发布可见范围 */
     private Visibility visibility;
 
@@ -80,7 +77,4 @@ public class SkillUpdateRequest implements Serializable {
 
     /** 触发示例 JSON */
     private String triggerExamples;
-
-    /** 交互式创建表单 Schema JSON */
-    private String skillForm;
 }

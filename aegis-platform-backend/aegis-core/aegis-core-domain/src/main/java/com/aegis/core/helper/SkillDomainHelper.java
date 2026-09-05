@@ -8,7 +8,6 @@ import com.aegis.core.enums.resource.SkillCategory;
 import com.aegis.core.enums.resource.SkillScope;
 import com.aegis.core.enums.resource.SkillType;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 /**
@@ -52,10 +51,8 @@ public final class SkillDomainHelper {
         skill.setOutputs("{}");
         skill.setMappingConfig("{}");
         skill.setSubsCount(0);
-        skill.setHealthScore(new BigDecimal("100.00"));
         skill.setAuthorUserId(userId);
         skill.setIsSystem(false);
-        skill.setCertified(false);
         skill.setCreateBy(userId);
         skill.setCreateTime(LocalDateTime.now());
         skill.setDeleted(0);
