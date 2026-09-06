@@ -56,7 +56,7 @@ public class KbUserController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         TenantContextHolder.bind(tenantId);
-        Page<KnowledgeBaseVO> result = knowledgeBaseService.page(tenantId, null, "market", keyword, page, size);
+        Page<KnowledgeBaseVO> result = knowledgeBaseService.page(tenantId, null, "market", keyword, page, size, null);
         return Result.success(result);
     }
 
@@ -80,7 +80,7 @@ public class KbUserController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         TenantContextHolder.bind(tenantId);
-        Page<KnowledgeBaseVO> result = knowledgeBaseService.page(tenantId, userId, "mine", keyword, page, size);
+        Page<KnowledgeBaseVO> result = knowledgeBaseService.page(tenantId, userId, "mine", keyword, page, size, null);
         return Result.success(result);
     }
 

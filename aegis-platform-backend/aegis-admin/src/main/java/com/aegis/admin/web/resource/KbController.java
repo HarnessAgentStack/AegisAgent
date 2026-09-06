@@ -95,10 +95,11 @@ public class KbController {
                                              @RequestHeader(value = "X-User-Id", required = false) Long userId,
                                              @RequestParam(required = false, defaultValue = "mine") String scope,
                                              @RequestParam(required = false) String keyword,
+                                             @RequestParam(required = false) String securityLevel,
                                              @RequestParam(defaultValue = "1") int page,
                                              @RequestParam(defaultValue = "20") int size) {
         TenantContextHolder.bind(tenantId);
-        return Result.success(knowledgeBaseService.page(tenantId, userId, scope, keyword, page, size));
+        return Result.success(knowledgeBaseService.page(tenantId, userId, scope, keyword, page, size, securityLevel));
     }
 
     @DeleteMapping("/{id}")

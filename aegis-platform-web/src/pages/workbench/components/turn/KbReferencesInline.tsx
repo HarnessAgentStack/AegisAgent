@@ -50,7 +50,17 @@ export const KbReferencesInline: React.FC<Props> = ({ references, truncate = 5 }
         {shown.map((ref, i) => {
           const expanded = expandedIdx.has(i);
           const label = ref.documentName ?? ref.knowledgeBaseName ?? `文档 ${i + 1}`;
-          const score = ref.score !== undefined ? `${formatPercent(ref.score, 1)}` : '';
+          // P0-KB-5：按 scoreType 格式化，避免 RRF 分(~0.016)被格式化为 1.6% 导致误导
+          let score = '';
+          if (ref.score !== undefined) {
+            if (ref.scoreType === 'rrf') {
+              score = `#${i + 1}`; // RRF 量纲太小(~0.03)，显示排名更直观
+            } else if (ref.scoreType === 'rerank') {
+              score = `${ref.score.toFixed(2)}r`; // 重排分保留小数 + r 标记
+            } else {
+              score = formatPercent(ref.score, 1); // similarity 默认百分比
+            }
+          }
 
           return (
             <li key={ref.id ?? i} style={{ marginBottom: expanded ? 6 : 2, lineHeight: 1.4 }} id={`ref-${i}`}>
@@ -80,17 +90,6 @@ export const KbReferencesInline: React.FC<Props> = ({ references, truncate = 5 }
               </Tooltip>
               {score && (
                 <span style={{ color: '#9ca3af', marginLeft: 4 }}>({score})</span>
-              )}
-              {ref.sourceUrl && (
-                <a
-                  href={ref.sourceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: '#1890ff', marginLeft: 4, fontSize: 11 }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  [link]
-                </a>
               )}
 
               {/* inline snippet 展开 */}

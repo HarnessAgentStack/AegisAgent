@@ -630,16 +630,6 @@ public class HarnessEventConverter {
     // ==================== 新增事件方法 (P1) ====================
 
     /**
-     * 创建知识库引用事件 (由调用方在 RAG 检索后调用)。
-     */
-    public AgentEvent createKbReferenceEvent(String replyId, List<Map<String, Object>> refs) {
-        Map<String, Object> data = new HashMap<>();
-        data.put("replyId", replyId);
-        data.put("refs", refs);
-        return AgentEvent.of("kb.reference", data);
-    }
-
-    /**
      * 创建产物创建事件 (由 generate_file 等工具调用完成后调用)。
      */
     public AgentEvent createArtifactCreatedEvent(

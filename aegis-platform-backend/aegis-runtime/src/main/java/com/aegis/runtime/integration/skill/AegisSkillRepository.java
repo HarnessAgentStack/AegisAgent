@@ -186,9 +186,11 @@ public class AegisSkillRepository implements RuntimeContextSkillRepository {
      * </pre>
      */
     public SkillResolution resolve(RuntimeContext ctx) {
-        // 任务 10 验收 #2：CHITCHAT/RAG_QUERY 下 skills 为空（闲聊/纯检索不需要技能指令注入）
+        // 仅 CHITCHAT（纯闲聊）清空技能：闲聊场景不需要工具/技能指令注入。
+        // RAG_QUERY 不清空——用户可能同时需要"查 KB + 调工具"（如 web_search 补外部信息），
+        // 清空技能会导致混合场景（检索+工具）能力缺失。
         IntentType intent = readIntentType(ctx);
-        if (intent == IntentType.CHITCHAT || intent == IntentType.RAG_QUERY) {
+        if (intent == IntentType.CHITCHAT) {
             List<String> requested = extractRequestedCodes(ctx);
             log.info("技能按意图过滤：intent={}，技能集清空，显式引用 {} 个全部驳回", intent,
                     requested == null ? 0 : requested.size());

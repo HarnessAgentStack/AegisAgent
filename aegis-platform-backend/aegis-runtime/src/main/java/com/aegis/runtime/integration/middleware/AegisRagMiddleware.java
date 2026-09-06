@@ -154,11 +154,24 @@ public class AegisRagMiddleware implements MiddlewareBase {
             return next.apply(input);
         }
 
-        // 4. 闲聊意图且无显式知识库引用 → 跳过 RAG
-        boolean hasExplicitKbRef = hasExplicitKbRef(taskCtx);
+        // 4. 闲聊意图且无显式知识库引用 → 跳过 RAG；
+        //    另外 TASK/SKILL_CREATE/CLARIFICATION 意图下 needRag=false 且无显式 KB 引用也跳过。
+        //    （LLM 的精细化路由判断不再被丢弃）
+        List<AgentBinding> allBindings = AssemblyResourceContext.enabledBindingsOf(ctx);
+        if (allBindings == null) {
+            allBindings = resourceQueryService.listEnabledBindings(agentId);
+        }
+        boolean hasExplicitKbRef = hasExplicitKbRef(taskCtx, allBindings);
         IntentType intent = intentResult != null ? intentResult.intent() : null;
-        if (intent == IntentType.CHITCHAT && !hasExplicitKbRef) {
-            log.debug("闲聊意图且无显式知识库引用，跳过 RAG 检索: agentId={}", agentId);
+
+        boolean skipByIntent = (intent == IntentType.CHITCHAT && !hasExplicitKbRef)
+                || (intentResult != null
+                        && !intentResult.needRag()
+                        && intent != IntentType.RAG_QUERY
+                        && !hasExplicitKbRef);
+        if (skipByIntent) {
+            log.debug("跳过 RAG 检索: agentId={}, intent={}, needRag={}, hasExplicitKbRef={}",
+                    agentId, intent, intentResult != null ? intentResult.needRag() : null, hasExplicitKbRef);
             return next.apply(input);
         }
 
@@ -171,11 +184,7 @@ public class AegisRagMiddleware implements MiddlewareBase {
         // 6. QueryRewrite：共指消解
         String effectiveQuery = resolveEffectiveQuery(userQuery, recentHistory, tenantId);
 
-        // 7. 查询知识库绑定（装配期预载优先，回退 DB 直查）
-        List<AgentBinding> allBindings = AssemblyResourceContext.enabledBindingsOf(ctx);
-        if (allBindings == null) {
-            allBindings = resourceQueryService.listEnabledBindings(agentId);
-        }
+        // 7. 计算有效 KB ID（allBindings 已在上面 step4 获取，复用）
         List<Long> kbIds = collectKbIds(allBindings, ctx, taskCtx, tenantId);
         if (kbIds.isEmpty()) {
             log.debug("智能体未绑定知识库且无会话级资源引用，跳过 RAG 检索: agentId={}", agentId);
@@ -201,6 +210,10 @@ public class AegisRagMiddleware implements MiddlewareBase {
                     for (Map<String, Object> ref : results) {
                         ref.put("kbId", kbId);
                         ref.put("kbName", kbName);
+                        // P0-KB-5：scoreType 透传前端，避免 RRF 分(~0.016)被格式化为百分比导致误导
+                        String scoreType = ref.containsKey("rerankScore") ? "rerank"
+                                : ref.containsKey("rrfScore") ? "rrf" : "similarity";
+                        ref.put("scoreType", scoreType);
                         Object docIdObj = ref.get("docId");
                         if (docIdObj instanceof Number docIdNum) {
                             Long docId = docIdNum.longValue();
@@ -299,6 +312,8 @@ public class AegisRagMiddleware implements MiddlewareBase {
                 kbIds.add(binding.getResourceId());
             }
         }
+        // P0-KB-8：agentType 用于会话级 @KB 引用过滤（SYSTEM/APPLICATION 只允许 PUBLISHED）
+        String agentType = ctx != null ? ctx.get("agentType", String.class) : null;
         // 会话级知识库引用：优先 RuntimeContext 已校验列表，回退原始引用 + 可引用性校验
         List<Long> sessionKbIdsFromCtx = resolveSessionKbIds(ctx);
         List<Long> sessionKbIds;
@@ -307,7 +322,7 @@ public class AegisRagMiddleware implements MiddlewareBase {
             sessionKbIds = sessionKbIdsFromCtx;
         } else if (sessionResources != null && sessionResources.getKbIds() != null
                 && !sessionResources.getKbIds().isEmpty()) {
-            sessionKbIds = filterReferenceableKbIds(sessionResources.getKbIds(), tenantId, taskCtx.getUserId());
+            sessionKbIds = filterReferenceableKbIds(sessionResources.getKbIds(), tenantId, taskCtx.getUserId(), agentType);
             log.warn("RAG 回退到会话级知识库引用（RuntimeContext 缺失，已按可引用性过滤）: raw={}, valid={}",
                     sessionResources.getKbIds().size(), sessionKbIds.size());
         } else {
@@ -337,19 +352,25 @@ public class AegisRagMiddleware implements MiddlewareBase {
         return userQuery;
     }
 
-    private boolean hasExplicitKbRef(AegisTaskContext taskCtx) {
+    private boolean hasExplicitKbRef(AegisTaskContext taskCtx, List<AgentBinding> allBindings) {
+        // 1) 会话级 @KB 引用（用户手动勾选）
         try {
             SessionResourcesRef ref = taskCtx.getSessionResources();
-            return ref != null && ref.getKbIds() != null && !ref.getKbIds().isEmpty();
-        } catch (Exception ignored) {
-            return false;
+            if (ref != null && ref.getKbIds() != null && !ref.getKbIds().isEmpty()) {
+                return true;
+            }
+        } catch (Exception ignored) { /* no-op */ }
+        // 2) 绑定 KB（智能体配置阶段就绑好的 KB，闲聊时也应触发检索）
+        if (allBindings != null) {
+            return allBindings.stream().anyMatch(b -> b.getResourceType() == ResourceType.KNOWLEDGE_BASE);
         }
+        return false;
     }
 
-    private List<Long> filterReferenceableKbIds(List<Long> rawKbIds, Long tenantId, Long userId) {
+    private List<Long> filterReferenceableKbIds(List<Long> rawKbIds, Long tenantId, Long userId, String agentType) {
         try (var ignore = TenantContextScope.of(tenantId)) {
             Set<Long> ids = rawKbIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
-            return resourceQueryService.findReferenceableKnowledgeBasesByIds(ids, userId)
+            return resourceQueryService.findReferenceableKnowledgeBasesByIds(ids, userId, agentType)
                     .stream().map(KnowledgeBase::getId).collect(Collectors.toList());
         } catch (Exception e) {
             log.warn("回退路径知识库可引用性校验失败，忽略全部会话级引用: error={}", e.getMessage());

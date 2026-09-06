@@ -233,6 +233,12 @@ public class TaskController {
                 .agentId(agentId)
                 .sessionId(sessionId)
                 .build();
+        // P0-KB-4：regenerate 同样消费会话级资源引用（与 edit 端点对齐），
+        // 否则重新生成会丢失 RAG 上下文（前端选择的 @KB/@MCP 被 Controller 丢弃）
+        if (body.get("resources") != null) {
+            request.setResources(JSON.parseObject(JSON.toJSONString(body.get("resources")),
+                    com.aegis.core.dto.chat.SessionResourcesRef.class));
+        }
         injectContext(request, tenantId, userId, deptId);
 
         log.info("Regenerate request: agentId={}, sessionId={}, messageId={}, tenantId={}, userId={}",

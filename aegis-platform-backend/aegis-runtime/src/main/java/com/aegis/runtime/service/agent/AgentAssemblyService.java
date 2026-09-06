@@ -521,7 +521,12 @@ public class AgentAssemblyService {
                 sessionId, tenantId, userId, agentType, agentId, sessionResources, resources);
 
         // P2: 过滤有效资源（知识库：已发布 + 用户自建草稿/审核中；MCP：已发布且启用）
-        List<Long> validKbIds = filterValidKbIds(mergedResources.getKbIds(), userId);
+        // P0 修复：filterValidKbIds 在装配期 boundedElastic 线程执行 DB 查询，
+        // 租户上下文可能已丢失（TenantContextHolder 为 ThreadLocal，请求链结束后清空），
+        // 触发 CoreTenantLineHandler fail-closed 抛"租户上下文缺失"→ Assembly failed → 会话 INTERRUPTED。
+        // 会话级 @KB 从未真正工作过（kbIds 非空必崩）。补 TenantContextScope.of(tenantId) 自绑定
+        // （与 AegisSkillRepository.resolve / AegisRagMiddleware.filterReferenceableKbIds 同模式）。
+        List<Long> validKbIds = filterValidKbIds(mergedResources.getKbIds(), userId, agentType, tenantId);
         List<Long> validMcpIds = filterValidMcpIds(mergedResources.getMcpIds());
 
         if (!validKbIds.isEmpty()) {
@@ -627,15 +632,18 @@ public class AgentAssemblyService {
      * @param userId 当前用户ID（判定创建者身份）
      * @return 有效的知识库ID列表
      */
-    private List<Long> filterValidKbIds(List<Long> kbIds, Long userId) {
+    private List<Long> filterValidKbIds(List<Long> kbIds, Long userId, String agentType, Long tenantId) {
         if (kbIds == null || kbIds.isEmpty()) {
             return Collections.emptyList();
         }
-        List<KnowledgeBase> validKbs = resourceQueryService
-                .findReferenceableKnowledgeBasesByIds(Set.copyOf(kbIds), userId);
-        return validKbs.stream()
-                .map(KnowledgeBase::getId)
-                .collect(Collectors.toList());
+        // P0 修复：装配期 boundedElastic 线程无租户上下文，自绑定后再查（fail-closed 插件兼容）
+        try (var ignore = com.aegis.core.common.tenant.TenantContextScope.of(tenantId)) {
+            List<KnowledgeBase> validKbs = resourceQueryService
+                    .findReferenceableKnowledgeBasesByIds(Set.copyOf(kbIds), userId, agentType);
+            return validKbs.stream()
+                    .map(KnowledgeBase::getId)
+                    .collect(Collectors.toList());
+        }
     }
 
     /**

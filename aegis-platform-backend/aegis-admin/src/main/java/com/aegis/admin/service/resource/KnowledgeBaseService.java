@@ -201,7 +201,7 @@ public class KnowledgeBaseService {
      * @param size     每页条数
      * @return 分页结果
      */
-    public Page<KnowledgeBaseVO> page(Long tenantId, Long userId, String scope, String keyword, int page, int size) {
+    public Page<KnowledgeBaseVO> page(Long tenantId, Long userId, String scope, String keyword, int page, int size, String securityLevel) {
         Page<KnowledgeBase> pageObj = new Page<>(page, size);
         LambdaQueryWrapper<KnowledgeBase> wrapper = new LambdaQueryWrapper<KnowledgeBase>();
 
@@ -220,6 +220,7 @@ public class KnowledgeBaseService {
         }
 
         wrapper.like(keyword != null && !keyword.isEmpty(), KnowledgeBase::getKbName, keyword)
+                .eq(securityLevel != null && !securityLevel.isEmpty(), KnowledgeBase::getSecurityLevel, securityLevel)
                 .orderByDesc(KnowledgeBase::getCreateTime);
         Page<KnowledgeBase> entityPage = knowledgeBaseMapper.selectPage(pageObj, wrapper);
         return convertPage(entityPage, this::toVO, page, size);

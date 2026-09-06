@@ -447,27 +447,37 @@ public class ResourceQueryService {
      * @param userId 当前用户ID（用于判定创建者身份）
      * @return 可引用的知识库实体列表
      */
-    public List<KnowledgeBase> findReferenceableKnowledgeBasesByIds(Set<Long> kbIds, Long userId) {
+    public List<KnowledgeBase> findReferenceableKnowledgeBasesByIds(Set<Long> kbIds, Long userId, String agentType) {
         if (kbIds == null || kbIds.isEmpty()) {
             return Collections.emptyList();
         }
         List<KnowledgeBase> all = knowledgeBaseMapper.selectBatchIds(kbIds);
         return all.stream()
-                .filter(kb -> isReferenceable(kb, userId))
+                .filter(kb -> isReferenceable(kb, userId, agentType))
                 .collect(Collectors.toList());
     }
 
     /**
-     * 判断知识库对指定用户是否可引用。
+     * 判断知识库对指定用户 + agentType 是否可引用。
+     *
+     * <p>安全分轨：</p>
+     * <ul>
+     *   <li>APPLICATION / SYSTEM —— 仅 PUBLISHED（绑定级审核语义，不允许会话级注入 DRAFT/REVIEWING 绕过审核）</li>
+     *   <li>UNIVERSAL —— PUBLISHED + 用户自建 DRAFT/REVIEWING（自测用，通用智能体允许灵活引用）</li>
+     * </ul>
      */
-    private boolean isReferenceable(KnowledgeBase kb, Long userId) {
-        if (kb.getLifeStatus() == AgentLifeStatus.PUBLISHED) {
+    private boolean isReferenceable(KnowledgeBase kb, Long userId, String agentType) {
+        AgentLifeStatus status = kb.getLifeStatus();
+        if (status == AgentLifeStatus.PUBLISHED) {
             return true;
         }
-        if (kb.getLifeStatus() == AgentLifeStatus.ARCHIVED) {
+        if (status == AgentLifeStatus.ARCHIVED) {
             return false;
         }
-        return userId != null && userId.equals(kb.getAuthorUserId());
+        // DRAFT/REVIEWING 仅作者本人；SYSTEM/APPLICATION 额外拦截（会话级 @KB 不能绕过绑定审核）
+        boolean isAuthor = userId != null && userId.equals(kb.getAuthorUserId());
+        boolean strictAgentType = "SYSTEM".equals(agentType) || "APPLICATION".equals(agentType);
+        return isAuthor && !strictAgentType;
     }
 
     /**

@@ -30,8 +30,8 @@ export interface KnowledgeBase {
   enableQueryRewrite?: boolean;
   subsCount?: number;
   visibility?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  createTime?: string;
+  updateTime?: string;
 }
 export interface KbDocument {
   id: string;
@@ -39,10 +39,10 @@ export interface KbDocument {
   fileName: string;
   fileType?: string;
   fileSize: number;
-  objectKey?: string;
+  ossKey?: string;
   status: 'PENDING' | 'SCANNING' | 'CHUNKING' | 'CHUNKED' | 'FAILED';
   chunkCount?: number;
-  uploadedAt?: string;
+  uploadedTime?: string;
 }
 
 /** 知识库文档切片 */

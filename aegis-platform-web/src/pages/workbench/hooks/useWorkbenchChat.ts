@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { streamChat, cancelTask, approveHitl as approveHitlApi, rejectHitl as rejectHitlApi } from '@/api/session';
 import type { ChatRequestBody, AttachmentRef, SkillRef } from '@/api/session';
-import type { Message, SkillCreatorDebugPayload, SkillCreatorPackagePayload } from '@/types/session';
+import type { Message, SkillCreatorDebugPayload, SkillCreatorPackagePayload, KbReference } from '@/types/session';
 import { MessageRole, HitlStatus } from '@/types/enum';
 import { safeJsonParse } from '@/utils/number';
 import { useTurnStream } from '@/hooks/useTurnStream';
@@ -528,6 +528,11 @@ export function useWorkbenchChat(opts: UseWorkbenchChatOptions) {
       messageId: dbMessageId,
       tenantId: opts.getTenantId(),
       userId: opts.getUserId(),
+      // P0-KB-4：regenerate 必须携带当前选中的 KB/MCP 资源，否则重新生成会丢失 RAG 上下文
+      resources: {
+        kbIds: opts.getSelectedKbIds().length > 0 ? opts.getSelectedKbIds() : undefined,
+        mcpIds: opts.getSelectedMcpIds().length > 0 ? opts.getSelectedMcpIds() : undefined,
+      },
     };
     startSseStream(body, '/api/runtime/task/regenerate', assistantMsgId);
   }, [streaming, opts, turnStream, startSseStream]);
@@ -797,7 +802,9 @@ function handleSseEvent(event: string, data: Record<string, unknown>, ctx: SseEv
       
       // DEBUG: 追踪 tool.result 事件里 _skillEvents 是否存在
       const _evs = parsedResult && typeof parsedResult === 'object' ? (parsedResult as any)._skillEvents : undefined;
-      console.log('[DEBUG tool.result]', { callId, resultStatus, parsedResultType: typeof parsedResult, hasSkillEvents: Array.isArray(_evs), skillEventsLen: _evs?.length, skillId: (parsedResult as any)?.skillId, skillName: (parsedResult as any)?.skillName, rawResultIsString: typeof data.result === 'string', rawResultSample: typeof data.result === 'string' ? (data.result as string).substring(0, 120) : typeof data.result });syncSkillDraftFromToolResult(opts, parsedResult);
+      // P2-KB-9: 删除 console.log 调试残留，syncSkillDraftFromToolResult 保留
+      void _evs;
+      syncSkillDraftFromToolResult(opts, parsedResult);
 
       const toolName = String(data.name ?? data.toolName ?? '未知工具');
       turnStream.appendToolResult(
@@ -831,6 +838,7 @@ function handleSseEvent(event: string, data: Record<string, unknown>, ctx: SseEv
       const rawRefs = (data.refs as Array<Record<string, unknown>>) ?? [];
       if (rawRefs.length > 0) {
         setHasContent();
+        // P0-KB-5：解析后端透传的 scoreType，前端据此选择格式化方式
         const refs = rawRefs.map((r, i) => ({
           id: String(r.id ?? `kb-ref-${i}`),
           knowledgeBaseId: String(r.kbId ?? ''),
@@ -838,6 +846,7 @@ function handleSseEvent(event: string, data: Record<string, unknown>, ctx: SseEv
           documentName: String(r.docName ?? r.documentName ?? ''),
           snippet: String(r.content ?? r.snippet ?? ''),
           score: typeof r.score === 'number' ? r.score : 0,
+          scoreType: (r.scoreType as KbReference['scoreType']) ?? 'similarity',
         }));
         setMessages((prev) => updateLastAssistant(prev, (m) => ({ ...m, kbReferences: [...(m.kbReferences ?? []), ...refs] })));
       }
@@ -1060,10 +1069,7 @@ function handleHitlResumeEvent(event: string, data: Record<string, unknown>, ctx
         try { parsedSkillResult = JSON.parse(parsedSkillResult); } catch { /* 非 JSON，跳过技能同步 */ }
       }
       if (parsedSkillResult && typeof parsedSkillResult === 'object') {
-        if (import.meta.env.DEV) {
-          const evs = (parsedSkillResult as { _skillEvents?: unknown[] })._skillEvents;
-          console.log('[DEBUG resume tool.result]', { callId, hasSkillEvents: Array.isArray(evs), skillEventsLen: Array.isArray(evs) ? evs.length : 0, skillId: (parsedSkillResult as { skillId?: unknown }).skillId });
-        }
+        // P2-KB-9: 删除 DEV 守卫内的 console.log 调试残留
         syncSkillDraftFromToolResult(ctx.opts, parsedSkillResult);
       }
       break;
@@ -1115,6 +1121,7 @@ function handleHitlResumeEvent(event: string, data: Record<string, unknown>, ctx
           documentName: String(r.docName ?? r.documentName ?? ''),
           snippet: String(r.content ?? r.snippet ?? ''),
           score: typeof r.score === 'number' ? r.score : 0,
+          scoreType: (r.scoreType as KbReference['scoreType']) ?? 'similarity',
         }));
         setMessages((prev) => updateLastAssistant(prev, (m) => ({ ...m, kbReferences: [...(m.kbReferences ?? []), ...refs] })));
       }

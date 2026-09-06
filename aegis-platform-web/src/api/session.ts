@@ -218,7 +218,8 @@ function toFrontendMessages(raws: Record<string, unknown>[]): Message[] {
     }
 
     // KB 引用行：并入当前 assistant 轮次的 kbReferences
-    if (messageType === 'KB_REFERENCE' || messageType === 'KB_REFERENCE ') {
+    // P2-KB-10：用 .trim() 替代硬编码尾空格 'KB_REFERENCE '
+    if (messageType.trim() === 'KB_REFERENCE') {
       const lastAssistant = [...result].reverse().find((m) => m.role === MessageRole.ASSISTANT);
       if (lastAssistant && typeof raw.kbRefs === 'string' && raw.kbRefs.length > 2) {
         const refs = safeJsonParse<KbReference[]>(raw.kbRefs) ?? [];

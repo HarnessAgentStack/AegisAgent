@@ -232,13 +232,21 @@ public class AgentResourceController {
         }
 
         try {
-            // 1. 验证知识库引用（已发布 + 用户自建草稿/审核中）
+            // 0. 解析 agentType（P0-KB-8：SYSTEM/APPLICATION 严格模式——DRAFT KB 即使作者本人也驳回）
+            String agentType = null;
+            if (agentId != null) {
+                AgentDef agentDef = resourceQueryService.findAgentDefById(agentId);
+                if (agentDef != null && agentDef.getAgentType() != null) {
+                    agentType = agentDef.getAgentType().name();
+                }
+            }
+            // 1. 验证知识库引用（已发布 + 用户自建草稿/审核中；严格模式仅 PUBLISHED）
             List<Long> kbIds = resources.getKbIds();
             List<KbResourceItem> validKbItems = Collections.emptyList();
             List<Long> invalidKbIds = Collections.emptyList();
             if (kbIds != null && !kbIds.isEmpty()) {
                 List<KnowledgeBase> kbs = resourceQueryService
-                        .findReferenceableKnowledgeBasesByIds(Set.copyOf(kbIds), userId);
+                        .findReferenceableKnowledgeBasesByIds(Set.copyOf(kbIds), userId, agentType);
                 validKbItems = kbs.stream()
                         .map(kb -> toKbResourceItem(kb, userId))
                         .collect(Collectors.toList());

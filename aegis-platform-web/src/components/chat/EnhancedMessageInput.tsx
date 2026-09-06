@@ -23,8 +23,6 @@ interface EnhancedMessageInputProps {
   onSend: (content: string) => void;
   /** 停止生成回调 */
   onStop?: () => void;
-  /** 清空回调（可选） */
-  onClear?: () => void;
   /** 资源点击回调 */
   onResourceClick?: () => void;
   /** 附件点击回调 */
@@ -48,7 +46,6 @@ interface EnhancedMessageInputProps {
 export const EnhancedMessageInput: React.FC<EnhancedMessageInputProps> = ({
   onSend,
   onStop,
-  onClear,
   onResourceClick,
   onAttachmentClick,
   onSkillClick,
@@ -79,8 +76,9 @@ export const EnhancedMessageInput: React.FC<EnhancedMessageInputProps> = ({
     setHistory(prev => [trimmedValue, ...prev.slice(0, 49)]);
     setHistoryIndex(-1);
     setValue('');
-    onClear?.();
-  }, [value, disabled, loading, onSend, onClear]);
+    // P0-KB-4：不再调用 onClear —— 资源引用（@KB/@MCP/技能）是会话级持续选择，
+    // 由用户通过 Tag 关闭或"清空选择"按钮显式解除；发送消息不应隐式清空
+  }, [value, disabled, loading, onSend]);
 
   /** 处理按键事件 */
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {

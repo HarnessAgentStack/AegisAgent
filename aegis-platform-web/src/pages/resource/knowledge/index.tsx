@@ -66,13 +66,17 @@ const ICON_BG = '#d1fae5';
 /** KB 卡片图标 */
 const ICON = '📚';
 
-/** 安全级别 →卡片标签文案 / 颜色 */
-const SECURITY_TAG: Record<SecurityLevel, { text: string; color: string }> = {
-  [SecurityLevel.L1]: { text: 'L1 公开', color: 'green' },
-  [SecurityLevel.L2]: { text: 'L2 内部', color: 'blue' },
-  [SecurityLevel.L3]: { text: 'L3 机密', color: 'orange' },
-  [SecurityLevel.L4]: { text: 'L4 绝密', color: 'red' },
-};
+/** 卡片 tags 专用安全级别映射（ResourceCard.tags 仅接受 {text,color} 对象；
+ *  表格/详情等 ReactNode 场景统一用 SecurityLevelTag 组件） */
+function securityTagOf(level?: SecurityLevel): { text: string; color?: string } {
+  const map: Record<SecurityLevel, { text: string; color: string }> = {
+    [SecurityLevel.L1]: { text: 'L1 公开', color: 'green' },
+    [SecurityLevel.L2]: { text: 'L2 内部', color: 'blue' },
+    [SecurityLevel.L3]: { text: 'L3 机密', color: 'orange' },
+    [SecurityLevel.L4]: { text: 'L4 绝密', color: 'red' },
+  };
+  return level && map[level] ? map[level] : { text: '—' };
+}
 
 /** 安全级别筛选选项 */
 const SECURITY_OPTIONS: { label: string; value: string }[] = [
@@ -321,7 +325,7 @@ const VersionHistoryPanel: React.FC<VersionHistoryPanelProps> = ({ kb }) => {
             ? '创建知识库'
             : `第 ${i} 次迭代更新`,
         operator: 'admin',
-        time: i === currentVer ? kb.updatedAt ?? kb.createdAt : kb.createdAt,
+        time: i === currentVer ? kb.updateTime ?? kb.createTime : kb.createTime,
         docCount: kb.docCount ?? 0,
       });
     }
@@ -860,7 +864,7 @@ const KnowledgePage: React.FC = () => {
     { title: '版本', dataIndex: 'version', width: 100, render: (v?: string) => (v ? `v${v}` : '—') },
     {
       title: '创建时间',
-      dataIndex: 'createdAt',
+      dataIndex: 'createTime',
       width: 180,
       render: (v?: string) => v ?? '—',
     },
@@ -947,7 +951,7 @@ const KnowledgePage: React.FC = () => {
     { title: '切片数', dataIndex: 'chunkCount', width: 90, render: (v?: number) => v ?? 0 },
     {
       title: '上传时间',
-      dataIndex: 'uploadedAt',
+      dataIndex: 'uploadedTime',
       width: 170,
       render: (v?: string) => v ?? '—',
     },
@@ -1135,7 +1139,7 @@ const KnowledgePage: React.FC = () => {
             <Descriptions.Item label="可见范围">
               {kb?.visibility === 'PUBLIC' ? '公开' : kb?.visibility === 'TENANT' ? '租户内' : kb?.visibility ?? '—'}
             </Descriptions.Item>
-            <Descriptions.Item label="创建时间">{kb?.createdAt ?? '—'}</Descriptions.Item>
+            <Descriptions.Item label="创建时间">{kb?.createTime ?? '—'}</Descriptions.Item>
             <Descriptions.Item label="描述" span={2}>
               {kb?.description ?? '—'}
             </Descriptions.Item>
@@ -1334,7 +1338,7 @@ const KnowledgePage: React.FC = () => {
                           { label: '文档', value: String(item.docCount ?? 0) },
                           { label: '版本', value: item.version ? `v${item.version}` : '—' },
                         ]}
-                        tags={[SECURITY_TAG[item.securityLevel]]}
+                        tags={[securityTagOf(item.securityLevel)]}
                         actions={[
                           <Button
                             key="sub"

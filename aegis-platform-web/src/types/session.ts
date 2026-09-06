@@ -114,10 +114,10 @@ export interface KbReference {
   documentName?: string;
   /** 命中片段 */
   snippet?: string;
-  /** 相似度得分（0~1） */
+  /** 相似度得分（量纲随 scoreType 而异） */
   score?: number;
-  /** 来源 URL */
-  sourceUrl?: string;
+  /** 得分类型：similarity（相似度 0~1）| rerank（重排分）| rrf（融合分，量纲 ~0.03） */
+  scoreType?: 'similarity' | 'rerank' | 'rrf';
 }
 
 /** HITL 审批（Message.hitl 内用） */

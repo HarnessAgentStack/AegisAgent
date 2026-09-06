@@ -292,7 +292,7 @@ const ResourceReadOnlyDetail: React.FC<ResourceReadOnlyDetailProps> = ({
           {kb.visibility === 'PUBLIC' ? '公开' : kb.visibility === 'TENANT' ? '租户内' : kb.visibility || '-'}
         </Descriptions.Item>
         <Descriptions.Item label="订阅数">{kb.subsCount ?? 0}</Descriptions.Item>
-        <Descriptions.Item label="创建时间">{kb.createdAt || '-'}</Descriptions.Item>
+        <Descriptions.Item label="创建时间">{kb.createTime || '-'}</Descriptions.Item>
         <Descriptions.Item label="描述" span={2}>
           {kb.description || '-'}
         </Descriptions.Item>

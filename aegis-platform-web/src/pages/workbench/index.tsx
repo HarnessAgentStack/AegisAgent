@@ -151,12 +151,22 @@ const Workbench: React.FC = () => {
   }, []);
 
   const handleAIDirective = useCallback((msg: string) => chat.sendMessage(msg), [chat]);
-  const handleSend = useCallback((text: string) => chat.sendMessage(text), [chat.sendMessage]);
+  // P0-KB-4：发送后仅解除附件（一次性引用，避免下条消息重复携带）；
+  // @KB/@MCP/技能是会话级持续选择，保留至用户手动关闭 Tag 或点"清空选择"
+  const handleSend = useCallback((text: string) => {
+    chat.sendMessage(text);
+    setSelectedAttachments([]);
+  }, [chat.sendMessage]);
   const handleStop = useCallback(async () => { await chat.stopStream(); }, [chat]);
-  const handleClearAll = useCallback(() => {
+  // 资源选择是会话级状态：新建/切换会话、切换智能体时清空（P0-KB-4 语义闭环）
+  // 不手写 useCallback：React Compiler 自动 memoize
+  const clearResourceSelection = () => {
     setSelectedKbIds([]); setSelectedMcpIds([]); setSelectedAttachments([]); setSelectedSkills([]);
-  }, [setSelectedKbIds, setSelectedMcpIds, setSelectedAttachments, setSelectedSkills]);
-  const handleNewTask = useCallback(() => { sessionMgr.resetSession(); chat.resetChat(); }, [sessionMgr, chat]);
+  };
+
+  const handleNewTask = useCallback(() => {
+    sessionMgr.resetSession(); chat.resetChat(); clearResourceSelection();
+  }, [sessionMgr, chat]);
 
   /** 切换智能体 */
   const handleAgentSwitch = useCallback((agentId: string) => {
@@ -164,6 +174,7 @@ const Workbench: React.FC = () => {
     agentSel.setCurrentAgentId(agentId);
     sessionMgr.resetSession();
     chat.resetChat();
+    clearResourceSelection();
     message.success(`已切换到 ${agent?.agentName ?? '智能体'}，整个任务过程将基于此智能体执行`);
     setTimeout(() => {
       getSessionList({ page: 1, size: 1, agentId })
@@ -403,7 +414,7 @@ const Workbench: React.FC = () => {
               const hitlPending = !!lastAssistant?.hitl && lastAssistant.hitl.status === HitlStatus.PENDING;
               return (
                 <EnhancedMessageInput
-                  onSend={handleSend} onStop={handleStop} onClear={handleClearAll}
+                  onSend={handleSend} onStop={handleStop}
                   onResourceClick={() => setShowKbPanel(true)}
                   onAttachmentClick={() => setShowUploadPanel(true)}
                   onSkillClick={() => setShowSkillPanel(true)}
@@ -494,7 +505,7 @@ const Workbench: React.FC = () => {
         open={historyDrawerOpen} sessions={sessionMgr.sessions} currentSessionId={sessionMgr.currentSessionId} streaming={chat.streaming}
         onClose={() => setHistoryDrawerOpen(false)}
         onNewTask={handleNewTask}
-        onSwitch={async (sid) => { const msgs = await sessionMgr.switchSession(sid); chat.setMessages(msgs); }}
+        onSwitch={async (sid) => { const msgs = await sessionMgr.switchSession(sid); chat.setMessages(msgs); clearResourceSelection(); }}
         onDeleteSession={sessionMgr.deleteSessionItem} loadSessions={sessionMgr.loadSessions}
         onCurrentSessionDeleted={() => { sessionMgr.setCurrentSessionId(undefined); chat.setMessages([]); }}
         abortStream={async () => { await chat.stopStream(); chat.setStreaming(false); }}
