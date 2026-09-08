@@ -1,6 +1,6 @@
 # Aegis 技术架构说明
 
-> 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-09-03（源码核实）
+> 适用版本：0.1.0-alpha.1 ｜ 最后更新：2026-09-08（源码核实）
 
 ---
 
@@ -368,7 +368,7 @@ DDL：`infra/ddl/01_schema_init.sql`；种子：`infra/ddl/02_seed_data.sql`。�
 
 **对话执行**：`TaskController` → `ChatRequestValidator` → `TaskExecutionService`（装配 → 流式执行 → 投影 → doFinally）→ `AgentAssemblyService`（查 def/config/binding → 建 session 快照 → 取/建实例 → 装载资源）→ `HarnessAgent.streamEvents` → `HarnessEventConverter` → SSE。详见 [runtime-execution-flow.md](runtime-execution-flow.md)。
 
-**RAG**：admin 端上传 → `FileParseEngine` 解析 → 分块（默认 500 字符 / 重叠 50）→ Embedding → Milvus 集合 `tenant_{tenantId}_aegis_kb_v1_{kbId}`；运行时 `AegisRagMiddleware.onSystemPrompt` 检索（默认 topK=5）后注入系统提示词。
+**RAG**：admin 端上传 → `DocumentPipelineService` @Async 流水线（下载 → 解析 PDFBox/POI/ExtractorFactory → 安全扫描 → 切片默认 500 字符 / 重叠 50 → `embedBatch` → Milvus + MySQL 双写）→ Milvus 集合 `tenant_{tenantId}_aegis_kb_v1_{kbId}`；运行时 `AegisRagMiddleware.onSystemPrompt` 按 HYBRID 策略检索（向量 + 关键词 RRF 融合，默认 topK=5、相似度阈值 0.40）后注入系统提示词。（runtime 的 `FileParseEngine` 仅服务会话附件解析，与知识库无关）
 
 **安全策略热更新**：admin 改配置 → `AdminSecurityConfigPublisher` 发 Redis Pub/Sub `aegis:config:change` → runtime 订阅后删缓存，下次请求回源 MySQL。
 
