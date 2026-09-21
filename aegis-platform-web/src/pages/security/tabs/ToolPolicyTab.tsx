@@ -254,20 +254,18 @@ const ToolPolicyTab: React.FC = () => {
         extra={
           <Space>
             <Button
-              size="small"
               disabled={selectedToolTypes.length === 0}
               onClick={() => handleBatchToggle(true)}
             >
               批量启用
             </Button>
             <Button
-              size="small"
               disabled={selectedToolTypes.length === 0}
               onClick={() => handleBatchToggle(false)}
             >
               批量禁用
             </Button>
-            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openToolModal}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openToolModal}>
               新增策略
             </Button>
           </Space>

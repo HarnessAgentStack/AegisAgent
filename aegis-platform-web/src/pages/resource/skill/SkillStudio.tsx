@@ -346,8 +346,8 @@ const SkillStudio: React.FC<SkillStudioProps> = ({
         />
 
         <div style={{ flex: 1 }} />
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => onCreate()} size="large">
-          ➕ 对话创建技能（推荐）
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => onCreate()}>
+          对话创建技能（推荐）
         </Button>
       </div>
 

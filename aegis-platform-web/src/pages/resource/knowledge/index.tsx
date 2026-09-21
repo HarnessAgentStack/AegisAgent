@@ -1403,7 +1403,7 @@ const KnowledgePage: React.FC = () => {
             />
             {canCreate && (
               <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-                ➕ 创建
+                创建
               </Button>
             )}
           </div>
